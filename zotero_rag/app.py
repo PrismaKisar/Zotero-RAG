@@ -448,18 +448,11 @@ def show_setup_tab():
 
             with st.expander("🔥 Clear full index", expanded=False):
                 st.warning("This operation removes all indexed PDFs and vectors.")
-                confirm_clear = st.checkbox(
-                    "I understand this action is irreversible",
-                    key="confirm_clear_index"
-                )
                 if st.button("Clear all PDFs", use_container_width=True, key="btn_clear_all_pdfs"):
-                    if not confirm_clear:
-                        st.warning("Please confirm before clearing the full index.")
-                    elif st.session_state.rag is None:
+                    if st.session_state.rag is None:
                         st.error("Load a model first.")
                     else:
-                        # Backend hook (skeleton): expected method on RAG.
-                        st.session_state.rag.clear_pdf_index()
+                        st.session_state.rag.clear_index()
                         st.session_state.indexed = False
                         st.success("Full index clear requested.")
     

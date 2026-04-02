@@ -69,7 +69,8 @@ class QdrantManager:
                 collection_name=self.qdrant_collection,
                 vectors_config=qmodels.VectorParams(
                     size=vector_size,
-                    distance=qmodels.Distance.COSINE
+                    distance=qmodels.Distance.COSINE,
+                    datatype=qmodels.VectorDataType.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
                 ),
             )
 
@@ -348,6 +349,14 @@ class QdrantManager:
         )
 
         return bool
+
+    def clear_collection(self):
+        """Clear all data from the Qdrant collection."""
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+        
+        self.client.delete_collection(self.qdrant_collection)
+        logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
 
     def search(self, query: str, threshold: float = 2.0) -> List[tuple]:
         """Search the index for relevant paragraphs.

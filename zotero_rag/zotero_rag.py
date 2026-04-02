@@ -328,6 +328,23 @@ class ZoteroRAG:
         finally:
             self.qdrant_manager.close_connection()
 
+    def clear_index(self) -> bool:
+        """Clear the entire Qdrant collection, removing all indexed paragraphs.
+        
+        Returns:
+            True if the collection was cleared successfully, False otherwise.
+        """
+        try:
+            self.qdrant_manager.initialize_connection()
+            self.qdrant_manager.clear_collection()
+            logger.info("Successfully cleared the Qdrant collection.")
+            return True
+        except Exception as e:
+            logger.error(f"Error during clear_collection: {str(e)}")
+            return False
+        finally:
+            self.qdrant_manager.close_connection()
+
     def answer_question(self, 
                        question: str, 
                        retrieval_threshold: float = 2.0, 
