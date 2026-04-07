@@ -204,7 +204,7 @@ class ZoteroRAG:
             self.qdrant_manager.initialize_connection()
             return self.qdrant_manager.list_indexed_pdfs()
         except Exception as e:
-            logger.error(f"Error during get_indexed_pdfs: {str(e)}")
+            #logger.error(f"Error during get_indexed_pdfs: {str(e)}")
             return []
         finally:
             self.qdrant_manager.close_connection()

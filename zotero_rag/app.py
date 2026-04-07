@@ -186,20 +186,36 @@ def show_setup_tab():
     
     st.markdown("---")
     
-    # GROBID Configuration
-    st.subheader("1️⃣ GROBID Service (Optional)")
-    st.info("🔧 GROBID is used for advanced PDF parsing with sentence-level extraction. Make sure it runs if new pdf have to be processed.")
-    
-    grobid_url = st.text_input(
-        "GROBID Service URL",
-        value="http://localhost:8070",
-        help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid:latest"
-    )
+    # Services configuration
+    st.subheader("2️⃣ Service Endpoints")
+    st.caption("Configure the local services used for PDF parsing and vector search.")
+
+    col_grobid, col_qdrant = st.columns(2, gap="large")
+
+    with col_grobid:
+        st.markdown("**🔧 GROBID**")
+        st.caption("Advanced PDF parsing with sentence-level extraction.")
+        grobid_url = st.text_input(
+            "GROBID Service URL",
+            value="http://localhost:8070",
+            key="grobid_url_input",
+            help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid:latest"
+        )
+
+    with col_qdrant:
+        st.markdown("**🧠 Qdrant**")
+        st.caption("Vector database used to store and search embeddings.")
+        qdrant_url = st.text_input(
+            "Qdrant Service URL",
+            value="http://localhost:6333",
+            key="qdrant_url_input",
+            help="URL of Qdrant service. Start with: docker run -p 6333:6333 qdrant/qdrant"
+        )
     
     st.markdown("---")
     
     # Model Selection
-    st.subheader("2️⃣ Select Embedding Model")
+    st.subheader("3️⃣ Select Embedding Model")
     
     model_input = st.text_input(
         "HuggingFace Model URL or name",
@@ -262,7 +278,6 @@ def show_setup_tab():
             with st.spinner(f"Loading model: {model_input}..."):
                 try:
                     st.session_state.model_name = model_input
-                    st.session_state.grobid_url = grobid_url
                     st.session_state.model_device = None if device_choice == "auto" else device_choice
                     st.session_state.encode_batch_size = encode_batch_size
                     st.session_state.rerank_batch_size = rerank_batch_size
@@ -274,6 +289,7 @@ def show_setup_tab():
                             folder_path=st.session_state.folder_path,
                             model_name=model_input,
                             grobid_url=grobid_url,
+                            qdrant_url=qdrant_url,
                             output_base_dir=st.session_state.output_dir,
                             model_device=st.session_state.model_device,
                             encode_batch_size=encode_batch_size,
@@ -285,6 +301,7 @@ def show_setup_tab():
                             collection_name=st.session_state.collection_name,
                             model_name=model_input,
                             grobid_url=grobid_url,
+                            qdrant_url=qdrant_url,
                             output_base_dir=st.session_state.output_dir,
                             model_device=st.session_state.model_device,
                             encode_batch_size=encode_batch_size,
@@ -320,7 +337,7 @@ def show_setup_tab():
     
     # Indexing Section - only show if model is loaded
     if st.session_state.model_loaded:
-        st.subheader("3️⃣ Indexed PDFs Manager")
+        st.subheader("4️⃣ Indexed PDFs Manager")
         col_left, col_right = st.columns([3, 1], gap="large")
 
         with col_left:

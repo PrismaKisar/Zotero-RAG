@@ -70,7 +70,7 @@ class QdrantManager:
                 vectors_config=qmodels.VectorParams(
                     size=vector_size,
                     distance=qmodels.Distance.COSINE,
-                    datatype=qmodels.VectorDataType.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
+                    datatype=qmodels.Datatype.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
                 ),
             )
 
@@ -173,34 +173,35 @@ class QdrantManager:
         )
         return len(points) > 0
     
-    #TODO: sistemare il magic number 1000
+    #TODO: se si vuole fare bisogna pensarci bene al modo più efficiente / sistemare il magic number 1000
     def list_indexed_pdfs(self) -> List[Dict]:
         """List PDFs that have been indexed in Qdrant.
         
         Returns:
             List of dictionaries with 'pdf_path', 'title', 'pdf_hash' keys.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+        raise NotImplementedError("Listing indexed PDFs is not implemented yet.")
+        # if not self.client:
+        #     raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
         
-        results = self.client.scroll(
-            collection_name=self.qdrant_collection,
-            limit=1000,
-            with_payload=["title", "pdf_path", "pdf_hash"],
-            with_vectors=False,
-            group_by="pdf_hash"
-        )
+        # results = self.client.scroll(
+        #     collection_name=self.qdrant_collection,
+        #     limit=1000,
+        #     with_payload=["title", "pdf_path", "pdf_hash"],
+        #     with_vectors=False,
+        #     group_by="pdf_hash"
+        # )
         
-        indexed_pdfs = [
-            {
-                "title": group.hits[0].payload.get("title", "Unknown_Title"),
-                "pdf_path": group.hits[0].payload.get("pdf_path", "Unknown_Path"),
-                "hash": group.id,
-            }
-            for group in results[0].groups
-        ]
+        # indexed_pdfs = [
+        #     {
+        #         "title": group.hits[0].payload.get("title", "Unknown_Title"),
+        #         "pdf_path": group.hits[0].payload.get("pdf_path", "Unknown_Path"),
+        #         "hash": group.id,
+        #     }
+        #     for group in results[0].groups
+        # ]
     
-        return indexed_pdfs
+        #return indexed_pdfs
     
     def encode_paragraphs(self, progress_callback, all_texts) -> np.ndarray:
         """Encode paragraphs into embeddings with dynamic batch size and progress updates.
