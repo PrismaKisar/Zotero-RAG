@@ -111,21 +111,21 @@ class Reranker:
         return max(start_size, int(last_safe_size * target_memory_fraction))
     
     def rerank(self, query: str, 
-               candidates: List[Tuple[Paragraph, float, int]], 
+               candidates: List[Tuple[Paragraph, float]], 
                threshold: float = 0.25,
                progress_callback=None,
-               query_variations: List[str] = None) -> List[Tuple[Paragraph, float, int, float]]:
+               query_variations: List[str] = None) -> List[Tuple[Paragraph, float, float]]:
         """Rerank candidates using cross-encoder scores.
         
         Args:
             query: The query string.
-            candidates: List of (Paragraph, retrieval_score, original_index) tuples.
+            candidates: List of (Paragraph, retrieval_score) tuples.
             threshold: Minimum probability threshold to keep candidates.
             progress_callback: Function(current, total, message) for progress updates.
             query_variations: List of query paraphrases to average scores over.
             
         Returns:
-            List of (Paragraph, retrieval_score, original_index, rerank_score) tuples,
+            List of (Paragraph, retrieval_score, rerank_score) tuples,
             filtered and sorted by rerank_score descending.
         """
         if not candidates:
@@ -194,20 +194,20 @@ class Reranker:
         adjusted_threshold = self.adaptive_rerank_threshold(probs, threshold)
         
         # Combine probabilities with candidate data
-        # Each item: (paragraph, retrieval_score, original_idx, rerank_score)
+        # Each item: (paragraph, retrieval_score, rerank_score)
         scored_candidates = [
-            (p[0], p[1], p[2], float(prob))
+            (p[0], p[1], float(prob))
             for p, prob in zip(candidates, probs)
         ]
         
         # Filter by adjusted threshold
         filtered_candidates = [
             item for item in scored_candidates 
-            if item[3] >= adjusted_threshold
+            if item[2] >= adjusted_threshold
         ]
         
         # Sort by rerank score descending
-        filtered_candidates.sort(key=lambda x: x[3], reverse=True)
+        filtered_candidates.sort(key=lambda x: x[2], reverse=True)
         
         if progress_callback:
             progress_callback(len(candidates), len(candidates), 

@@ -245,73 +245,6 @@ class QAEngine:
         
         return variations
     
-    def get_adaptive_context(self, paragraph: Paragraph, original_idx: int, 
-                           all_paragraphs: List[Paragraph], 
-                           question_type: str) -> Tuple[str, int, dict]:
-        """Get context adaptively based on paragraph properties and question type.
-        
-        Args:
-            paragraph: The current paragraph.
-            original_idx: Index of the paragraph in all_paragraphs.
-            all_paragraphs: Full list of all paragraphs.
-            question_type: The classified question type.
-            
-        Returns:
-            Tuple of (combined_text, shift_offset, context_info) where:
-            - combined_text: The text to use for QA
-            - shift_offset: Character position where current paragraph starts
-            - context_info: Dict with context expansion details
-        """
-        combined_text = paragraph.text
-        shift_offset = 0
-        para_word_count = len(paragraph.text.split())
-        
-        context_info = {
-            'expanded': False,
-            'added_prev': False,
-            'added_next': False,
-            'original_words': para_word_count,
-            'final_words': para_word_count,
-            'expansion_reason': None
-        }
-        
-        # Determine if context expansion is needed
-        is_short = para_word_count < 50
-        needs_more_context = question_type in ['explanation', 'comparison']
-        
-        should_expand = is_short or needs_more_context
-        
-        if is_short:
-            context_info['expansion_reason'] = f'short paragraph ({para_word_count} words)'
-        elif needs_more_context:
-            context_info['expansion_reason'] = f'{question_type} question needs context'
-        
-        if not should_expand:
-            return combined_text, shift_offset, context_info
-        
-        # Try to get previous paragraph if from same section and PDF
-        if original_idx > 0:
-            prev = all_paragraphs[original_idx - 1]
-            if (prev.pdf_path == paragraph.pdf_path and 
-                prev.section == paragraph.section):  # Same section
-                combined_text = prev.text + " " + paragraph.text
-                shift_offset = len(prev.text) + 1
-                context_info['expanded'] = True
-                context_info['added_prev'] = True
-                context_info['final_words'] += len(prev.text.split())
-        
-        # For explanation questions, also try next paragraph
-        if question_type == 'explanation' and original_idx < len(all_paragraphs) - 1:
-            next_para = all_paragraphs[original_idx + 1]
-            if (next_para.pdf_path == paragraph.pdf_path and 
-                next_para.section == paragraph.section):
-                combined_text = combined_text + " " + next_para.text
-                context_info['expanded'] = True
-                context_info['added_next'] = True
-                context_info['final_words'] += len(next_para.text.split())
-        
-        return combined_text, shift_offset, context_info
-    
     def _expand_to_sentences(self, paragraph: Paragraph, 
                             start_char: int, 
                             end_char: int) -> Tuple[str, int, int, List[str]]:
@@ -370,8 +303,7 @@ class QAEngine:
         return expanded_text, new_start, new_end, sentence_coords
     
     def extract_answers(self, question: str, 
-                       candidates: List[Tuple[Paragraph, float, int, float]],
-                       all_paragraphs: List[Paragraph],
+                       candidates: List[Tuple[Paragraph, float, float]],
                        qa_score_threshold: float = 0.0,
                        color: Tuple[float, float, float] = (1, 1, 0),
                        progress_callback=None,
@@ -395,9 +327,6 @@ class QAEngine:
         logger.info(f"QA Configuration -> Type: {question_type} | Threshold: {config['qa_score_threshold']:.3f} | Min Words: {config['min_answer_words']}")
         
         # Initialize tracking dictionaries
-        context_stats = {
-            'expanded': 0, 'added_prev': 0, 'added_next': 0, 'not_expanded': 0
-        }
         filter_stats = {
             'total_inputs': 0,      # Total (candidates * variations)
             'successful_raw': 0,    # Raw answers extracted from model
@@ -412,19 +341,8 @@ class QAEngine:
         batch_contexts = []
         metadata_map = [] 
         
-        for i, (paragraph, retrieval_score, original_idx, rerank_score) in enumerate(candidates):
-            # Get adaptive context
-            combined_text, shift_offset, context_info = self.get_adaptive_context(
-                paragraph, original_idx, all_paragraphs, question_type
-            )
-            
-            # Log Context Stats
-            if context_info['expanded']:
-                context_stats['expanded'] += 1
-                if context_info['added_prev']: context_stats['added_prev'] += 1
-                if context_info['added_next']: context_stats['added_next'] += 1
-            else:
-                context_stats['not_expanded'] += 1
+        for i, (paragraph, retrieval_score, rerank_score) in enumerate(candidates):
+            combined_text = paragraph.text
             
             # Prepare variations
             for q_var in questions_to_use:
@@ -434,8 +352,6 @@ class QAEngine:
                     'paragraph': paragraph,
                     'retrieval_score': retrieval_score,
                     'rerank_score': rerank_score,
-                    'shift_offset': shift_offset,
-                    'original_idx': original_idx,
                     'q_var': q_var,
                     'context_text': combined_text,
                     'candidate_idx': i
@@ -535,25 +451,10 @@ class QAEngine:
             
             # Recalculate offsets relative to original paragraph
             paragraph = meta['paragraph']
-            shift_offset = meta['shift_offset']
             raw_start, raw_end = best_res['start'], best_res['end']
             
             target_paragraph = paragraph
             local_start, local_end = raw_start, raw_end
-            
-            # Handle shifted context logic
-            if shift_offset > 0:
-                if raw_end <= shift_offset:
-                    if meta['original_idx'] > 0:
-                        prev = all_paragraphs[meta['original_idx'] - 1]
-                        if prev.pdf_path == paragraph.pdf_path:
-                            target_paragraph = prev
-                elif raw_start >= shift_offset:
-                    local_start = raw_start - shift_offset
-                    local_end = raw_end - shift_offset
-                else:
-                    local_start = max(0, raw_start - shift_offset)
-                    local_end = raw_end - shift_offset
 
             # Sentence expansion
             expanded_text, new_start, new_end, sentence_coords = self._expand_to_sentences(
@@ -647,7 +548,6 @@ class QAEngine:
         logger.info("-" * 60)
         logger.info(f"QA EXTRACTION SUMMARY ({question_type})")
         logger.info(f"Input: {len(candidates)} candidates -> {filter_stats['total_inputs']} sequences (expanded)")
-        logger.info(f"Context: {context_stats['expanded']} expanded ({context_stats['added_prev']} prev, {context_stats['added_next']} next)")
         logger.info(f"Raw Outputs: {filter_stats['successful_raw']} spans found")
         logger.info(f"Filtering:")
         logger.info(f"  - Too Short (<{config['min_answer_words']} words): {filter_stats['too_few_words']}")

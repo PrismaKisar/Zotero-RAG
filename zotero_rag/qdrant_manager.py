@@ -359,31 +359,44 @@ class QdrantManager:
         self.client.delete_collection(self.qdrant_collection)
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
 
-    def search(self, query: str, threshold: float = 2.0) -> List[tuple]:
-        """Search the index for relevant paragraphs.
+    def search(self, query: str, threshold: float = 0.7) -> List[tuple]:
+        """Search for relevant paragraphs based on a query string.
         
         Args:
-            query: Query string.
-            threshold: L2 distance threshold for range search.
-            
+            query: The search query string.
+            threshold: Distance threshold for filtering results (lower is more similar).
         Returns:
-            List of (Paragraph, distance, original_index) tuples.
+            List of tuples (Paragraph, distance) for relevant paragraphs.
         """
-        if not self.index:
-            raise ValueError("Index is not built or loaded.")
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
         
-        query_embedding = self.model.encode([query], show_progress_bar=False)
+        query_embedding = self.model.encode(query, device=self.device)
         
-        # Use range_search to get candidates within threshold
-        lims, D, I = self.index.range_search(
-            np.array(query_embedding).astype('float32'), 
-            threshold
+        search_result = self.client.query_points(
+            collection_name=self.qdrant_collection,
+            query=query_embedding.tolist(),
+            limit=20,
+            score_threshold=threshold,
+            with_payload=True
         )
-        indices, distances = I[lims[0]:lims[1]], D[lims[0]:lims[1]]
         
-        results = []
-        for idx, dist in zip(indices, distances):
-            paragraph = self.paragraphs[idx]
-            results.append((paragraph, float(dist), int(idx)))
-        
-        return results
+        relevant_paragraphs = []
+        for result in search_result.points:
+            payload = result.payload
+
+            para = Paragraph(
+                text=payload.get('text', ''),
+                pdf_path=payload.get('pdf_path', ''),
+                page_num=payload.get('page_num', -1),
+                para_idx=payload.get('para_idx', -1),
+                item_key=payload.get('item_key', ''),
+                pdf_hash=payload.get('pdf_hash', ''),
+                title=payload.get('title', ''),
+                section=payload.get('section', ''),
+                sentence_count=payload.get('sentence_count', 0),
+                sentences=payload.get('sentences', [])
+            )
+            relevant_paragraphs.append((para, result.score))
+
+        return relevant_paragraphs

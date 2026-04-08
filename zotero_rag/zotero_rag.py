@@ -347,7 +347,7 @@ class ZoteroRAG:
 
     def answer_question(self, 
                        question: str, 
-                       retrieval_threshold: float = 2.0, 
+                       retrieval_threshold: float = 0.7, 
                        qa_score_threshold: float = 0.0, 
                        rerank_threshold: float = 0.25, 
                        progress_callback=None, 
@@ -360,13 +360,13 @@ class ZoteroRAG:
         """Answer a question using the full RAG pipeline.
         
         Pipeline stages:
-        1. FAISS Retrieval (Range Search)
+        1. Qdrant Retrieval (Cosine Similarity)
         2. CrossEncoder Reranking (Threshold Filtering)
         3. QA Extraction (with Context Overlap/Sliding Window)
         
         Args:
             question: The question to answer.
-            retrieval_threshold: L2 distance threshold for initial retrieval.
+            retrieval_threshold: Minimum cosine similarity score to keep retrieved paragraphs.
             qa_score_threshold: Minimum QA confidence score to keep answers.
             rerank_threshold: Minimum rerank probability to keep candidates.
             progress_callback: Function(current, total, message) for QA progress.
@@ -380,9 +380,6 @@ class ZoteroRAG:
         Returns:
             List of Answer objects, deduplicated and sorted by score.
         """
-        if not self.qdrant_manager.collection_exists("zotero_rag"): #TODO: capire se voglio nomi diversi
-            raise ValueError("Qdrant collection does not exist. Please run upsert_paragraphs() first.")
-        
         # Stage 0: Expand question if enabled and variations not provided
         if question_variations is None:
             question_variations = [question]  # Always include original
@@ -394,42 +391,46 @@ class ZoteroRAG:
         else:
             logger.info(f"Using {len(question_variations)} pre-selected question variations")
         
-        # Stage 1: Retrieve candidate paragraphs (FAISS)
+        # Stage 1: Retrieve candidate paragraphs (Qdrant)
         # Search with all question variations and merge results
-        all_candidates = []
-        seen_paragraphs = set()
-        
-        for i, q_var in enumerate(question_variations):
-            var_candidates = self.qdrant_manager.search(q_var, retrieval_threshold)
-            logger.debug(f"Variation {i}: '{q_var}' -> {len(var_candidates)} candidates")
+        try:
+            all_candidates = []
+            seen_paragraphs = set()
+            self.qdrant_manager.initialize_connection()
             
-            # Add unseen candidates
-            for para, score, idx in var_candidates:
-                para_id = (para.pdf_path, para.page_num, para.text[:100])  # Unique identifier
-                if para_id not in seen_paragraphs:
-                    seen_paragraphs.add(para_id)
-                    all_candidates.append((para, score, idx))
-        
-        # Sort by retrieval score
-        all_candidates.sort(key=lambda x: x[1])
-        candidates = all_candidates
-        
-        logger.debug(f"Question: {question}")
-        logger.debug(f"Retrieved {len(candidates)} unique paragraphs from {len(question_variations)} variations")
-        
-        if not candidates:
-            self.last_candidates = []
-            return []
-        
-        # Store for debugging
-        self.last_candidates = [
-            {
-                'paragraph': c[0],
-                'retrieval_score': c[1],
-                'kept': True
-            }
-            for c in candidates
-        ]
+            for i, q_var in enumerate(question_variations):
+                var_candidates = self.qdrant_manager.search(q_var, retrieval_threshold)
+                logger.debug(f"Variation {i}: '{q_var}' -> {len(var_candidates)} candidates")
+                
+                # Add unseen candidates
+                for para, score in var_candidates:
+                    para_id = (para.pdf_hash, para.para_idx)  # Unique identifier
+                    if para_id not in seen_paragraphs:
+                        seen_paragraphs.add(para_id)
+                        all_candidates.append((para, score))
+            
+            # Sort by retrieval score
+            all_candidates.sort(key=lambda x: x[1])
+            candidates = all_candidates
+            
+            logger.debug(f"Question: {question}")
+            logger.debug(f"Retrieved {len(candidates)} unique paragraphs from {len(question_variations)} variations")
+            
+            if not candidates:
+                self.last_candidates = []
+                return []
+            
+            # Store for debugging
+            self.last_candidates = [
+                {
+                    'paragraph': c[0],
+                    'retrieval_score': c[1],
+                    'kept': True
+                }
+                for c in candidates
+            ]
+        finally:
+            self.qdrant_manager.close_connection()
         
         # Stage 2: Rerank and Filter (CrossEncoder)
         reranked = self.reranker.rerank(
@@ -458,7 +459,6 @@ class ZoteroRAG:
         answers = self.qa_engine.extract_answers(
             question,
             reranked,
-            self.qdrant_manager.paragraphs,
             qa_score_threshold=qa_score_threshold,
             color=color,
             progress_callback=progress_callback,
