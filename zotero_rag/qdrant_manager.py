@@ -9,6 +9,7 @@ import torch
 import qdrant_client as qc
 from qdrant_client.http import models as qmodels
 from sentence_transformers import SentenceTransformer
+from fastembed import SparseTextEmbedding
 
 from models import Paragraph
 
@@ -35,6 +36,7 @@ class QdrantManager:
         self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
         self.encode_batch_size = encode_batch_size
         self.model = SentenceTransformer(model_name, device=self.device)
+        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
         self.paragraphs: List[Paragraph] = []
         self.client: Optional[qc.QdrantClient] = None
     
@@ -72,6 +74,13 @@ class QdrantManager:
                     distance=qmodels.Distance.COSINE,
                     datatype=qmodels.Datatype.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
                 ),
+                sparse_vectors_config={
+                    "text-sparse": qmodels.SparseVectorParams(
+                        index=qmodels.SparseIndexParams(
+                            on_disk=True,
+                        )
+                    )
+                }
             )
 
             # Create an index on the 'pdf_hash' payload field for efficient lookups
@@ -211,7 +220,9 @@ class QdrantManager:
                 all_texts: List of paragraph texts to encode.
 
             Returns:
-                Numpy array of embeddings.
+                Dict containing:
+                    'dense': np.ndarray of dense embeddings
+                    'sparse': List of dicts {'indices': [...], 'values': [...]}
         """
         if not self.model:
             raise ValueError("Model is not loaded. Cannot encode paragraphs.")
@@ -230,17 +241,27 @@ class QdrantManager:
                             f"Encoding with batch size {effective_batch_size}...")
         
         # Manually batch and encode to show progress
-        embeddings_list = []
+        dense_embeddings_list = []
+        sparse_embeddings_list = []
+
         for i in range(0, len(all_texts), effective_batch_size):
             batch = all_texts[i:i + effective_batch_size]
             try:
+                # 1. GENERAZIONE VETTORI DENSI
                 with torch.no_grad():
-                    batch_embeddings = self.model.encode(
+                    batch_dense = self.model.encode(
                         batch,
                         show_progress_bar=False,
                         batch_size=effective_batch_size,
                         device=self.device
                     )
+                
+                # 2. GENERAZIONE VETTORI SPARSI
+                batch_sparse_gen = self.sparse_model.embed(batch)
+                batch_sparse = [
+                    {"indices": res.indices.tolist(), "values": res.values.tolist()} 
+                    for res in batch_sparse_gen
+                ]
             except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
                 # If we still hit OOM, reduce batch size further
                 error_str = str(e).lower()
@@ -248,31 +269,33 @@ class QdrantManager:
                       ["out of memory", "buffer size", "mps", "cuda", "memory"]):
                     fallback_size = max(1, effective_batch_size // 2)
                     if progress_callback:
-                        progress_callback('encoding', i, len(all_texts), 
-                                        f"Reducing batch size to {fallback_size}...")
+                        progress_callback('encoding', i, len(all_texts), f"OOM: Reducing batch size to {fallback_size}...")
+                
                     with torch.no_grad():
-                        batch_embeddings = self.model.encode(
-                            batch,
-                            show_progress_bar=False,
-                            batch_size=fallback_size,
-                            device=self.device
-                        )
+                        batch_dense = self.model.encode(batch, show_progress_bar=False, batch_size=fallback_size, device=self.device)
+                
+                    batch_sparse_gen = self.sparse_model.embed(batch)
+                    batch_sparse = [{"indices": res.indices.tolist(), "values": res.values.tolist()} for res in batch_sparse_gen]
                 else:
                     raise
-            
-            embeddings_list.append(batch_embeddings)
-            
+
+            dense_embeddings_list.append(batch_dense)
+            sparse_embeddings_list.extend(batch_sparse)
+
             # Update progress after each batch
             processed = min(i + effective_batch_size, len(all_texts))
             if progress_callback:
                 progress_callback('encoding', processed, len(all_texts), 
                                 f"Encoded {processed}/{len(all_texts)} chunks...")
         
-        return np.vstack(embeddings_list)
+        return {
+            "dense": np.vstack(dense_embeddings_list),
+            "sparse": sparse_embeddings_list
+        }
 
     def upsert_paragraphs(self, paragraphs: List[Paragraph], 
                         progress_callback=None) -> int:
-        """Upsert paragraphs into Qdrant collection.
+        """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
 
         Args:
             paragraphs: List of Paragraph objects to upsert.
@@ -290,13 +313,23 @@ class QdrantManager:
         self.paragraphs = paragraphs
         all_texts = [p.text for p in paragraphs]
 
-        embeddings = self.encode_paragraphs(progress_callback, all_texts)
+        hybrid_embeddings = self.encode_paragraphs(progress_callback, all_texts)
+        
+        dense_embeddings = hybrid_embeddings["dense"]
+        sparse_embeddings = hybrid_embeddings["sparse"]
+
         points = []
-        for (para, embedding) in zip(self.paragraphs, embeddings):
+        for i, para in enumerate(self.paragraphs):
             point_id = self.generate_point_id(para.pdf_path, para.para_idx)
+            
+            vector_config = {
+                "": dense_embeddings[i].tolist(),
+                "text-sparse": sparse_embeddings[i]
+            }
+
             point = qmodels.PointStruct(
                 id=point_id,
-                vector=embedding.tolist(),
+                vector=vector_config,
                 payload={
                     'text': para.text,
                     'pdf_path': para.pdf_path,
@@ -360,24 +393,43 @@ class QdrantManager:
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
 
     def search(self, query: str, threshold: float = 0.7) -> List[tuple]:
-        """Search for relevant paragraphs based on a query string.
-        
+        """Search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
+            
         Args:
             query: The search query string.
-            threshold: Distance threshold for filtering results (lower is more similar).
+            limit: Number of results to return.
+
         Returns:
-            List of tuples (Paragraph, distance) for relevant paragraphs.
+            List of tuples (Paragraph, score) for relevant paragraphs.
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
         
-        query_embedding = self.model.encode(query, device=self.device)
-        
+        query_dense_embedding = self.model.encode(query, device=self.device).tolist()
+        query_sparse_gen = self.sparse_model.embed([query])
+        query_sparse_obj = next(query_sparse_gen)
+        query_sparse_dict = {
+            "indices": query_sparse_obj.indices.tolist(),
+            "values": query_sparse_obj.values.tolist()
+        }
+
         search_result = self.client.query_points(
             collection_name=self.qdrant_collection,
-            query=query_embedding.tolist(),
+            prefetch=[
+                qmodels.Prefetch(
+                    query=query_dense_embedding,
+                    using="",
+                    score_threshold=threshold,
+                    limit=20
+                ),
+                qmodels.Prefetch(
+                    query=query_sparse_dict,
+                    using="text-sparse", #TODO: valutare se mettere un threshold anche quí, si potrebbe mettere 0.01 per eliminare 
+                    limit=20             #      i risultati che non matchano nemmeno con BM25... capiamo
+                ),
+            ],
+            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
             limit=20,
-            score_threshold=threshold,
             with_payload=True
         )
         
