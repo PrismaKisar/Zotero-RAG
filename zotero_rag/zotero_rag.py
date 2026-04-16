@@ -14,6 +14,7 @@ from models import Paragraph, Answer
 from zotero_db import ZoteroDatabase
 from folder_source import FolderPDFSource
 from pdf_processor import PDFProcessor
+from embedding_manager import EmbeddingManager
 from qdrant_manager import QdrantManager
 from reranker import Reranker
 from qa_engine import QAEngine
@@ -116,11 +117,16 @@ class ZoteroRAG:
             tei_cache_dir=pdf_cache_dir
         )
         
+        self.embedding_manager = EmbeddingManager(
+            model_name=model_name,
+            device=model_device,
+            encode_batch_size=encode_batch_size,
+        )
+
         self.qdrant_manager = QdrantManager(
             model_name=model_name,
             qdrant_url=qdrant_url,
-            device=model_device,
-            encode_batch_size=encode_batch_size
+            vector_size=self.embedding_manager.vector_size,
         )
         
         self.reranker = Reranker(
@@ -277,9 +283,14 @@ class ZoteroRAG:
                 return 0
             
             # Stage 2: Build index
+            all_texts = [p.text for p in all_paragraphs]
+            hybrid_embeddings = self.embedding_manager.encode_paragraphs(progress_callback, all_texts)
+
             indexed = self.qdrant_manager.upsert_paragraphs(
-                all_paragraphs, 
-                progress_callback=progress_callback
+                all_paragraphs,
+                dense_embeddings=hybrid_embeddings["dense"],
+                sparse_embeddings=hybrid_embeddings["sparse"],
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.error(f"Error during upsert_paragraphs: {str(e)}")
@@ -399,7 +410,12 @@ class ZoteroRAG:
             self.qdrant_manager.initialize_connection()
             
             for i, q_var in enumerate(question_variations):
-                var_candidates = self.qdrant_manager.search(q_var, retrieval_threshold)
+                query_embeddings = self.embedding_manager.encode_query(q_var)
+                var_candidates = self.qdrant_manager.search(
+                    query_embeddings["dense"],
+                    query_embeddings["sparse"],
+                    retrieval_threshold,
+                )
                 logger.debug(f"Variation {i}: '{q_var}' -> {len(var_candidates)} candidates")
                 
                 # Add unseen candidates

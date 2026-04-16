@@ -1,15 +1,11 @@
-"""QdrantManager class for managing Qdrant vector database operations, including collection management, encoding, and upserting paragraphs."""
+"""QdrantManager class for managing Qdrant vector database operations."""
 
 import re
 import uuid
 import logging
 from typing import List, Optional, Dict
-import numpy as np
-import torch
 import qdrant_client as qc
 from qdrant_client.http import models as qmodels
-from sentence_transformers import SentenceTransformer
-from fastembed import SparseTextEmbedding
 
 from models import Paragraph
 
@@ -17,26 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 class QdrantManager:
-    """Manage Qdrant vector database for storing and searching paragraph embeddings."""
+    """Manage Qdrant vector database for storing and searching paragraph vectors."""
     
     def __init__(self, model_name: str = "BAAI/bge-base-en-v1.5", 
                  qdrant_url: str = "http://localhost:6333",
-                 device: str = None,
-                 encode_batch_size: int = 8):
+                 vector_size: int = 768):
         """Initialize the Qdrant manager.
         
         Args:
-            model_name: Name of the sentence transformer model.
-            device: Device to use for encoding ('cpu', 'cuda', 'mps'). Auto-detect if None.
-            encode_batch_size: Batch size for encoding.
+            model_name: Name used to derive a deterministic collection name.
+            vector_size: Dimensionality of the dense vectors stored in Qdrant.
         """
         self.model_name = model_name
         self.qdrant_url = qdrant_url
         self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(model_name)
-        self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
-        self.encode_batch_size = encode_batch_size
-        self.model = SentenceTransformer(model_name, device=self.device)
-        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+        self.vector_size = vector_size
         self.paragraphs: List[Paragraph] = []
         self.client: Optional[qc.QdrantClient] = None
     
@@ -64,13 +55,11 @@ class QdrantManager:
         
         logger.info("Connected to Qdrant client")
         
-        vector_size = self.model.get_sentence_embedding_dimension()
-
         if not self.client.collection_exists(self.qdrant_collection):
             self.client.create_collection(
                 collection_name=self.qdrant_collection,
                 vectors_config=qmodels.VectorParams(
-                    size=vector_size,
+                    size=self.vector_size,
                     distance=qmodels.Distance.COSINE,
                     datatype=qmodels.Datatype.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
                 ),
@@ -101,56 +90,6 @@ class QdrantManager:
             self.client = None
             logger.info("Disconnected from Qdrant client")
 
-    def _find_safe_batch_size(self, sample_texts: List[str], 
-                              start_size: int = 2, 
-                              max_size: int = 128,
-                              target_memory_fraction: float = 0.75) -> int:
-        """Find safe batch size targeting specific memory usage.
-        
-        Args:
-            sample_texts: Sample of texts to test encoding with.
-            start_size: Initial batch size to try.
-            max_size: Maximum batch size to test.
-            target_memory_fraction: Target fraction of memory to use (0.0-1.0).
-            
-        Returns:
-            Safe batch size targeting the memory fraction.
-        """
-        if not sample_texts:
-            return start_size
-        
-        # Sample a small set to test with
-        test_sample = sample_texts[:min(100, len(sample_texts))]
-        
-        current_size = start_size
-        last_safe_size = start_size
-        
-        while current_size <= max_size:
-            try:
-                with torch.no_grad():
-                    _ = self.model.encode(
-                        test_sample,
-                        batch_size=current_size,
-                        device=self.device,
-                        show_progress_bar=False
-                    )
-                last_safe_size = current_size
-                # Scale up more aggressively to find limit
-                current_size = int(current_size * 1.5)
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-                error_str = str(e).lower()
-                if any(phrase in error_str for phrase in 
-                      ["out of memory", "buffer size", "mps", "cuda", "memory"]):
-                    # Hit OOM, scale back to target fraction
-                    return max(start_size, int(last_safe_size * target_memory_fraction))
-                else:
-                    return last_safe_size
-            except Exception:
-                return last_safe_size
-        
-        # Hit max size without OOM, use target fraction of max
-        return max(start_size, int(last_safe_size * target_memory_fraction))
-    
     def is_pdf_indexed(self, pdf_hash: str) -> bool:
         """Check if a pdf with the given pdf file hash is already indexed in Qdrant.
         
@@ -212,93 +151,17 @@ class QdrantManager:
     
         #return indexed_pdfs
     
-    def encode_paragraphs(self, progress_callback, all_texts) -> np.ndarray:
-        """Encode paragraphs into embeddings with dynamic batch size and progress updates.
-        
-            Args:
-                progress_callback: Function(stage, current, total, message) for progress updates.
-                all_texts: List of paragraph texts to encode.
-
-            Returns:
-                Dict containing:
-                    'dense': np.ndarray of dense embeddings
-                    'sparse': List of dicts {'indices': [...], 'values': [...]}
-        """
-        if not self.model:
-            raise ValueError("Model is not loaded. Cannot encode paragraphs.")
-
-        if self.encode_batch_size is None or self.encode_batch_size == 0:
-            # Auto-detect safe batch size
-            if progress_callback:
-                progress_callback('encoding', 0, len(all_texts), "Auto-detecting safe batch size...")
-            effective_batch_size = self._find_safe_batch_size(all_texts, start_size=2, max_size=128)
-            logger.info(f"Auto-detected encoding batch size: {effective_batch_size}")
-        else:
-            effective_batch_size = self.encode_batch_size
-        
-        if progress_callback:
-            progress_callback('encoding', 0, len(all_texts), 
-                            f"Encoding with batch size {effective_batch_size}...")
-        
-        # Manually batch and encode to show progress
-        dense_embeddings_list = []
-        sparse_embeddings_list = []
-
-        for i in range(0, len(all_texts), effective_batch_size):
-            batch = all_texts[i:i + effective_batch_size]
-            try:
-                # 1. GENERAZIONE VETTORI DENSI
-                with torch.no_grad():
-                    batch_dense = self.model.encode(
-                        batch,
-                        show_progress_bar=False,
-                        batch_size=effective_batch_size,
-                        device=self.device
-                    )
-                
-                # 2. GENERAZIONE VETTORI SPARSI
-                batch_sparse_gen = self.sparse_model.embed(batch)
-                batch_sparse = [
-                    {"indices": res.indices.tolist(), "values": res.values.tolist()} 
-                    for res in batch_sparse_gen
-                ]
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-                # If we still hit OOM, reduce batch size further
-                error_str = str(e).lower()
-                if any(phrase in error_str for phrase in 
-                      ["out of memory", "buffer size", "mps", "cuda", "memory"]):
-                    fallback_size = max(1, effective_batch_size // 2)
-                    if progress_callback:
-                        progress_callback('encoding', i, len(all_texts), f"OOM: Reducing batch size to {fallback_size}...")
-                
-                    with torch.no_grad():
-                        batch_dense = self.model.encode(batch, show_progress_bar=False, batch_size=fallback_size, device=self.device)
-                
-                    batch_sparse_gen = self.sparse_model.embed(batch)
-                    batch_sparse = [{"indices": res.indices.tolist(), "values": res.values.tolist()} for res in batch_sparse_gen]
-                else:
-                    raise
-
-            dense_embeddings_list.append(batch_dense)
-            sparse_embeddings_list.extend(batch_sparse)
-
-            # Update progress after each batch
-            processed = min(i + effective_batch_size, len(all_texts))
-            if progress_callback:
-                progress_callback('encoding', processed, len(all_texts), 
-                                f"Encoded {processed}/{len(all_texts)} chunks...")
-        
-        return {
-            "dense": np.vstack(dense_embeddings_list),
-            "sparse": sparse_embeddings_list
-        }
-
-    def upsert_paragraphs(self, paragraphs: List[Paragraph], 
+    def upsert_paragraphs(self,
+                        paragraphs: List[Paragraph],
+                        dense_embeddings: List[List[float]],
+                        sparse_embeddings: List[Dict[str, List[float]]],
                         progress_callback=None) -> int:
         """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
 
         Args:
             paragraphs: List of Paragraph objects to upsert.
+            dense_embeddings: Dense vectors aligned by paragraph index.
+            sparse_embeddings: Sparse vectors aligned by paragraph index.
             progress_callback: Function(stage, current, total, message) for progress updates.
 
         Returns:
@@ -309,21 +172,21 @@ class QdrantManager:
 
         if not paragraphs:
             raise ValueError("No paragraphs provided for indexing.")
+
+        if len(dense_embeddings) != len(paragraphs):
+            raise ValueError("Dense embeddings count does not match paragraphs count.")
+
+        if len(sparse_embeddings) != len(paragraphs):
+            raise ValueError("Sparse embeddings count does not match paragraphs count.")
         
         self.paragraphs = paragraphs
-        all_texts = [p.text for p in paragraphs]
-
-        hybrid_embeddings = self.encode_paragraphs(progress_callback, all_texts)
-        
-        dense_embeddings = hybrid_embeddings["dense"]
-        sparse_embeddings = hybrid_embeddings["sparse"]
 
         points = []
         for i, para in enumerate(self.paragraphs):
             point_id = self.generate_point_id(para.pdf_path, para.para_idx)
             
             vector_config = {
-                "": dense_embeddings[i].tolist(),
+                "": dense_embeddings[i],
                 "text-sparse": sparse_embeddings[i]
             }
 
@@ -392,11 +255,15 @@ class QdrantManager:
         self.client.delete_collection(self.qdrant_collection)
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
 
-    def search(self, query: str, threshold: float = 0.7) -> List[tuple]:
+    def search(self,
+               query_dense_embedding: List[float],
+               query_sparse_embedding: Dict[str, List[float]],
+               threshold: float = 0.7) -> List[tuple]:
         """Search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
             
         Args:
-            query: The search query string.
+            query_dense_embedding: Dense query embedding.
+            query_sparse_embedding: Sparse query embedding with indices/values keys.
             limit: Number of results to return.
 
         Returns:
@@ -404,14 +271,6 @@ class QdrantManager:
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
-        
-        query_dense_embedding = self.model.encode(query, device=self.device).tolist()
-        query_sparse_gen = self.sparse_model.embed([query])
-        query_sparse_obj = next(query_sparse_gen)
-        query_sparse_dict = {
-            "indices": query_sparse_obj.indices.tolist(),
-            "values": query_sparse_obj.values.tolist()
-        }
 
         search_result = self.client.query_points(
             collection_name=self.qdrant_collection,
@@ -423,7 +282,7 @@ class QdrantManager:
                     limit=20
                 ),
                 qmodels.Prefetch(
-                    query=query_sparse_dict,
+                    query=query_sparse_embedding,
                     using="text-sparse", #TODO: valutare se mettere un threshold anche quí, si potrebbe mettere 0.01 per eliminare 
                     limit=20             #      i risultati che non matchano nemmeno con BM25... capiamo
                 ),
