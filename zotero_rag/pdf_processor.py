@@ -81,7 +81,7 @@ class PDFProcessor:
                 h.update(chunk)
         return h.hexdigest()
     
-    def parse_pdf(self, pdf_path: str) -> Optional[ET.Element]:
+    def _parse_pdf(self, pdf_path: str) -> Optional[ET.Element]:
         """Parse a single PDF using GROBID and return TEI XML root.
         
         Args:
@@ -160,9 +160,9 @@ class PDFProcessor:
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
     
-    def extract_paragraphs_from_tei(self, tei_root: ET.Element, 
+    def _extract_paragraphs_from_tei(self, tei_root: ET.Element, 
                                      pdf_path: str, 
-                                     item_title: str) -> List[Tuple[str, int, int, str, List[Tuple[str, str]]]]:
+                                     item_title: str) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
         """Extract paragraphs from TEI XML structure.
         
         Args:
@@ -171,10 +171,11 @@ class PDFProcessor:
             item_title: Title of the document (for metadata).
             
         Returns:
-            List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
-            sentences is a list of (sentence_text, coords) tuples.
+            - List of (paragraph_text, page_number, paragraph_index, section_type, sentences)
+            - document_text: Full cleaned text of the PDF for context.
         """
         paragraphs = []
+        full_text_parts = []
         para_idx = 0
         
         # Define TEI namespace
@@ -184,41 +185,12 @@ class PDFProcessor:
         abstract = tei_root.find('.//tei:abstract', ns)
         if abstract is not None:
             for p_elem in abstract.findall('.//tei:p', ns):
-                sentences_with_coords = []
-                page_num = 0
+                p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
                 
-                # Iterate over <s> (sentences) within this paragraph
-                for s in p_elem.findall('.//tei:s', ns):
-                    # Extract text from sentence
-                    text_parts = []
-                    for elem in s.iter():
-                        if elem.text:
-                            text_parts.append(elem.text)
-                        if elem.tail:
-                            text_parts.append(elem.tail)
-                    
-                    sentence_text = ''.join(text_parts).strip()
-                    coords = s.get('coords', '')
-                    
-                    if sentence_text:
-                        sentences_with_coords.append((sentence_text, coords))
-                    
-                    # Try to extract page number from first sentence's coords
-                    if page_num == 0 and coords:
-                        try:
-                            parts = coords.split(';')
-                            if parts:
-                                page_info = parts[0]
-                                page_num = int(page_info.split(',')[0]) - 1
-                        except:
-                            pass
-                
-                # Join all sentences to form this paragraph
-                if sentences_with_coords:
-                    paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
-                    if len(paragraph_text.split()) >= 10:
-                        paragraphs.append((paragraph_text, page_num, para_idx, 'abstract', sentences_with_coords))
-                        para_idx += 1
+                if p_text and len(p_text.split()) >= 10:
+                    paragraphs.append((p_text, page_num, para_idx, 'abstract', sentences_coords))
+                    full_text_parts.append(p_text)
+                    para_idx += 1
         
         # Extract from body (main content)
         body = tei_root.find('.//tei:body', ns)
@@ -226,63 +198,59 @@ class PDFProcessor:
             for section_div in body.findall('tei:div', ns):
                 # Determine section type from head element
                 head = section_div.find('tei:head', ns)
-                section_type = 'body'
-                if head is not None and head.text:
-                    head_text = head.text.lower()
-                    if 'abstract' in head_text:
-                        section_type = 'abstract'
-                    elif 'introduction' in head_text:
-                        section_type = 'introduction'
-                    elif 'method' in head_text or 'procedure' in head_text:
-                        section_type = 'methods'
-                    elif 'result' in head_text:
-                        section_type = 'results'
-                    elif 'discussion' in head_text:
-                        section_type = 'discussion'
-                    elif 'conclusion' in head_text:
-                        section_type = 'conclusion'
+                head_text = head.text.lower()
+                section_type = self._determine_section_type(head_text)
                 
-                # Iterate over <p> (paragraphs) within this section
                 for p_elem in section_div.findall('.//tei:p', ns):
-                    sentences_with_coords = []
-                    page_num = 0
+                    p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
                     
-                    # Iterate over <s> (sentences) within this paragraph
-                    for s in p_elem.findall('.//tei:s', ns):
-                        text_parts = []
-                        for elem in s.iter():
-                            if elem.text:
-                                text_parts.append(elem.text)
-                            if elem.tail:
-                                text_parts.append(elem.tail)
-                        
-                        sentence_text = ''.join(text_parts).strip()
-                        coords = s.get('coords', '')
-                        
-                        if sentence_text:
-                            sentences_with_coords.append((sentence_text, coords))
-                        
-                        # Try to extract page number from first sentence's coords
-                        if page_num == 0 and coords:
-                            try:
-                                parts = coords.split(';')
-                                if parts:
-                                    page_info = parts[0]
-                                    page_num = int(page_info.split(',')[0]) - 1
-                            except:
-                                pass
-                    
-                    # Join all sentences from this <p> into one paragraph
-                    if sentences_with_coords:
-                        paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
-                        if len(paragraph_text.split()) >= 10:
-                            paragraphs.append((paragraph_text, page_num, para_idx, section_type, sentences_with_coords))
-                            para_idx += 1
+                    if p_text and len(p_text.split()) >= 10:
+                        paragraphs.append((p_text, page_num, para_idx, section_type, sentences_coords))
+                        full_text_parts.append(p_text)
+                        para_idx += 1
         
-        return paragraphs
+        document_text = "\n\n".join(full_text_parts)
+        
+        return paragraphs, document_text
+
+    def _process_paragraph_element(self, p_elem, ns):
+        """Estrae testo e coordinate da un elemento paragrafo <p>."""
+        sentences_with_coords = []
+        page_num = 0
+        
+        for s in p_elem.findall('.//tei:s', ns):
+            text_parts = []
+            for elem in s.iter():
+                if elem.text: text_parts.append(elem.text)
+                if elem.tail: text_parts.append(elem.tail)
+            
+            sentence_text = ''.join(text_parts).strip()
+            coords = s.get('coords', '')
+            
+            if sentence_text:
+                sentences_with_coords.append((sentence_text, coords))
+                if page_num == 0 and coords:
+                    try:
+                        page_num = int(coords.split(',')[0]) - 1
+                    except: pass
+                    
+        paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
+        return paragraph_text, sentences_with_coords, page_num
+
+    def _determine_section_type(self, head_text):
+        """Mappa il titolo della sezione a una categoria."""
+        mapping = {
+            'abstract': 'abstract', 'introduction': 'introduction',
+            'method': 'methods', 'procedure': 'methods',
+            'result': 'results', 'discussion': 'discussion',
+            'conclusion': 'conclusion'
+        }
+        for key, value in mapping.items():
+            if key in head_text: return value
+        return 'body'
     
     def extract_text_chunks(self, pdf_path: str, 
-                           item_title: str) -> List[Tuple[str, int, int, str, List[Tuple[str, str]]]]:
+                           item_title: str) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
         """Extract paragraphs from PDF using GROBID.
         
         Args:
@@ -290,12 +258,13 @@ class PDFProcessor:
             item_title: Title of the document.
             
         Returns:
-            List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
+            - List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
+            - Full document text reconstructed from extracted paragraphs.
         """
-        tei_root = self.parse_pdf(pdf_path)
+        tei_root = self._parse_pdf(pdf_path)
         if tei_root is None:
             logger.warning(f"GROBID parsing failed for {pdf_path}; no paragraphs extracted")
             return []
 
-        paragraphs = self.extract_paragraphs_from_tei(tei_root, pdf_path, item_title)
-        return paragraphs
+        paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root, pdf_path, item_title)
+        return paragraphs, document_text

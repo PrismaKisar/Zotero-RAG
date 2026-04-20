@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from fastembed import SparseTextEmbedding
 from sentence_transformers import SentenceTransformer
+import ollama
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class EmbeddingManager:
         self.encode_batch_size = encode_batch_size
         self.model = SentenceTransformer(model_name, device=self.device)
         self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+        self.context_model_name = "qwen2.5:3b"
 
     @property
     def vector_size(self) -> int:
@@ -73,6 +75,53 @@ class EmbeddingManager:
                 return last_safe_size
 
         return max(start_size, int(last_safe_size * target_memory_fraction))
+
+    def generate_contextual_chunks(self, document_text:str, all_texts:List[str]) -> List[str]:
+        """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
+        
+        Args:
+            document_text: The full text of the document.
+            all_texts: List of text chunks to contextualize.
+            
+        Returns:
+            List of contextualized text chunks, where each chunk is prefixed with a succinct context.
+        """
+        contextualized_results = []
+
+        prompt = (
+            """<document> {document_text} </document> 
+                Here is the chunk we want to situate within the whole document <chunk> {chunk_text} </chunk> 
+                Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. 
+                Answer only with the succinct context and nothing else. """
+        )
+
+        for chunk in all_texts:
+            formatted_prompt = prompt.format(document_text=document_text, chunk_text=chunk)
+            response = ollama.generate(
+                model=self.context_model_name,
+                prompt=formatted_prompt,
+                options={
+                    "temperature": 0.1, 
+                    "num_predict": 100,
+                    "num_ctx": 32768 #FIXME: da capire se serve (in caso i PDF sono tanto tanto lunghi)
+                },
+                keep_alive=-1
+            )
+                
+            context_prefix = response['response'].strip()
+            full_chunk = f"{context_prefix}\n\n{chunk}"
+
+            contextualized_results.append(full_chunk)
+
+        return contextualized_results
+
+    def flush_ollama_cache(self):
+        """Flush Ollama's model cache to free up memory."""
+        try:
+            ollama.generate(model=self.context_model_name, keep_alive=0)
+            logger.info("Successfully flushed Ollama cache for model: %s", self.context_model_name)
+        except Exception as e:
+            logger.warning("Failed to flush Ollama cache: %s", str(e))
 
     def encode_paragraphs(self, progress_callback, all_texts: List[str]) -> Dict:
         """Encode paragraphs into dense+sparse vectors with progress updates."""

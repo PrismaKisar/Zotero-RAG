@@ -239,6 +239,7 @@ class ZoteroRAG:
             
             # Stage 1: Process PDFs and extract paragraphs
             all_paragraphs = []
+            per_pdf_context = {}
             for idx, item in enumerate(items):
                 if progress_callback:
                     progress_callback('pdf', idx, len(items), 
@@ -250,10 +251,16 @@ class ZoteroRAG:
                     logger.info(f"Skipping already indexed PDF: {item['title']}")
                     continue
                 
-                paragraph_tuples = self.pdf_processor.extract_text_chunks(
+                paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(
                     item['path'], 
                     item['title']
                 )
+
+                if item_hash not in per_pdf_context:
+                    per_pdf_context[item_hash] = {
+                        "document_text": document_text,
+                        "paragraph_indices": [],
+                    }
                 
                 for text, page_num, para_idx, section, sentences in paragraph_tuples:
                     # Filter by section type if needed
@@ -274,6 +281,7 @@ class ZoteroRAG:
                         sentences=sentences
                     )
                     all_paragraphs.append(paragraph)
+                    per_pdf_context[item_hash]["paragraph_indices"].append(len(all_paragraphs) - 1)
             
             if not all_paragraphs and len(items) - already_indexed > 0:
                 raise ValueError("No text could be extracted from the PDFs.")
@@ -284,6 +292,39 @@ class ZoteroRAG:
             
             # Stage 2: Build index
             all_texts = [p.text for p in all_paragraphs]
+            try:
+                for pdf_hash, context_info in per_pdf_context.items():
+                    paragraph_indices = context_info.get("paragraph_indices", [])
+                    if not paragraph_indices:
+                        continue
+
+                    document_text = context_info.get("document_text", "")
+                    if not document_text.strip():
+                        logger.warning("Skipping contextualization for pdf_hash=%s due to empty document text", pdf_hash)
+                        continue
+
+                    base_chunks = [all_texts[i] for i in paragraph_indices]
+                    contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
+                        document_text=document_text,
+                        all_texts=base_chunks,
+                    )
+
+                    if len(contextualized_chunks) != len(paragraph_indices):
+                        logger.warning(
+                            "Contextualization size mismatch for pdf_hash=%s (%s vs %s), using original chunks",
+                            pdf_hash,
+                            len(contextualized_chunks),
+                            len(paragraph_indices),
+                        )
+                        continue
+
+                    for offset, para_abs_idx in enumerate(paragraph_indices):
+                        all_texts[para_abs_idx] = contextualized_chunks[offset]
+            except Exception as e:
+                logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
+            finally:
+                self.embedding_manager.flush_ollama_cache()
+
             hybrid_embeddings = self.embedding_manager.encode_paragraphs(progress_callback, all_texts)
 
             indexed = self.qdrant_manager.upsert_paragraphs(
