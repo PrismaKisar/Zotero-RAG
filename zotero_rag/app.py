@@ -74,9 +74,9 @@ def main():
     if 'output_dir' not in st.session_state:
         st.session_state.output_dir = "C:/Progetti Git/Tesi/output" #FIXME: default to current folder for easier setup, change as needed
     output_dir = st.text_input(
-        "Base output directory (indexes, TEI cache, highlights)",
+        "Base output directory (models cache, TEI cache, highlights)",
         value=st.session_state.output_dir,
-        help="Choose where to store indexes, cached TEI files, and highlighted PDFs."
+        help="Choose where to store models cache, cached TEI files, and highlighted PDFs."
     )
     st.session_state.output_dir = output_dir or "./output"
     
@@ -97,8 +97,8 @@ def main():
         st.session_state.collections = []
     if 'collection_name' not in st.session_state:
         st.session_state.collection_name = None
-    if 'model_name' not in st.session_state:
-        st.session_state.model_name = "BAAI/bge-base-en-v1.5"
+    if 'dense_model_name' not in st.session_state:
+        st.session_state.dense_model_name = "BAAI/bge-base-en-v1.5"
     if 'model_loaded' not in st.session_state:
         st.session_state.model_loaded = False
     if 'model_device' not in st.session_state:
@@ -218,22 +218,25 @@ def show_setup_tab():
     st.subheader("3️⃣ Select Embedding Model")
     
     model_input = st.text_input(
-        "HuggingFace Model URL or name",
-        value=st.session_state.model_name,
-        placeholder="e.g., sentence-transformers/all-MiniLM-L6-v2",
-        help="Enter the HuggingFace model identifier (e.g., 'all-MiniLM-L6-v2' or 'BAAI/bge-small-en-v1.5')"
+        "FastEmbed dense model name",
+        value=st.session_state.dense_model_name,
+        placeholder="e.g., BAAI/bge-base-en-v1.5",
+        help="Enter a FastEmbed-supported dense model (for example 'BAAI/bge-base-en-v1.5' or 'sentence-transformers/all-MiniLM-L6-v2')"
     )
 
     col_device, col_encode_batch, col_rerank_batch = st.columns(3)
     
     with col_device:
+        device_options = ["auto", "cpu", "cuda"]
+        current_device = "auto" if st.session_state.model_device is None else st.session_state.model_device
+        if current_device not in device_options:
+            current_device = "auto"
+
         device_choice = st.selectbox(
             "Device",
-            options=["auto", "cpu", "mps", "cuda"],
-            index=["auto", "cpu", "mps", "cuda"].index(
-                "auto" if st.session_state.model_device is None else st.session_state.model_device
-            ),
-            help="Select compute device. 'auto' picks MPS if available, else CPU."
+            options=device_options,
+            index=device_options.index(current_device),
+            help="Select compute device. 'auto' uses CUDA when available, otherwise CPU."
         )
     
     with col_encode_batch:
@@ -277,7 +280,7 @@ def show_setup_tab():
             
             with st.spinner(f"Loading model: {model_input}..."):
                 try:
-                    st.session_state.model_name = model_input
+                    st.session_state.dense_model_name = model_input
                     st.session_state.model_device = None if device_choice == "auto" else device_choice
                     st.session_state.encode_batch_size = encode_batch_size
                     st.session_state.rerank_batch_size = rerank_batch_size
@@ -287,7 +290,7 @@ def show_setup_tab():
                         st.session_state.rag = ZoteroRAG(
                             source_type='folder',
                             folder_path=st.session_state.folder_path,
-                            model_name=model_input,
+                            dense_model_name=model_input,
                             grobid_url=grobid_url,
                             qdrant_url=qdrant_url,
                             output_base_dir=st.session_state.output_dir,
@@ -299,7 +302,7 @@ def show_setup_tab():
                         st.session_state.rag = ZoteroRAG(
                             source_type='zotero',
                             collection_name=st.session_state.collection_name,
-                            model_name=model_input,
+                            dense_model_name=model_input,
                             grobid_url=grobid_url,
                             qdrant_url=qdrant_url,
                             output_base_dir=st.session_state.output_dir,
@@ -326,12 +329,12 @@ def show_setup_tab():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error loading model: {e}")
-                    st.info("Make sure the model name is correct and available on HuggingFace")
+                    st.info("Make sure the model name is correct and supported by FastEmbed")
         else:
             st.error("Please enter a model name")
     
     if st.session_state.model_loaded:
-        st.info(f"✅ Current model: **{st.session_state.model_name}**")
+        st.info(f"✅ Current model: **{st.session_state.dense_model_name}**")
     
     st.markdown("---")
     

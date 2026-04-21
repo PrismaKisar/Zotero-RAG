@@ -4,6 +4,7 @@ import os
 # Suppress noisy progress bars that can trigger BrokenPipe in Streamlit
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
 from typing import List, Dict, Tuple
@@ -59,7 +60,7 @@ class ZoteroRAG:
                  collection_name: str = None,
                  source_type: str = 'zotero',
                  folder_path: str = None,
-                 model_name: str = "BAAI/bge-base-en-v1.5", 
+                 dense_model_name: str = "BAAI/bge-base-en-v1.5", 
                  qa_model: str = "deepset/roberta-base-squad2",
                  reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
                  grobid_url: str = "http://localhost:8070", 
@@ -78,13 +79,13 @@ class ZoteroRAG:
             collection_name: Name of Zotero collection to use. If None, use entire library (for Zotero mode).
             source_type: Type of PDF source - 'zotero' or 'folder'.
             folder_path: Path to folder containing PDFs (for folder mode).
-            model_name: Name of the sentence transformer model for embeddings.
+            dense_model_name: Name of the FastEmbed dense model for embeddings.
             qa_model: Name of the QA model for answer extraction.
             reranker_model: Name of the cross-encoder model for reranking.
             grobid_url: URL of the GROBID service.
             grobid_timeout: Timeout in seconds for GROBID requests.
             qdrant_url: URL of the Qdrant service.
-            model_device: Device to use for models ('cpu', 'cuda', 'mps'). Auto-detect if None.
+            model_device: Device to use for models ('cpu', 'cuda'). Auto-detect if None.
             encode_batch_size: Batch size for encoding. If None, auto-detect (targets 75% memory).
             rerank_batch_size: Batch size for reranking. If None, auto-detect (targets 75% memory).
             tei_cache_dir: Directory to cache TEI XML outputs.
@@ -118,13 +119,13 @@ class ZoteroRAG:
         )
         
         self.embedding_manager = EmbeddingManager(
-            model_name=model_name,
+            dense_model_name=dense_model_name,
             device=model_device,
             encode_batch_size=encode_batch_size,
         )
 
         self.qdrant_manager = QdrantManager(
-            model_name=model_name,
+            dense_model_name=dense_model_name,
             qdrant_url=qdrant_url,
             vector_size=self.embedding_manager.vector_size,
         )

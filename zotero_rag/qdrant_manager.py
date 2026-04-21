@@ -15,18 +15,18 @@ logger = logging.getLogger(__name__)
 class QdrantManager:
     """Manage Qdrant vector database for storing and searching paragraph vectors."""
     
-    def __init__(self, model_name: str = "BAAI/bge-base-en-v1.5", 
+    def __init__(self, dense_model_name: str = "BAAI/bge-base-en-v1.5", 
                  qdrant_url: str = "http://localhost:6333",
                  vector_size: int = 768):
         """Initialize the Qdrant manager.
         
         Args:
-            model_name: Name used to derive a deterministic collection name.
+            dense_model_name: Name used to derive a deterministic collection name.
             vector_size: Dimensionality of the dense vectors stored in Qdrant.
         """
-        self.model_name = model_name
+        self.dense_model_name = dense_model_name
         self.qdrant_url = qdrant_url
-        self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(model_name)
+        self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(dense_model_name)
         self.vector_size = vector_size
         self.paragraphs: List[Paragraph] = []
         self.client: Optional[qc.QdrantClient] = None

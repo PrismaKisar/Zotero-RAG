@@ -4,10 +4,9 @@ import logging
 from typing import Dict, List
 
 import numpy as np
-import torch
-from fastembed import SparseTextEmbedding
-from sentence_transformers import SentenceTransformer
+from fastembed import SparseTextEmbedding, TextEmbedding
 import ollama
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -16,27 +15,54 @@ class EmbeddingManager:
     """Generate dense and sparse embeddings for indexing and retrieval."""
 
     def __init__(self,
-                model_name: str = "BAAI/bge-base-en-v1.5",
+                dense_model_name: str = "BAAI/bge-base-en-v1.5",
                 device: str = None,
                 encode_batch_size: int = 8):
         """Initialize embedding models and runtime options.
 
         Args:
-            model_name: SentenceTransformer model name.
-            device: Device for dense model ('cpu', 'cuda', 'mps'). Auto-detect if None.
+            dense_model_name: FastEmbed dense model name.
+            device: Device for dense model ('cpu', 'cuda'). Auto-detect CUDA if None.
             encode_batch_size: Batch size for paragraph encoding. If None or 0, auto-detect.
         """
-        self.model_name = model_name
-        self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
-        self.encode_batch_size = encode_batch_size
-        self.model = SentenceTransformer(model_name, device=self.device)
-        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+        self.dense_model_name = dense_model_name
+        self.sparse_model_name = "Qdrant/bm25"
         self.context_model_name = "qwen2.5:3b"
+
+        self.device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
+        self.encode_batch_size = encode_batch_size
+
+        use_cuda = self.device == "cuda"
+        self.dense_model = TextEmbedding(model_name=self.dense_model_name, cuda=use_cuda)
+        self.sparse_model = SparseTextEmbedding(model_name=self.sparse_model_name, cuda=use_cuda)
+        self._vector_size = self._resolve_vector_size()
 
     @property
     def vector_size(self) -> int:
         """Return the dense embedding dimensionality."""
-        return self.model.get_sentence_embedding_dimension()
+        return self._vector_size
+
+    def _resolve_vector_size(self) -> int:
+        """Resolve dense vector size from supported-model metadata, then fallback to probing."""
+        try:
+            for metadata in TextEmbedding.list_supported_models():
+                metadata_name = (
+                    metadata.get("model")
+                    or metadata.get("model_name")
+                    or metadata.get("name")
+                )
+                if metadata_name == self.dense_model_name:
+                    dimension = metadata.get("dim") or metadata.get("dimensions") or metadata.get("size")
+                    if isinstance(dimension, (int, float)):
+                        return int(dimension)
+        except Exception as exc:
+            logger.debug("Unable to read FastEmbed model metadata for '%s': %s", self.dense_model_name, exc)
+
+        sample_vector = next(iter(self.dense_model.embed(["dimension probe"])), None)
+        if sample_vector is None:
+            raise ValueError(f"Unable to determine vector size for model '{self.dense_model_name}'")
+
+        return int(len(sample_vector))
 
     def _find_safe_batch_size(self,
                             sample_texts: List[str],
@@ -54,20 +80,15 @@ class EmbeddingManager:
 
         while current_size <= max_size:
             try:
-                with torch.no_grad():
-                    _ = self.model.encode(
-                        test_sample,
-                        batch_size=current_size,
-                        device=self.device,
-                        show_progress_bar=False,
-                    )
+                test_batch = test_sample[: min(current_size, len(test_sample))]
+                _ = np.asarray(list(self.dense_model.embed(test_batch)), dtype=np.float32)
                 last_safe_size = current_size
                 current_size = int(current_size * 1.5)
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
+            except (RuntimeError, MemoryError) as exc:
                 error_str = str(exc).lower()
                 if any(
                     phrase in error_str
-                    for phrase in ["out of memory", "buffer size", "mps", "cuda", "memory"]
+                    for phrase in ["out of memory", "buffer size", "cuda", "memory", "onnxruntime"]
                 ):
                     return max(start_size, int(last_safe_size * target_memory_fraction))
                 return last_safe_size
@@ -150,24 +171,20 @@ class EmbeddingManager:
         for i in range(0, len(all_texts), effective_batch_size):
             batch = all_texts[i : i + effective_batch_size]
             try:
-                with torch.no_grad():
-                    batch_dense = self.model.encode(
-                        batch,
-                        show_progress_bar=False,
-                        batch_size=effective_batch_size,
-                        device=self.device,
-                    )
+                batch_dense = np.asarray(list(self.dense_model.embed(batch)), dtype=np.float32)
+                if batch_dense.ndim == 1:
+                    batch_dense = np.expand_dims(batch_dense, axis=0)
 
                 batch_sparse_gen = self.sparse_model.embed(batch)
                 batch_sparse = [
                     {"indices": res.indices.tolist(), "values": res.values.tolist()}
                     for res in batch_sparse_gen
                 ]
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
+            except (RuntimeError, MemoryError) as exc:
                 error_str = str(exc).lower()
                 if any(
                     phrase in error_str
-                    for phrase in ["out of memory", "buffer size", "mps", "cuda", "memory"]
+                    for phrase in ["out of memory", "buffer size", "cuda", "memory", "onnxruntime"]
                 ):
                     fallback_size = max(1, effective_batch_size // 2)
                     if progress_callback:
@@ -178,26 +195,30 @@ class EmbeddingManager:
                             f"OOM: Reducing batch size to {fallback_size}...",
                         )
 
-                    with torch.no_grad():
-                        batch_dense = self.model.encode(
-                            batch,
-                            show_progress_bar=False,
-                            batch_size=fallback_size,
-                            device=self.device,
+                    dense_chunks = []
+                    batch_sparse = []
+                    for j in range(0, len(batch), fallback_size):
+                        fallback_batch = batch[j : j + fallback_size]
+
+                        sub_dense = np.asarray(list(self.dense_model.embed(fallback_batch)), dtype=np.float32)
+                        if sub_dense.ndim == 1:
+                            sub_dense = np.expand_dims(sub_dense, axis=0)
+                        dense_chunks.append(sub_dense)
+
+                        sub_sparse_gen = self.sparse_model.embed(fallback_batch)
+                        batch_sparse.extend(
+                            {"indices": res.indices.tolist(), "values": res.values.tolist()}
+                            for res in sub_sparse_gen
                         )
 
-                    batch_sparse_gen = self.sparse_model.embed(batch)
-                    batch_sparse = [
-                        {"indices": res.indices.tolist(), "values": res.values.tolist()}
-                        for res in batch_sparse_gen
-                    ]
+                    batch_dense = np.vstack(dense_chunks)
                 else:
                     raise
 
             dense_embeddings_list.append(batch_dense)
             sparse_embeddings_list.extend(batch_sparse)
 
-            processed = min(i + effective_batch_size, len(all_texts))
+            processed = min(i + len(batch), len(all_texts))
             if progress_callback:
                 progress_callback(
                     "encoding",
@@ -213,10 +234,9 @@ class EmbeddingManager:
 
     def encode_query(self, query: str) -> Dict[str, List[float]]:
         """Encode a single query into dense+sparse vectors."""
-        query_dense_embedding = self.model.encode(query, device=self.device).tolist()
+        query_dense_embedding = next(iter(self.dense_model.embed([query]))).tolist()
 
-        query_sparse_gen = self.sparse_model.embed([query])
-        query_sparse_obj = next(query_sparse_gen)
+        query_sparse_obj = next(iter(self.sparse_model.embed([query])))
         query_sparse_embedding = {
             "indices": query_sparse_obj.indices.tolist(),
             "values": query_sparse_obj.values.tolist(),

@@ -103,7 +103,7 @@ def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
         rag = ZoteroRAG(
             source_type='folder',
             folder_path=config['folder_path'],
-            model_name=config['model_name'],
+            dense_model_name=config['model_name'],
             qa_model=config['qa_model'],
             reranker_model=config['reranker_model'],
             grobid_url=config['grobid_url'],
@@ -119,7 +119,7 @@ def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
             source_type='zotero',
             zotero_data_dir=config.get('zotero_data_dir'),
             collection_name=config.get('collection_name'),
-            model_name=config['model_name'],
+            dense_model_name=config['model_name'],
             qa_model=config['qa_model'],
             reranker_model=config['reranker_model'],
             grobid_url=config['grobid_url'],
