@@ -66,10 +66,12 @@ class ZoteroRAG:
                  grobid_url: str = "http://localhost:8070", 
                  grobid_timeout: int = 180,
                  qdrant_url: str = "http://localhost:6333",
+                 ollama_url: str = "http://localhost:11434",
                  model_device: str = None, 
                  encode_batch_size: int = None,
                  qa_batch_size: int = None,
                  rerank_batch_size: int = None,
+                 use_chunk_contextualization: bool = True,
                  tei_cache_dir: str = None,
                  output_base_dir: str = "output"):
         """Initialize the RAG system.
@@ -85,12 +87,15 @@ class ZoteroRAG:
             grobid_url: URL of the GROBID service.
             grobid_timeout: Timeout in seconds for GROBID requests.
             qdrant_url: URL of the Qdrant service.
+            ollama_url: URL of the Ollama service.
             model_device: Device to use for models ('cpu', 'cuda'). Auto-detect if None.
             encode_batch_size: Batch size for encoding. If None, auto-detect (targets 75% memory).
             rerank_batch_size: Batch size for reranking. If None, auto-detect (targets 75% memory).
+            use_chunk_contextualization: Whether to contextualize chunks with Ollama before embedding.
             tei_cache_dir: Directory to cache TEI XML outputs.
             output_base_dir: Base directory for storing outputs.
         """
+        self.use_chunk_contextualization = bool(use_chunk_contextualization)
         self.source_type = source_type
         self.collection_name = collection_name
         self.folder_path = folder_path
@@ -120,6 +125,7 @@ class ZoteroRAG:
         
         self.embedding_manager = EmbeddingManager(
             dense_model_name=dense_model_name,
+            ollama_url=ollama_url,
             device=model_device,
             encode_batch_size=encode_batch_size,
         )
@@ -293,38 +299,41 @@ class ZoteroRAG:
             
             # Stage 2: Build index
             all_texts = [p.text for p in all_paragraphs]
-            try:
-                for pdf_hash, context_info in per_pdf_context.items():
-                    paragraph_indices = context_info.get("paragraph_indices", [])
-                    if not paragraph_indices:
-                        continue
+            if self.use_chunk_contextualization:
+                try:
+                    for pdf_hash, context_info in per_pdf_context.items():
+                        paragraph_indices = context_info.get("paragraph_indices", [])
+                        if not paragraph_indices:
+                            continue
 
-                    document_text = context_info.get("document_text", "")
-                    if not document_text.strip():
-                        logger.warning("Skipping contextualization for pdf_hash=%s due to empty document text", pdf_hash)
-                        continue
+                        document_text = context_info.get("document_text", "")
+                        if not document_text.strip():
+                            logger.warning("Skipping contextualization for pdf_hash=%s due to empty document text", pdf_hash)
+                            continue
 
-                    base_chunks = [all_texts[i] for i in paragraph_indices]
-                    contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
-                        document_text=document_text,
-                        all_texts=base_chunks,
-                    )
-
-                    if len(contextualized_chunks) != len(paragraph_indices):
-                        logger.warning(
-                            "Contextualization size mismatch for pdf_hash=%s (%s vs %s), using original chunks",
-                            pdf_hash,
-                            len(contextualized_chunks),
-                            len(paragraph_indices),
+                        base_chunks = [all_texts[i] for i in paragraph_indices]
+                        contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
+                            document_text=document_text,
+                            all_texts=base_chunks,
                         )
-                        continue
 
-                    for offset, para_abs_idx in enumerate(paragraph_indices):
-                        all_texts[para_abs_idx] = contextualized_chunks[offset]
-            except Exception as e:
-                logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
-            finally:
-                self.embedding_manager.flush_ollama_cache()
+                        if len(contextualized_chunks) != len(paragraph_indices):
+                            logger.warning(
+                                "Contextualization size mismatch for pdf_hash=%s (%s vs %s), using original chunks",
+                                pdf_hash,
+                                len(contextualized_chunks),
+                                len(paragraph_indices),
+                            )
+                            continue
+
+                        for offset, para_abs_idx in enumerate(paragraph_indices):
+                            all_texts[para_abs_idx] = contextualized_chunks[offset]
+                except Exception as e:
+                    logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
+                finally:
+                    self.embedding_manager.flush_ollama_cache()
+            else:
+                logger.info("Chunk contextualization disabled: using original chunks for embedding.")
 
             hybrid_embeddings = self.embedding_manager.encode_paragraphs(progress_callback, all_texts)
 

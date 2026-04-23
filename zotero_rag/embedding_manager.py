@@ -16,6 +16,7 @@ class EmbeddingManager:
 
     def __init__(self,
                 dense_model_name: str = "BAAI/bge-base-en-v1.5",
+                ollama_url: str = "http://localhost:11434",
                 device: str = None,
                 encode_batch_size: int = 8):
         """Initialize embedding models and runtime options.
@@ -27,6 +28,7 @@ class EmbeddingManager:
         """
         self.dense_model_name = dense_model_name
         self.sparse_model_name = "Qdrant/bm25"
+        self.ollama_url = ollama_url
         self.context_model_name = "qwen2.5:3b"
 
         self.device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
@@ -115,6 +117,8 @@ class EmbeddingManager:
                 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. 
                 Answer only with the succinct context and nothing else. """
         )
+
+        client = ollama.OllamaClient(base_url=self.ollama_url)
 
         for chunk in all_texts:
             formatted_prompt = prompt.format(document_text=document_text, chunk_text=chunk)

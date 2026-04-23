@@ -9,6 +9,7 @@ import sys
 from typing import List, Dict, Tuple
 import subprocess
 import sqlite3
+import shutil
 import streamlit as st
 from zotero_rag import ZoteroRAG
 import re
@@ -31,33 +32,33 @@ def rgb_to_hex(rgb):
     r, g, b = [int(x * 255) for x in rgb]
     return f'#{r:02x}{g:02x}{b:02x}'
 
-def load_zotero_collections():
-    try:
-        with st.spinner("Loading Zotero collections..."):
-            st.session_state.collections = ZoteroRAG.list_collections()
-            st.session_state.collections_loaded = True
-    except sqlite3.OperationalError as e:
-        if "locked" in str(e):
-            st.error("⚠️ Zotero database is locked")
-            st.warning("""
-                **The database is currently locked by Zotero.**
-                You have two options:
-                1. **Close Zotero** (Recommended)
-                   - Close the Zotero application completely
-                   - Then refresh this page
-                2. **Keep Zotero open** (Advanced)
-                   - The app will try to read the database in read-only mode
-                   - Click the button below to retry
-                """)
+# def load_zotero_collections():
+#     try:
+#         with st.spinner("Loading Zotero collections..."):
+#             st.session_state.collections = ZoteroRAG.list_collections()
+#             st.session_state.collections_loaded = True
+#     except sqlite3.OperationalError as e:
+#         if "locked" in str(e):
+#             st.error("⚠️ Zotero database is locked")
+#             st.warning("""
+#                 **The database is currently locked by Zotero.**
+#                 You have two options:
+#                 1. **Close Zotero** (Recommended)
+#                    - Close the Zotero application completely
+#                    - Then refresh this page
+#                 2. **Keep Zotero open** (Advanced)
+#                    - The app will try to read the database in read-only mode
+#                    - Click the button below to retry
+#                 """)
                 
-            if st.button("🔄 Retry Connection"):
-                st.rerun()
-        else:
-            st.error(f"Database error: {e}")
-        st.stop()
-    except Exception as e:
-        st.error(f"Error loading Zotero: {e}")
-        st.info("Make sure Zotero is installed and the database is accessible")
+#             if st.button("🔄 Retry Connection"):
+#                 st.rerun()
+#         else:
+#             st.error(f"Database error: {e}")
+#         st.stop()
+#     except Exception as e:
+#         st.error(f"Error loading Zotero: {e}")
+#         st.info("Make sure Zotero is installed and the database is accessible")
 
 def main():
     st.set_page_config(
@@ -74,9 +75,9 @@ def main():
     if 'output_dir' not in st.session_state:
         st.session_state.output_dir = "C:/Progetti Git/Tesi/output" #FIXME: default to current folder for easier setup, change as needed
     output_dir = st.text_input(
-        "Base output directory (models cache, TEI cache, highlights)",
+        "Base output directory (TEI cache, highlights)",
         value=st.session_state.output_dir,
-        help="Choose where to store models cache, cached TEI files, and highlighted PDFs."
+        help="Choose where to store cached TEI files, and highlighted PDFs."
     )
     st.session_state.output_dir = output_dir or "./output"
     
@@ -109,8 +110,8 @@ def main():
         st.session_state.folder_path = "C:/Progetti Git/Tesi/articles/"
     
     # Load collections on first run (only if using Zotero)
-    if not st.session_state.collections_loaded and st.session_state.source_type == 'zotero':
-        load_zotero_collections()
+    # if not st.session_state.collections_loaded and st.session_state.source_type == 'zotero':
+    #     load_zotero_collections()
     
     # Main tabs - only show after model is loaded and indexed
     if st.session_state.model_loaded and st.session_state.indexed:
@@ -131,153 +132,198 @@ def show_setup_tab():
     st.header("⚙️ Setup Configuration")
     
     # Source Selection
-    st.subheader("1️⃣ Select PDF Source")
+    # st.subheader("1️⃣ Select PDF Source")
     
-    source_type = st.radio(
-        "Choose your PDF source:",
-        options=['zotero', 'folder'],
-        format_func=lambda x: "📚 Zotero Collection" if x == 'zotero' else "📁 Folder of PDFs",
-        horizontal=True,
-        key="source_type_selector"
-    )
+    # source_type = st.radio(
+    #     "Choose your PDF source:",
+    #     options=['zotero', 'folder'],
+    #     format_func=lambda x: "📚 Zotero Collection" if x == 'zotero' else "📁 Folder of PDFs",
+    #     horizontal=True,
+    #     key="source_type_selector"
+    # )
     
-    # Update session state
-    if source_type != st.session_state.source_type:
-        st.session_state.source_type = source_type
-        st.session_state.model_loaded = False
-        st.session_state.indexed = False
-        # Load collections if switching to Zotero
-        if source_type == 'zotero' and not st.session_state.collections_loaded:
-            load_zotero_collections()
+    # # Update session state
+    # if source_type != st.session_state.source_type:
+    #     st.session_state.source_type = source_type
+    #     st.session_state.model_loaded = False
+    #     st.session_state.indexed = False
+    #     # Load collections if switching to Zotero
+    #     if source_type == 'zotero' and not st.session_state.collections_loaded:
+    #         load_zotero_collections()
     
-    # Show appropriate source selection UI
-    if st.session_state.source_type == 'zotero':
-        # Collection Selection - only show if collections are loaded
-        if st.session_state.collections_loaded and st.session_state.collections:
-            collection_options = ["All Library"]
-            for coll in st.session_state.collections:
-                name = coll['name']
-                if coll['parent_id']:
-                    parent_name = next((c['name'] for c in st.session_state.collections 
-                                      if c['id'] == coll['parent_id']), "Unknown")
-                    name = f"{parent_name} > {name}"
-                collection_options.append(name)
+    # # Show appropriate source selection UI
+    # if st.session_state.source_type == 'zotero':
+    #     # Collection Selection - only show if collections are loaded
+    #     if st.session_state.collections_loaded and st.session_state.collections:
+    #         collection_options = ["All Library"]
+    #         for coll in st.session_state.collections:
+    #             name = coll['name']
+    #             if coll['parent_id']:
+    #                 parent_name = next((c['name'] for c in st.session_state.collections 
+    #                                   if c['id'] == coll['parent_id']), "Unknown")
+    #                 name = f"{parent_name} > {name}"
+    #             collection_options.append(name)
             
-            selected_collection = st.selectbox(
-                "Choose which Zotero collection to search",
-                collection_options,
-                key="collection_selector"
-            )
+    #         selected_collection = st.selectbox(
+    #             "Choose which Zotero collection to search",
+    #             collection_options,
+    #             key="collection_selector"
+    #         )
             
-            st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
-        else:
-            st.warning("⚠️ No collections loaded. Make sure Zotero is installed and accessible.")
-            st.session_state.collection_name = None
-    else:
-        # Folder path selection
-        folder_path = st.text_input(
-            "Enter folder path containing PDFs:",
-            value=st.session_state.folder_path,
-            placeholder="/path/to/pdf/folder",
-            help="Enter the full path to a folder containing PDF files (will search recursively)"
-        )
-        st.session_state.folder_path = folder_path
-        st.session_state.collection_name = None  # Not used for folder mode
+    #         st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
+    #     else:
+    #         st.warning("⚠️ No collections loaded. Make sure Zotero is installed and accessible.")
+    #         st.session_state.collection_name = None
+    # else:
+    #     # Folder path selection
+    #     folder_path = st.text_input(
+    #         "Enter folder path containing PDFs:",
+    #         value=st.session_state.folder_path,
+    #         placeholder="/path/to/pdf/folder",
+    #         help="Enter the full path to a folder containing PDF files (will search recursively)"
+    #     )
+    #     st.session_state.folder_path = folder_path
+    #     st.session_state.collection_name = None  # Not used for folder mode
     
-    st.markdown("---")
+    # st.markdown("---")
     
     # Services configuration
-    st.subheader("2️⃣ Service Endpoints")
-    st.caption("Configure the local services used for PDF parsing and vector search.")
+    st.subheader("1️⃣ Service Endpoints")
+    st.text("Configure the local services used for PDF parsing and vector search.")
 
-    col_grobid, col_qdrant = st.columns(2, gap="large")
 
-    with col_grobid:
-        st.markdown("**🔧 GROBID**")
-        st.caption("Advanced PDF parsing with sentence-level extraction.")
+    col_required_services, col_optional_services = st.columns(2, gap="large")
+
+    with col_required_services:
+        st.markdown("##### 🔧 Required Services")
+
         grobid_url = st.text_input(
-            "GROBID Service URL",
+            "📝 GROBID Service URL",
             value="http://localhost:8070",
             key="grobid_url_input",
-            help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid:latest"
+            help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid"
         )
 
-    with col_qdrant:
-        st.markdown("**🧠 Qdrant**")
-        st.caption("Vector database used to store and search embeddings.")
         qdrant_url = st.text_input(
-            "Qdrant Service URL",
+            "🧠 Qdrant Service URL",
             value="http://localhost:6333",
             key="qdrant_url_input",
             help="URL of Qdrant service. Start with: docker run -p 6333:6333 qdrant/qdrant"
+        )
+
+    with col_optional_services:
+        st.markdown("##### 💬 Optional Contextualization")
+        use_chunk_contextualization = st.checkbox(
+            "Enable chunk contextualization before upsert",
+            value=st.session_state.get("use_chunk_contextualization", True),
+            key="use_chunk_contextualization_chk",
+            help="When enabled, each chunk is enriched with document-level context before vectorization."
+        )
+
+        st.session_state.use_chunk_contextualization = use_chunk_contextualization
+
+        st.info(
+            "Chunk contextualization can improve retrieval precision by enriching each chunk with global document context. "
+            "However, it may significantly increase indexing time and computational cost, especially for long PDFs."
+        )
+
+        ollama_url = st.text_input(
+            "Ollama Service URL",
+            value="http://localhost:11434",
+            key="ollama_url_input",
+            disabled=not use_chunk_contextualization,
+            help="URL of Ollama service. Start with: docker run -d -v ollama:/root/.ollama -p 11434:11434 ollama/ollama"
         )
     
     st.markdown("---")
     
     # Model Selection
-    st.subheader("3️⃣ Select Embedding Model")
-    
-    model_input = st.text_input(
-        "FastEmbed dense model name",
-        value=st.session_state.dense_model_name,
-        placeholder="e.g., BAAI/bge-base-en-v1.5",
-        help="Enter a FastEmbed-supported dense model (for example 'BAAI/bge-base-en-v1.5' or 'sentence-transformers/all-MiniLM-L6-v2')"
+    st.subheader("2️⃣ Select Embedding Model")
+
+    st.markdown(
+        """
+        <style>
+        .st-key-load_model_btn button {
+            min-height: 108px;
+            font-size: 1.05rem;
+            font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
     )
 
-    col_device, col_encode_batch, col_rerank_batch = st.columns(3)
-    
-    with col_device:
-        device_options = ["auto", "cpu", "cuda"]
-        current_device = "auto" if st.session_state.model_device is None else st.session_state.model_device
-        if current_device not in device_options:
-            current_device = "auto"
+    model_col_left, model_col_right = st.columns([4, 1], gap="large")
 
-        device_choice = st.selectbox(
-            "Device",
-            options=device_options,
-            index=device_options.index(current_device),
-            help="Select compute device. 'auto' uses CUDA when available, otherwise CPU."
+    with model_col_left:
+        model_input = st.text_input(
+            "FastEmbed dense model name",
+            value=st.session_state.dense_model_name,
+            placeholder="e.g., BAAI/bge-base-en-v1.5",
+            help="Enter a FastEmbed-supported dense model (for example 'BAAI/bge-base-en-v1.5' or 'sentence-transformers/all-MiniLM-L6-v2')"
         )
-    
-    with col_encode_batch:
-        encode_batch_auto = st.checkbox(
-            "Auto-detect encoding batch",
-            value=st.session_state.get('encode_batch_auto', True),
-            help="Auto-detect safe batch size (targets 75% memory usage)"
-        )
-        if not encode_batch_auto:
-            encode_batch_size = st.number_input(
-                "Encoding batch size",
-                min_value=1, max_value=256, value=st.session_state.get('encode_batch_size', 8),
-                help="Manual batch size for encoding"
+
+        col_device, col_encode_batch, col_rerank_batch = st.columns(3)
+
+        with col_device:
+            device_options = ["auto", "cpu", "cuda"]
+            current_device = "auto" if st.session_state.model_device is None else st.session_state.model_device
+            if current_device not in device_options:
+                current_device = "auto"
+
+            device_choice = st.selectbox(
+                "Device",
+                options=device_options,
+                index=device_options.index(current_device),
+                help="Select compute device. 'auto' uses CUDA when available, otherwise CPU."
             )
-        else:
-            encode_batch_size = None
-            st.session_state.encode_batch_auto = True
-    
-    with col_rerank_batch:
-        rerank_batch_auto = st.checkbox(
-            "Auto-detect rerank batch",
-            value=st.session_state.get('rerank_batch_auto', True),
-            help="Auto-detect safe batch size (targets 75% memory usage)"
-        )
-        if not rerank_batch_auto:
-            rerank_batch_size = st.number_input(
-                "Reranking batch size",
-                min_value=1, max_value=256, value=st.session_state.get('rerank_batch_size', 8),
-                help="Manual batch size for reranking"
+
+        with col_encode_batch:
+            encode_batch_auto = st.checkbox(
+                "Auto-detect encoding batch",
+                value=st.session_state.get('encode_batch_auto', True),
+                help="Auto-detect safe batch size (targets 75% memory usage)",
+                key="encode_batch_auto_chk"
             )
-        else:
-            rerank_batch_size = None
-            st.session_state.rerank_batch_auto = True
-    
-    if st.button("📥 Load Model", type="primary", use_container_width=True):
+            if not encode_batch_auto:
+                encode_batch_size = st.number_input(
+                    "Encoding batch size",
+                    min_value=1, max_value=256, value=st.session_state.get('encode_batch_size', 8),
+                    help="Manual batch size for encoding"
+                )
+            else:
+                encode_batch_size = None
+                st.session_state.encode_batch_auto = True
+
+        with col_rerank_batch:
+            rerank_batch_auto = st.checkbox(
+                "Auto-detect rerank batch",
+                value=st.session_state.get('rerank_batch_auto', True),
+                help="Auto-detect safe batch size (targets 75% memory usage)",
+                key="rerank_batch_auto_chk"
+            )
+            if not rerank_batch_auto:
+                rerank_batch_size = st.number_input(
+                    "Reranking batch size",
+                    min_value=1, max_value=256, value=st.session_state.get('rerank_batch_size', 8),
+                    help="Manual batch size for reranking"
+                )
+            else:
+                rerank_batch_size = None
+                st.session_state.rerank_batch_auto = True
+
+    with model_col_right:
+        st.write("")
+        st.write("")
+        load_model_clicked = st.button(
+            "📥 Load Model",
+            type="primary",
+            use_container_width=True,
+            key="load_model_btn"
+        )
+
+    if load_model_clicked:
         if model_input:
-            # Validate source configuration
-            if st.session_state.source_type == 'folder' and not st.session_state.folder_path:
-                st.error("Please enter a folder path")
-                return
-            
             with st.spinner(f"Loading model: {model_input}..."):
                 try:
                     st.session_state.dense_model_name = model_input
@@ -285,31 +331,47 @@ def show_setup_tab():
                     st.session_state.encode_batch_size = encode_batch_size
                     st.session_state.rerank_batch_size = rerank_batch_size
 
-                    # Initialize RAG with appropriate source
-                    if st.session_state.source_type == 'folder':
-                        st.session_state.rag = ZoteroRAG(
-                            source_type='folder',
-                            folder_path=st.session_state.folder_path,
-                            dense_model_name=model_input,
-                            grobid_url=grobid_url,
-                            qdrant_url=qdrant_url,
-                            output_base_dir=st.session_state.output_dir,
-                            model_device=st.session_state.model_device,
-                            encode_batch_size=encode_batch_size,
-                            rerank_batch_size=rerank_batch_size
-                        )
-                    else:
-                        st.session_state.rag = ZoteroRAG(
-                            source_type='zotero',
-                            collection_name=st.session_state.collection_name,
-                            dense_model_name=model_input,
-                            grobid_url=grobid_url,
-                            qdrant_url=qdrant_url,
-                            output_base_dir=st.session_state.output_dir,
-                            model_device=st.session_state.model_device,
-                            encode_batch_size=encode_batch_size,
-                            rerank_batch_size=rerank_batch_size
-                        )
+                    st.session_state.rag = ZoteroRAG(
+                        source_type='folder',
+                        folder_path=st.session_state.folder_path,
+                        dense_model_name=model_input,
+                        grobid_url=grobid_url,
+                        qdrant_url=qdrant_url,
+                        ollama_url=ollama_url,
+                        output_base_dir=st.session_state.output_dir,
+                        model_device=st.session_state.model_device,
+                        encode_batch_size=encode_batch_size,
+                        rerank_batch_size=rerank_batch_size,
+                        use_chunk_contextualization=st.session_state.use_chunk_contextualization
+                    )
+                    
+                    # # Initialize RAG with appropriate source
+                    # if st.session_state.source_type == 'folder':
+                    #     st.session_state.rag = ZoteroRAG(
+                    #         source_type='folder',
+                    #         folder_path=st.session_state.folder_path,
+                    #         dense_model_name=model_input,
+                    #         grobid_url=grobid_url,
+                    #         qdrant_url=qdrant_url,
+                    #         ollama_url=ollama_url,
+                    #         output_base_dir=st.session_state.output_dir,
+                    #         model_device=st.session_state.model_device,
+                    #         encode_batch_size=encode_batch_size,
+                    #         rerank_batch_size=rerank_batch_size
+                    #     )
+                    # else:
+                    #     st.session_state.rag = ZoteroRAG(
+                    #         source_type='zotero',
+                    #         collection_name=st.session_state.collection_name,
+                    #         dense_model_name=model_input,
+                    #         grobid_url=grobid_url,
+                    #         qdrant_url=qdrant_url,
+                    #         ollama_url=ollama_url,
+                    #         output_base_dir=st.session_state.output_dir,
+                    #         model_device=st.session_state.model_device,
+                    #         encode_batch_size=encode_batch_size,
+                    #         rerank_batch_size=rerank_batch_size
+                    #     )
                     
                     st.session_state.model_loaded = True
                     st.session_state.indexed = False  # Reset indexed status
