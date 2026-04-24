@@ -7,13 +7,14 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 import warnings
 import nltk
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 from models import Paragraph, Answer
 from zotero_db import ZoteroDatabase
-from folder_source import FolderPDFSource
+from pdf_cache_handler import PDFCacheHandler
 from pdf_processor import PDFProcessor
 from embedding_manager import EmbeddingManager
 from qdrant_manager import QdrantManager
@@ -56,10 +57,6 @@ class ZoteroRAG:
     """Main orchestration class for the Zotero RAG pipeline."""
     
     def __init__(self, 
-                 zotero_data_dir: str = None, 
-                 collection_name: str = None,
-                 source_type: str = 'zotero',
-                 folder_path: str = None,
                  dense_model_name: str = "BAAI/bge-base-en-v1.5", 
                  qa_model: str = "deepset/roberta-base-squad2",
                  reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -72,15 +69,10 @@ class ZoteroRAG:
                  qa_batch_size: int = None,
                  rerank_batch_size: int = None,
                  use_chunk_contextualization: bool = True,
-                 tei_cache_dir: str = None,
                  output_base_dir: str = "output"):
         """Initialize the RAG system.
         
         Args:
-            zotero_data_dir: Path to Zotero data directory. Auto-detect if None (for Zotero mode).
-            collection_name: Name of Zotero collection to use. If None, use entire library (for Zotero mode).
-            source_type: Type of PDF source - 'zotero' or 'folder'.
-            folder_path: Path to folder containing PDFs (for folder mode).
             dense_model_name: Name of the FastEmbed dense model for embeddings.
             qa_model: Name of the QA model for answer extraction.
             reranker_model: Name of the cross-encoder model for reranking.
@@ -92,35 +84,20 @@ class ZoteroRAG:
             encode_batch_size: Batch size for encoding. If None, auto-detect (targets 75% memory).
             rerank_batch_size: Batch size for reranking. If None, auto-detect (targets 75% memory).
             use_chunk_contextualization: Whether to contextualize chunks with Ollama before embedding.
-            tei_cache_dir: Directory to cache TEI XML outputs.
             output_base_dir: Base directory for storing outputs.
         """
-        self.use_chunk_contextualization = bool(use_chunk_contextualization)
-        self.source_type = source_type
-        self.collection_name = collection_name
-        self.folder_path = folder_path
+        self.use_chunk_contextualization = use_chunk_contextualization
         self.output_base_dir = output_base_dir
+        self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
         
-        # Initialize the appropriate source
-        if source_type == 'folder':
-            if not folder_path:
-                raise ValueError("folder_path is required when source_type='folder'")
-            self.source = FolderPDFSource(folder_path)
-            # Use folder name for cache directory
-            source_name = os.path.basename(folder_path)
-        else:
-            self.source = ZoteroDatabase(zotero_data_dir)
-            source_name = collection_name
-        
-        # Set up TEI cache directory
-        base_cache = tei_cache_dir or os.path.join(output_base_dir, "tei_cache")
-        source_folder = self._sanitize_filename(source_name)
-        pdf_cache_dir = os.path.join(base_cache, source_folder)
+        self.pdf_cache = PDFCacheHandler(
+            folder_path=self.pdf_cache_dir
+        )
         
         self.pdf_processor = PDFProcessor(
             grobid_url=grobid_url,
             grobid_timeout=grobid_timeout,
-            tei_cache_dir=pdf_cache_dir
+            output_base_dir=self.output_base_dir
         )
         
         self.embedding_manager = EmbeddingManager(
@@ -208,36 +185,65 @@ class ZoteroRAG:
         return self.query_color_map[query]
     
     def get_indexed_pdfs(self) -> List[Dict]:
-        """Get a list of indexed PDFs with their metadata.
+        """Get list of indexed PDFs.
         
         Returns:
-            List of dictionaries with 'pdf_path', 'title', 'item_key', and 'pdf_hash'.
+            List of dictionaries with 'title', 'chunk_count'.
         """
         try:
             self.qdrant_manager.initialize_connection()
             return self.qdrant_manager.list_indexed_pdfs()
         except Exception as e:
-            #logger.error(f"Error during get_indexed_pdfs: {str(e)}")
+            logger.error(f"Error during get_indexed_pdfs: {str(e)}")
             return []
         finally:
             self.qdrant_manager.close_connection()
 
-    def upsert_pdfs(self, progress_callback=None) -> int:
+    def ingest_pdf(self, uploaded_pdfs: List[UploadedFile]) -> Dict[str, Union[int, List[str]]]:
+        """Ingest multiple uploaded PDFs and return their metadata.
+
+        Args:
+            uploaded_pdfs: List of UploadedFile objects from Streamlit file uploader.
+
+        Returns:
+            Dictionary with ingestion counters and list of ingested PDF titles.
+        """
+        if not uploaded_pdfs:
+            raise ValueError("uploaded_pdfs cannot be empty")
+        
+        ingested_count = 0
+        already_indexed_count = 0
+        ingested_titles: List[str] = []
+        for uploaded_pdf in uploaded_pdfs:
+            try:
+                ingest_result = self.pdf_cache.ingest_pdf(uploaded_pdf)
+                if ingest_result["already_indexed"]:
+                    already_indexed_count += 1
+                else:
+                    ingested_count += 1
+                    ingested_titles.append(str(ingest_result["title"]))
+            except Exception as e:
+                logger.error(f"Error ingesting PDF '{uploaded_pdf.name}': {str(e)}")
+
+        return {
+            "ingested": ingested_count,
+            "already_indexed": already_indexed_count,
+            "ingested_titles": ingested_titles,
+        }
+
+    def upsert_pdfs(self, target_pdf_titles: List[str], progress_callback=None) -> int:
         """Process PDFs, extract paragraphs, and upsert into Qdrant index.
             If a pdf has already been indexed (based on hash), it will be skipped.
         
         Args:
+            target_pdf_titles: List of PDF titles to process. Must not be empty.
             progress_callback: Function(stage, current, total, message) for progress updates.
                              stage is 'pdf' or 'encoding'.
-                             
         Returns:
             Number of paragraphs indexed.
         """
-        # Get items from source (Zotero or folder)
-        items = self.source.get_items(self.collection_name)
-        if not items:
-            source_desc = f"folder {self.folder_path}" if self.source_type == 'folder' else "Zotero collection/library"
-            raise ValueError(f"No PDF items found in the specified {source_desc}.")
+        if target_pdf_titles is None or target_pdf_titles == []:
+            raise ValueError("No new PDF titles provided for upsert. Skipping indexing stage.")
 
         indexed = 0
         already_indexed = 0
@@ -247,24 +253,22 @@ class ZoteroRAG:
             # Stage 1: Process PDFs and extract paragraphs
             all_paragraphs = []
             per_pdf_context = {}
-            for idx, item in enumerate(items):
+            for idx, title in enumerate(target_pdf_titles):
                 if progress_callback:
-                    progress_callback('pdf', idx, len(items), 
-                                    f"Processing: {item['title'][:50]}...")
+                    progress_callback('pdf', idx, len(target_pdf_titles), 
+                                    f"Processing: {title[:50]}...")
                 
-                item_hash = PDFProcessor.compute_pdf_hash(item.get('path'))
-                if self.qdrant_manager.is_pdf_indexed(item_hash):
+                current_pdf_hash = self.pdf_processor.compute_pdf_hash(title)
+
+                if self.qdrant_manager.is_pdf_indexed(current_pdf_hash):
                     already_indexed += 1
-                    logger.info(f"Skipping already indexed PDF: {item['title']}")
+                    logger.info(f"Skipping already indexed PDF: {title}")
                     continue
                 
-                paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(
-                    item['path'], 
-                    item['title']
-                )
+                paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(title)
 
-                if item_hash not in per_pdf_context:
-                    per_pdf_context[item_hash] = {
+                if title not in per_pdf_context:
+                    per_pdf_context[title] = {
                         "document_text": document_text,
                         "paragraph_indices": [],
                     }
@@ -277,20 +281,18 @@ class ZoteroRAG:
                     sentence_count = len(sentences)
                     paragraph = Paragraph(
                         text=text,
-                        pdf_path=item['path'],
                         page_num=page_num,
                         para_idx=para_idx,
-                        item_key=item['key'],
-                        pdf_hash=item_hash,
-                        title=item['title'],
+                        title=title,
+                        pdf_hash=current_pdf_hash,
                         section=section,
                         sentence_count=sentence_count,
                         sentences=sentences
                     )
                     all_paragraphs.append(paragraph)
-                    per_pdf_context[item_hash]["paragraph_indices"].append(len(all_paragraphs) - 1)
+                    per_pdf_context[title]["paragraph_indices"].append(len(all_paragraphs) - 1)
             
-            if not all_paragraphs and len(items) - already_indexed > 0:
+            if not all_paragraphs and len(target_pdf_titles) - already_indexed > 0:
                 raise ValueError("No text could be extracted from the PDFs.")
             elif not all_paragraphs:
                 #TODO: far vedere anche all'utente, in generale anche quanti pdf sono stati processati e quanti saltati per essere già indicizzati
@@ -360,29 +362,16 @@ class ZoteroRAG:
             True if deletion was successful, False otherwise.
         """
         try:
-            pdf_path = None
             self.qdrant_manager.initialize_connection()
-            if self.source_type == 'folder':
-                normalized_title = self._sanitize_filename(os.path.splitext(os.path.basename(pdf_title))[0]).lower()
-                for item in self.source.get_items(self.collection_name):
-                    item_title = item.get('title', '').lower()
-                    item_path = item.get('path')
-                    if item_title == normalized_title and item_path and os.path.exists(item_path):
-                        pdf_path = item_path
-                        break
 
-            #TODO: else per zotero non so come possa essere!
+            normalized_title = self._sanitize_filename(pdf_title)
 
-            if not pdf_path or not os.path.exists(pdf_path):
-                logger.warning(f"Could not resolve PDF path from title: {pdf_title}")
-                return False
-
-            pdf_hash = PDFProcessor.compute_pdf_hash(pdf_path)
-            success = self.qdrant_manager.delete_pdf_from_index(pdf_hash)
+            success = self.qdrant_manager.delete_pdf_from_index(normalized_title)
             if success:
-                logger.info(f"Successfully deleted paragraphs for PDF: {pdf_path}")
+                self.pdf_cache.remove_pdf(normalized_title)
+                logger.info(f"Successfully deleted paragraphs for PDF: {normalized_title}")
             else:
-                logger.warning(f"No paragraphs found to delete for PDF: {pdf_path}")
+                logger.warning(f"No paragraphs found to delete for PDF: {normalized_title}")
             return success
         except Exception as e:
             logger.error(f"Error during delete_pdf_from_index: {str(e)}")

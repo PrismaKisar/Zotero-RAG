@@ -8,12 +8,10 @@ from typing import List, Tuple
 class Paragraph:
     """Represents a paragraph-level chunk for QA."""
     text: str
-    pdf_path: str
     page_num: int
     para_idx: int
-    item_key: str
-    pdf_hash: str
     title: str
+    pdf_hash: str
     section: str = "body"  # section type: body, abstract, intro, etc.
     sentence_count: int = 0  # number of sentences in this paragraph
     sentences: List[Tuple[str, str]] = field(default_factory=list)  # List of (sentence_text, coords)
@@ -24,12 +22,10 @@ class Paragraph:
             self.__class__,
             (
                 self.text,
-                self.pdf_path,
                 self.page_num,
                 self.para_idx,
-                self.item_key,
-                self.pdf_hash,
                 self.title,
+                self.pdf_hash,
                 self.section,
                 self.sentence_count,
                 self.sentences,

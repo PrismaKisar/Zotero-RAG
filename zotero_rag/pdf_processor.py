@@ -42,19 +42,24 @@ class PDFProcessor:
     
     def __init__(self, grobid_url: str = "http://localhost:8070", 
                  grobid_timeout: int = 180, 
-                 tei_cache_dir: str = None):
+                 output_base_dir: str = None):
         """Initialize PDF processor.
         
         Args:
             grobid_url: URL of the GROBID service.
             grobid_timeout: Timeout in seconds for GROBID requests.
-            tei_cache_dir: Directory to cache TEI XML outputs.
+            output_base_dir: Base directory for storing cache TEI XML outputs.
         """
         self.grobid_url = grobid_url
         self.grobid_timeout = grobid_timeout
         self.grobid_client = None  # Lazy initialization only when needed
-        self.tei_cache_dir = tei_cache_dir or "tei_cache"
+
+        self.output_base_dir = output_base_dir 
+        self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
+        self.tei_cache_dir = os.path.join(output_base_dir, "tei_cache") or "tei_cache"
         os.makedirs(self.tei_cache_dir, exist_ok=True)
+
+        logger.info(f"Initialized PDFProcessor with folder: {self.tei_cache_dir}")
     
     def is_alive(self) -> bool:
         """Quick health check for the GROBID service."""
@@ -64,8 +69,7 @@ class PDFProcessor:
         except Exception:
             return False
         
-    @staticmethod
-    def compute_pdf_hash(pdf_path: str, chunk_size: int = 1024 * 1024) -> str:
+    def compute_pdf_hash(self, pdf_title: str, chunk_size: int = 1024 * 1024) -> str:
         """Compute a hash of the PDF file for caching and change detection.
 
         Args:
@@ -76,6 +80,7 @@ class PDFProcessor:
             Hexadecimal hash string representing the PDF content.
         """
         h = hashlib.sha256()
+        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
         with open(pdf_path, "rb") as f:
             for chunk in iter(lambda: f.read(chunk_size), b""):
                 h.update(chunk)
@@ -160,15 +165,12 @@ class PDFProcessor:
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
     
-    def _extract_paragraphs_from_tei(self, tei_root: ET.Element, 
-                                     pdf_path: str, 
-                                     item_title: str) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
+    def _extract_paragraphs_from_tei(self, tei_root: ET.Element
+            ) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
         """Extract paragraphs from TEI XML structure.
         
         Args:
             tei_root: Root element of TEI XML.
-            pdf_path: Path to the original PDF (for metadata).
-            item_title: Title of the document (for metadata).
             
         Returns:
             - List of (paragraph_text, page_number, paragraph_index, section_type, sentences)
@@ -249,8 +251,8 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_path: str, 
-                           item_title: str) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
+    def extract_text_chunks(self, pdf_title: str, 
+            ) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
         """Extract paragraphs from PDF using GROBID.
         
         Args:
@@ -261,10 +263,11 @@ class PDFProcessor:
             - List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
             - Full document text reconstructed from extracted paragraphs.
         """
+        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
         tei_root = self._parse_pdf(pdf_path)
         if tei_root is None:
             logger.warning(f"GROBID parsing failed for {pdf_path}; no paragraphs extracted")
-            return []
+            return [], ""
 
-        paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root, pdf_path, item_title)
+        paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root)
         return paragraphs, document_text

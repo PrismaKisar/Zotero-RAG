@@ -38,9 +38,9 @@ class QdrantManager:
         return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
     
     @staticmethod
-    def generate_point_id(file_hash: str, paragraph_index) -> str:
+    def generate_point_id(title: str, paragraph_index) -> str:
         """Generate a unique point ID for Qdrant."""
-        input_str = f"{file_hash}_{paragraph_index}"
+        input_str = f"{title}_{paragraph_index}"
         NAMESPACE_RAG = uuid.UUID("12345678-1234-5678-1234-567812345678")
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
  
@@ -72,7 +72,13 @@ class QdrantManager:
                 }
             )
 
-            # Create an index on the 'pdf_hash' payload field for efficient lookups
+            # Create an index on 'title' and 'pdf_hash' payload field for efficient lookups
+            self.client.create_payload_index(
+                collection_name=self.qdrant_collection,
+                field_name="title",
+                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+            )
+
             self.client.create_payload_index(
                 collection_name=self.qdrant_collection,
                 field_name="pdf_hash",
@@ -91,10 +97,10 @@ class QdrantManager:
             logger.info("Disconnected from Qdrant client")
 
     def is_pdf_indexed(self, pdf_hash: str) -> bool:
-        """Check if a pdf with the given pdf file hash is already indexed in Qdrant.
+        """Check if a pdf with the given pdf hash is already indexed in Qdrant.
         
         Args:
-            file_hash: Hash of the pdf file to check.
+            pdf_hash: Hash of the PDF to check for indexing.
             
         Returns:
             True if the pdf is already indexed, False otherwise.
@@ -121,35 +127,37 @@ class QdrantManager:
         )
         return len(points) > 0
     
-    #TODO: se si vuole fare bisogna pensarci bene al modo più efficiente / sistemare il magic number 1000
     def list_indexed_pdfs(self) -> List[Dict]:
         """List PDFs that have been indexed in Qdrant.
         
         Returns:
-            List of dictionaries with 'pdf_path', 'title', 'pdf_hash' keys.
+            List of dictionaries with 'title' and 'chunk_count' keys.
         """
-        raise NotImplementedError("Listing indexed PDFs is not implemented yet.")
-        # if not self.client:
-        #     raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
-        
-        # results = self.client.scroll(
-        #     collection_name=self.qdrant_collection,
-        #     limit=1000,
-        #     with_payload=["title", "pdf_path", "pdf_hash"],
-        #     with_vectors=False,
-        #     group_by="pdf_hash"
-        # )
-        
-        # indexed_pdfs = [
-        #     {
-        #         "title": group.hits[0].payload.get("title", "Unknown_Title"),
-        #         "pdf_path": group.hits[0].payload.get("pdf_path", "Unknown_Path"),
-        #         "hash": group.id,
-        #     }
-        #     for group in results[0].groups
-        # ]
-    
-        #return indexed_pdfs
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+
+        points_count = self.client.count(
+            collection_name=self.qdrant_collection,
+            exact=False,
+        ).count
+
+        points_count = (points_count // 50) + 1 #FIXME: magic number da sistemare
+
+        result = self.client.facet(
+            collection_name=self.qdrant_collection,
+            key="title",
+            limit=max(int(points_count), 1),
+            exact=False,
+        )
+
+        return [
+            {
+                "title": str(hit.value),
+                "chunk_count": int(hit.count),
+            }
+            for hit in result.hits
+            if getattr(hit, "value", None)
+        ]
     
     def upsert_paragraphs(self,
                         paragraphs: List[Paragraph],
@@ -183,7 +191,7 @@ class QdrantManager:
 
         points = []
         for i, para in enumerate(self.paragraphs):
-            point_id = self.generate_point_id(para.pdf_path, para.para_idx)
+            point_id = self.generate_point_id(para.title, para.para_idx)
             
             vector_config = {
                 "": dense_embeddings[i],
@@ -195,12 +203,10 @@ class QdrantManager:
                 vector=vector_config,
                 payload={
                     'text': para.text,
-                    'pdf_path': para.pdf_path,
                     'page_num': para.page_num,
                     'para_idx': para.para_idx,
-                    'item_key': para.item_key,
-                    'pdf_hash': para.pdf_hash,
                     'title': para.title,
+                    'pdf_hash': para.pdf_hash,
                     'section': para.section,
                     'sentence_count': para.sentence_count,
                     'sentences': para.sentences
@@ -222,7 +228,7 @@ class QdrantManager:
         logger.info(f"Upserted {len(points)} paragraphs into Qdrant collection: {self.qdrant_collection}")
         return len(points)
     
-    def delete_pdf_from_index(self, pdf_hash: str):
+    def delete_pdf_from_index(self, pdf_title: str):
         """Delete all paragraphs associated with a specific PDF hash from the Qdrant collection.
         
         Args:
@@ -234,8 +240,8 @@ class QdrantManager:
         flt = qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
-                    key="pdf_hash",
-                    match=qmodels.MatchValue(value=pdf_hash),
+                    key="title",
+                    match=qmodels.MatchValue(value=pdf_title),
                 )
             ]
         )
@@ -298,11 +304,8 @@ class QdrantManager:
 
             para = Paragraph(
                 text=payload.get('text', ''),
-                pdf_path=payload.get('pdf_path', ''),
                 page_num=payload.get('page_num', -1),
                 para_idx=payload.get('para_idx', -1),
-                item_key=payload.get('item_key', ''),
-                pdf_hash=payload.get('pdf_hash', ''),
                 title=payload.get('title', ''),
                 section=payload.get('section', ''),
                 sentence_count=payload.get('sentence_count', 0),

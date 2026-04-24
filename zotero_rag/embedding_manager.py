@@ -118,11 +118,11 @@ class EmbeddingManager:
                 Answer only with the succinct context and nothing else. """
         )
 
-        client = ollama.OllamaClient(base_url=self.ollama_url)
+        client = ollama.Client(host=self.ollama_url)
 
         for chunk in all_texts:
             formatted_prompt = prompt.format(document_text=document_text, chunk_text=chunk)
-            response = ollama.generate(
+            response = client.generate(
                 model=self.context_model_name,
                 prompt=formatted_prompt,
                 options={

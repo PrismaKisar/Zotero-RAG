@@ -6,10 +6,7 @@ Run with: streamlit run app.py
 
 import os
 import sys
-from typing import List, Dict, Tuple
 import subprocess
-import sqlite3
-import shutil
 import streamlit as st
 from zotero_rag import ZoteroRAG
 import re
@@ -31,34 +28,6 @@ def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
     r, g, b = [int(x * 255) for x in rgb]
     return f'#{r:02x}{g:02x}{b:02x}'
-
-# def load_zotero_collections():
-#     try:
-#         with st.spinner("Loading Zotero collections..."):
-#             st.session_state.collections = ZoteroRAG.list_collections()
-#             st.session_state.collections_loaded = True
-#     except sqlite3.OperationalError as e:
-#         if "locked" in str(e):
-#             st.error("⚠️ Zotero database is locked")
-#             st.warning("""
-#                 **The database is currently locked by Zotero.**
-#                 You have two options:
-#                 1. **Close Zotero** (Recommended)
-#                    - Close the Zotero application completely
-#                    - Then refresh this page
-#                 2. **Keep Zotero open** (Advanced)
-#                    - The app will try to read the database in read-only mode
-#                    - Click the button below to retry
-#                 """)
-                
-#             if st.button("🔄 Retry Connection"):
-#                 st.rerun()
-#         else:
-#             st.error(f"Database error: {e}")
-#         st.stop()
-#     except Exception as e:
-#         st.error(f"Error loading Zotero: {e}")
-#         st.info("Make sure Zotero is installed and the database is accessible")
 
 def main():
     st.set_page_config(
@@ -90,7 +59,7 @@ def main():
         st.session_state.search_candidates = []
     if 'current_index' not in st.session_state:
         st.session_state.current_index = 0
-    if 'indexed' not in st.session_state: #TODO: controllare bene se sia utilizzato solo dove necessario, ora che ho il db
+    if 'indexed' not in st.session_state:
         st.session_state.indexed = False
     if 'collections_loaded' not in st.session_state:
         st.session_state.collections_loaded = False
@@ -104,14 +73,6 @@ def main():
         st.session_state.model_loaded = False
     if 'model_device' not in st.session_state:
         st.session_state.model_device = None  # auto-select
-    if 'source_type' not in st.session_state:
-        st.session_state.source_type = 'zotero'
-    if 'folder_path' not in st.session_state:
-        st.session_state.folder_path = "C:/Progetti Git/Tesi/articles/"
-    
-    # Load collections on first run (only if using Zotero)
-    # if not st.session_state.collections_loaded and st.session_state.source_type == 'zotero':
-    #     load_zotero_collections()
     
     # Main tabs - only show after model is loaded and indexed
     if st.session_state.model_loaded and st.session_state.indexed:
@@ -130,62 +91,6 @@ def show_setup_tab():
     """Setup tab for collection selection, model loading, and indexing."""
     
     st.header("⚙️ Setup Configuration")
-    
-    # Source Selection
-    # st.subheader("1️⃣ Select PDF Source")
-    
-    # source_type = st.radio(
-    #     "Choose your PDF source:",
-    #     options=['zotero', 'folder'],
-    #     format_func=lambda x: "📚 Zotero Collection" if x == 'zotero' else "📁 Folder of PDFs",
-    #     horizontal=True,
-    #     key="source_type_selector"
-    # )
-    
-    # # Update session state
-    # if source_type != st.session_state.source_type:
-    #     st.session_state.source_type = source_type
-    #     st.session_state.model_loaded = False
-    #     st.session_state.indexed = False
-    #     # Load collections if switching to Zotero
-    #     if source_type == 'zotero' and not st.session_state.collections_loaded:
-    #         load_zotero_collections()
-    
-    # # Show appropriate source selection UI
-    # if st.session_state.source_type == 'zotero':
-    #     # Collection Selection - only show if collections are loaded
-    #     if st.session_state.collections_loaded and st.session_state.collections:
-    #         collection_options = ["All Library"]
-    #         for coll in st.session_state.collections:
-    #             name = coll['name']
-    #             if coll['parent_id']:
-    #                 parent_name = next((c['name'] for c in st.session_state.collections 
-    #                                   if c['id'] == coll['parent_id']), "Unknown")
-    #                 name = f"{parent_name} > {name}"
-    #             collection_options.append(name)
-            
-    #         selected_collection = st.selectbox(
-    #             "Choose which Zotero collection to search",
-    #             collection_options,
-    #             key="collection_selector"
-    #         )
-            
-    #         st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
-    #     else:
-    #         st.warning("⚠️ No collections loaded. Make sure Zotero is installed and accessible.")
-    #         st.session_state.collection_name = None
-    # else:
-    #     # Folder path selection
-    #     folder_path = st.text_input(
-    #         "Enter folder path containing PDFs:",
-    #         value=st.session_state.folder_path,
-    #         placeholder="/path/to/pdf/folder",
-    #         help="Enter the full path to a folder containing PDF files (will search recursively)"
-    #     )
-    #     st.session_state.folder_path = folder_path
-    #     st.session_state.collection_name = None  # Not used for folder mode
-    
-    # st.markdown("---")
     
     # Services configuration
     st.subheader("1️⃣ Service Endpoints")
@@ -212,7 +117,7 @@ def show_setup_tab():
         )
 
     with col_optional_services:
-        st.markdown("##### 💬 Optional Contextualization")
+        st.markdown("##### 💿 Optional Contextualization")
         use_chunk_contextualization = st.checkbox(
             "Enable chunk contextualization before upsert",
             value=st.session_state.get("use_chunk_contextualization", True),
@@ -228,7 +133,7 @@ def show_setup_tab():
         )
 
         ollama_url = st.text_input(
-            "Ollama Service URL",
+            "💬Ollama Service URL",
             value="http://localhost:11434",
             key="ollama_url_input",
             disabled=not use_chunk_contextualization,
@@ -318,7 +223,7 @@ def show_setup_tab():
         load_model_clicked = st.button(
             "📥 Load Model",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="load_model_btn"
         )
 
@@ -332,8 +237,6 @@ def show_setup_tab():
                     st.session_state.rerank_batch_size = rerank_batch_size
 
                     st.session_state.rag = ZoteroRAG(
-                        source_type='folder',
-                        folder_path=st.session_state.folder_path,
                         dense_model_name=model_input,
                         grobid_url=grobid_url,
                         qdrant_url=qdrant_url,
@@ -344,34 +247,6 @@ def show_setup_tab():
                         rerank_batch_size=rerank_batch_size,
                         use_chunk_contextualization=st.session_state.use_chunk_contextualization
                     )
-                    
-                    # # Initialize RAG with appropriate source
-                    # if st.session_state.source_type == 'folder':
-                    #     st.session_state.rag = ZoteroRAG(
-                    #         source_type='folder',
-                    #         folder_path=st.session_state.folder_path,
-                    #         dense_model_name=model_input,
-                    #         grobid_url=grobid_url,
-                    #         qdrant_url=qdrant_url,
-                    #         ollama_url=ollama_url,
-                    #         output_base_dir=st.session_state.output_dir,
-                    #         model_device=st.session_state.model_device,
-                    #         encode_batch_size=encode_batch_size,
-                    #         rerank_batch_size=rerank_batch_size
-                    #     )
-                    # else:
-                    #     st.session_state.rag = ZoteroRAG(
-                    #         source_type='zotero',
-                    #         collection_name=st.session_state.collection_name,
-                    #         dense_model_name=model_input,
-                    #         grobid_url=grobid_url,
-                    #         qdrant_url=qdrant_url,
-                    #         ollama_url=ollama_url,
-                    #         output_base_dir=st.session_state.output_dir,
-                    #         model_device=st.session_state.model_device,
-                    #         encode_batch_size=encode_batch_size,
-                    #         rerank_batch_size=rerank_batch_size
-                    #     )
                     
                     st.session_state.model_loaded = True
                     st.session_state.indexed = False  # Reset indexed status
@@ -402,18 +277,30 @@ def show_setup_tab():
     
     # Indexing Section - only show if model is loaded
     if st.session_state.model_loaded:
-        st.subheader("4️⃣ Indexed PDFs Manager")
+        st.header("📂 Indexed PDFs Manager")
         col_left, col_right = st.columns([3, 1], gap="large")
 
         with col_left:
-            st.markdown("**Indexed PDFs**")
+            st.markdown("### 📄 Indexed PDFs")
 
             try:
                 indexed_pdfs_raw = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
             except Exception:
                 indexed_pdfs_raw = []
 
-            indexed_pdfs = [x['title'] for x in indexed_pdfs_raw]
+            new_indexed = len(indexed_pdfs_raw) > 0
+            if st.session_state.indexed != new_indexed:
+                st.session_state.indexed = new_indexed
+                st.rerun()
+
+            indexed_pdfs = [
+                {
+                    "title": str(x.get("title", "")),
+                    "chunk_count": int(x.get("chunk_count", 0) or 0),
+                }
+                for x in indexed_pdfs_raw
+                if x.get("title")
+            ]
             total_pdfs = len(indexed_pdfs)
 
             filter_text = st.text_input(
@@ -436,13 +323,17 @@ def show_setup_tab():
                 )
 
             if filter_text:
-                filtered_pdfs = [name for name in indexed_pdfs if filter_text.lower() in name.lower()]
+                filtered_pdfs = [
+                    item for item in indexed_pdfs
+                    if filter_text.lower() in item["title"].lower()
+                ]
             else:
                 filtered_pdfs = indexed_pdfs
 
             if filtered_pdfs:
                 total_filtered = len(filtered_pdfs)
-                max_page = max((total_filtered - 1) // page_size + 1, 1)
+                items_per_page = page_size * 2
+                max_page = max((total_filtered - 1) // items_per_page + 1, 1)
                 current_page = st.number_input(
                     "Page",
                     min_value=1,
@@ -452,15 +343,36 @@ def show_setup_tab():
                     key="indexed_pdf_page"
                 )
 
-                start = (current_page - 1) * page_size
-                end = start + page_size
+                start = (current_page - 1) * items_per_page
+                end = start + items_per_page
                 page_items = filtered_pdfs[start:end]
+
+                left_column_items = page_items[::2]
+                right_column_items = page_items[1::2]
+                max_rows = max(len(left_column_items), len(right_column_items))
+
+                two_col_rows = []
+                for row_idx in range(max_rows):
+                    left_value = left_column_items[row_idx] if row_idx < len(left_column_items) else None
+                    right_value = right_column_items[row_idx] if row_idx < len(right_column_items) else None
+                    two_col_rows.append({
+                        "PDF Name (1)": left_value["title"] if left_value else "",
+                        "Chunks (1)": left_value["chunk_count"] if left_value else None,
+                        "PDF Name (2)": right_value["title"] if right_value else "",
+                        "Chunks (2)": right_value["chunk_count"] if right_value else None,
+                    })
 
                 st.caption(f"Showing {start + 1}-{min(end, total_filtered)} of {total_filtered} PDFs")
                 st.dataframe(
-                    {"PDF Name": page_items},
-                    use_container_width=True,
+                    two_col_rows,
+                    width="stretch",
                     height=420,
+                    column_config={
+                        "PDF Name (1)": st.column_config.TextColumn(width="large"),
+                        "Chunks (1)": st.column_config.NumberColumn(width="small", format="%d"),
+                        "PDF Name (2)": st.column_config.TextColumn(width="large"),
+                        "Chunks (2)": st.column_config.NumberColumn(width="small", format="%d"),
+                    },
                     hide_index=True
                 )
             else:
@@ -470,19 +382,29 @@ def show_setup_tab():
                     st.warning("No PDF matches your search filter.")
 
         with col_right:
-            st.markdown("**Actions**")
+            st.markdown("### ⚡Actions")
 
             with st.expander("➕ Add PDFs", expanded=True):
-                st.text("Adds the PDFs inside the given source to the index.")
-                if st.button("Add PDFs", use_container_width=True, key="btn_add_single_pdf"):
-                    if st.session_state.folder_path is None and st.session_state.collections_loaded is None:
-                        st.warning("No source configured. Please select a source type and configure it in the setup section.")
-                    elif st.session_state.rag is None:
+                uploaded_pdfs = st.file_uploader(
+                    "Select PDF files to index",
+                    type=["pdf"],
+                    accept_multiple_files=True,
+                    key="add_pdfs_uploader"
+                )
+
+                if uploaded_pdfs:
+                    st.caption(f"Selected {len(uploaded_pdfs)} PDF file(s).")
+
+                if st.button("Index selected PDFs", width="stretch", key="btn_add_selected_pdfs"):
+                    if st.session_state.rag is None:
                         st.error("Load a model first.")
+                    elif not uploaded_pdfs:
+                        st.warning("Select at least one PDF file.")
                     else:
+                        result = st.session_state.rag.ingest_pdf(uploaded_pdfs)
+
                         pdf_progress_bar = st.progress(0)
                         encoding_progress_bar = st.progress(0)
-                        
                         def progress_callback(stage, current, total, message):
                             if stage == 'pdf':
                                 progress = current / total if total > 0 else 0
@@ -493,12 +415,13 @@ def show_setup_tab():
                         
                         try:
                             num_chunks = st.session_state.rag.upsert_pdfs(
+                                target_pdf_titles=result.get('ingested_titles', []),
                                 progress_callback=progress_callback
                             )
                             st.session_state.indexed = True
                             pdf_progress_bar.empty()
                             encoding_progress_bar.empty()
-                            st.success(f"✅ Built index with {num_chunks} chunks!")
+                            st.success(f"✅ Indexing complete: {result['ingested']} new PDFs, {result['already_indexed']} already indexed, total chunks upserted: {num_chunks}")
                             st.rerun()
                         except Exception as e:
                             pdf_progress_bar.empty()
@@ -515,7 +438,7 @@ def show_setup_tab():
                     placeholder="example_paper.pdf",
                     key="pdf_name_delete"
                 )
-                if st.button("Delete PDF", use_container_width=True, key="btn_delete_pdf"):
+                if st.button("Delete PDF", width="stretch", key="btn_delete_pdf"):
                     if not pdf_name_to_delete.strip():
                         st.warning("Insert the exact PDF name.")
                     elif st.session_state.rag is None:
@@ -530,7 +453,7 @@ def show_setup_tab():
 
             with st.expander("🔥 Clear full index", expanded=False):
                 st.warning("This operation removes all indexed PDFs and vectors.")
-                if st.button("Clear all PDFs", use_container_width=True, key="btn_clear_all_pdfs"):
+                if st.button("Clear all PDFs", width="stretch", key="btn_clear_all_pdfs"):
                     if st.session_state.rag is None:
                         st.error("Load a model first.")
                     else:
@@ -541,13 +464,12 @@ def show_setup_tab():
     st.markdown("---")
     
     # Reset button
-    if st.button("🔄 Start Over", use_container_width=True):
+    if st.button("🔄 Start Over", width="stretch"):
         collections = st.session_state.get('collections', [])
         collections_loaded = st.session_state.get('collections_loaded', False)
         st.session_state.clear()
         st.session_state.collections_loaded = collections_loaded
         st.session_state.collections = collections
-        st.session_state.source_type = 'zotero'  # Default to zotero
         st.rerun()
 
 def _format_time(seconds: float) -> str:
@@ -795,7 +717,7 @@ def show_search_tab():
         col_gen, col_more = st.columns([1, 1])
         
         with col_gen:
-            if st.button("🔄 Generate Paraphrases", use_container_width=True):
+            if st.button("🔄 Generate Paraphrases", width="stretch"):
                 if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
                     with st.spinner("Generating paraphrases..."):
                         variations = st.session_state.rag.qa_engine.expand_question(
@@ -812,7 +734,7 @@ def show_search_tab():
                     st.error("Paraphraser not available. Question expansion is disabled.")
         
         with col_more:
-            if st.session_state.paraphrase_candidates and st.button("➕ Generate More", use_container_width=True):
+            if st.session_state.paraphrase_candidates and st.button("➕ Generate More", width="stretch"):
                 if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
                     with st.spinner("Generating more paraphrases..."):
                         # Generate additional paraphrases
@@ -881,9 +803,9 @@ def show_search_tab():
     st.markdown("---")
     col_search, col_clear = st.columns([1, 4])
     with col_search:
-        search_clicked = st.button("Search", type="primary", use_container_width=True)
+        search_clicked = st.button("Search", type="primary", width="stretch")
     with col_clear:
-        if st.button("Clear Results", use_container_width=True):
+        if st.button("Clear Results", width="stretch"):
             st.session_state.search_results = []
             st.session_state.current_index = 0
             st.rerun()
@@ -1062,7 +984,7 @@ def show_search_tab():
             pass  # Empty column for spacing
         
         with col6:
-            if st.button("💾 Highlight All", use_container_width=True):
+            if st.button("💾 Highlight All", width="stretch"):
                 # Answers already have the highlighting info
                 coll_name = st.session_state.rag.collection_name or "All_Library"
                 output_dir = os.path.join(st.session_state.output_dir, coll_name, "highlighted")
