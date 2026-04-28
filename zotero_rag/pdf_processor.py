@@ -86,6 +86,34 @@ class PDFProcessor:
                 h.update(chunk)
         return h.hexdigest()
     
+    def remove_cache_item(self, pdf_title: str):
+        """Remove cached TEI XML for a given PDF title."""
+        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
+        mtime = os.path.getmtime(pdf_path)
+        cache_key = hashlib.md5(f"{pdf_path}:{mtime}".encode("utf-8")).hexdigest()
+        cache_path = os.path.join(self.tei_cache_dir, f"{cache_key}.tei.xml")
+        logger.info(f"Removing cache item for PDF '{pdf_title}' at {cache_path}")
+        if os.path.exists(cache_path):
+            try:
+                os.remove(cache_path)
+                logger.info(f"Removed cache item: {cache_path}")
+            except Exception as e:
+                logger.error(f"Error removing cache item '{cache_path}': {e}")
+
+    def clear_cache(self):
+        """Clear all cached TEI XML files."""
+        if not os.path.isdir(self.tei_cache_dir):
+            logger.warning(f"Cache directory does not exist for clearing: {self.tei_cache_dir}")
+            return
+        
+        for filename in os.listdir(self.tei_cache_dir):
+            file_path = os.path.join(self.tei_cache_dir, filename)
+            try:
+                os.remove(file_path)
+                logger.info(f"Removed cache file: {file_path}")
+            except Exception as e:
+                logger.error(f"Error removing cache file '{file_path}': {e}")
+    
     def _parse_pdf(self, pdf_path: str) -> Optional[ET.Element]:
         """Parse a single PDF using GROBID and return TEI XML root.
         

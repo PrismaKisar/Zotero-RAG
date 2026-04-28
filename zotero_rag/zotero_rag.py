@@ -7,7 +7,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple, Union
+from typing import List, Dict, Tuple, Union, Any
 import warnings
 import nltk
 from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -199,7 +199,7 @@ class ZoteroRAG:
         finally:
             self.qdrant_manager.close_connection()
 
-    def ingest_pdf(self, uploaded_pdfs: List[UploadedFile]) -> Dict[str, Union[int, List[str]]]:
+    def ingest_pdf(self, uploaded_pdfs: List[UploadedFile]) -> Dict[str, Union[int, List[str], List[Dict[str, str]]]]:
         """Ingest multiple uploaded PDFs and return their metadata.
 
         Args:
@@ -214,103 +214,171 @@ class ZoteroRAG:
         ingested_count = 0
         already_indexed_count = 0
         ingested_titles: List[str] = []
+        already_indexed_titles: List[str] = []
+        failed_uploads: List[Dict[str, str]] = []
         for uploaded_pdf in uploaded_pdfs:
             try:
                 ingest_result = self.pdf_cache.ingest_pdf(uploaded_pdf)
                 if ingest_result["already_indexed"]:
                     already_indexed_count += 1
+                    already_indexed_titles.append(str(ingest_result["title"]))
                 else:
                     ingested_count += 1
                     ingested_titles.append(str(ingest_result["title"]))
             except Exception as e:
                 logger.error(f"Error ingesting PDF '{uploaded_pdf.name}': {str(e)}")
+                failed_uploads.append({"name": str(uploaded_pdf.name), "error": str(e)})
 
         return {
             "ingested": ingested_count,
             "already_indexed": already_indexed_count,
             "ingested_titles": ingested_titles,
+            "already_indexed_titles": already_indexed_titles,
+            "failed_uploads": failed_uploads,
         }
+    
+    def _rollback_pdfs(self, uploaded_pdf: set[str], indexed_pdf: set[str]) -> bool:
+        """Determine which PDFs to remove from cache based on ingestion vs indexing results.
+        
+        Args:
+            uploaded_pdf: Set of PDF titles that were uploaded/ingested.
+            indexed_pdf: Set of PDF titles that were actually indexed in Qdrant.
 
-    def upsert_pdfs(self, target_pdf_titles: List[str], progress_callback=None) -> int:
+        Returns:
+            True if rollback was performed, False otherwise.
+        """
+        to_remove = uploaded_pdf - indexed_pdf
+        if not to_remove:
+            return False
+        
+        for title in to_remove:
+            try:
+                self.pdf_cache.remove_pdf(title)
+                logger.debug(f"Rolled back PDF from cache: {title}")
+            except Exception as e:
+                logger.error(f"Error rolling back PDF '{title}': {str(e)}")
+        
+        return True
+
+    def upsert_pdfs(self, target_pdf_titles: List[str], progress_callback=None) -> Dict[str, Any]:
         """Process PDFs, extract paragraphs, and upsert into Qdrant index.
             If a pdf has already been indexed (based on hash), it will be skipped.
         
         Args:
             target_pdf_titles: List of PDF titles to process. Must not be empty.
             progress_callback: Function(stage, current, total, message) for progress updates.
-                             stage is 'pdf' or 'encoding'.
+                             stage is one of: 'pdf', 'contextualization', 'encoding', 'upserting'.
         Returns:
-            Number of paragraphs indexed.
+            Dictionary with indexing summary and warning/error details.
         """
         if target_pdf_titles is None or target_pdf_titles == []:
             raise ValueError("No new PDF titles provided for upsert. Skipping indexing stage.")
 
         indexed = 0
-        already_indexed = 0
+        all_paragraphs = []
+        per_pdf_context = {}
+        skipped_already_indexed_titles: List[str] = []
+        failed_pdf_errors: List[Dict[str, str]] = []
+
         try:
             self.qdrant_manager.initialize_connection()
             
             # Stage 1: Process PDFs and extract paragraphs
-            all_paragraphs = []
-            per_pdf_context = {}
             for idx, title in enumerate(target_pdf_titles):
                 if progress_callback:
-                    progress_callback('pdf', idx, len(target_pdf_titles), 
-                                    f"Processing: {title[:50]}...")
-                
-                current_pdf_hash = self.pdf_processor.compute_pdf_hash(title)
-
-                if self.qdrant_manager.is_pdf_indexed(current_pdf_hash):
-                    already_indexed += 1
-                    logger.info(f"Skipping already indexed PDF: {title}")
-                    continue
-                
-                paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(title)
-
-                if title not in per_pdf_context:
-                    per_pdf_context[title] = {
-                        "document_text": document_text,
-                        "paragraph_indices": [],
-                    }
-                
-                for text, page_num, para_idx, section, sentences in paragraph_tuples:
-                    # Filter by section type if needed
-                    if not self.pdf_processor.CONTENT_SECTIONS.get(section, True):
-                        continue
-                        
-                    sentence_count = len(sentences)
-                    paragraph = Paragraph(
-                        text=text,
-                        page_num=page_num,
-                        para_idx=para_idx,
-                        title=title,
-                        pdf_hash=current_pdf_hash,
-                        section=section,
-                        sentence_count=sentence_count,
-                        sentences=sentences
+                    progress_callback(
+                        'pdf',
+                        idx,
+                        len(target_pdf_titles),
+                        f"Analysing PDF {idx + 1}/{len(target_pdf_titles)}: {title[:80]}",
                     )
-                    all_paragraphs.append(paragraph)
-                    per_pdf_context[title]["paragraph_indices"].append(len(all_paragraphs) - 1)
-            
-            if not all_paragraphs and len(target_pdf_titles) - already_indexed > 0:
-                raise ValueError("No text could be extracted from the PDFs.")
-            elif not all_paragraphs:
-                #TODO: far vedere anche all'utente, in generale anche quanti pdf sono stati processati e quanti saltati per essere già indicizzati
-                logger.info("No new paragraphs to index. All PDFs were already indexed.")
-                return 0
-            
+
+                try:
+                    current_pdf_hash = self.pdf_processor.compute_pdf_hash(title)
+
+                    if self.qdrant_manager.is_pdf_indexed(current_pdf_hash):
+                        logger.info(f"Skipping already indexed PDF: {title}")
+                        skipped_already_indexed_titles.append(title)
+                        continue
+
+                    paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(title)
+
+                    if title not in per_pdf_context:
+                        per_pdf_context[title] = {
+                            "document_text": document_text,
+                            "paragraph_indices": [],
+                        }
+
+                    for text, page_num, para_idx, section, sentences in paragraph_tuples:
+                        # Filter by section type if needed
+                        if not self.pdf_processor.CONTENT_SECTIONS.get(section, True):
+                            continue
+
+                        sentence_count = len(sentences)
+                        paragraph = Paragraph(
+                            text=text,
+                            page_num=page_num,
+                            para_idx=para_idx,
+                            title=title,
+                            pdf_hash=current_pdf_hash,
+                            section=section,
+                            sentence_count=sentence_count,
+                            sentences=sentences
+                        )
+                        all_paragraphs.append(paragraph)
+                        per_pdf_context[title]["paragraph_indices"].append(len(all_paragraphs) - 1)
+                except Exception as e:
+                    logger.error("Failed to process PDF '%s': %s", title, str(e))
+                    failed_pdf_errors.append({"title": title, "error": str(e)})
+
+                if progress_callback:
+                    progress_callback(
+                        'pdf',
+                        idx + 1,
+                        len(target_pdf_titles),
+                        f"Analysed PDF {idx + 1}/{len(target_pdf_titles)}: {title[:80]}",
+                    )
+
+            if not all_paragraphs:
+                if skipped_already_indexed_titles and not failed_pdf_errors:
+                    logger.info("No new paragraphs to index. All PDFs were already indexed.")
+                    return {
+                        "indexed_chunks": 0,
+                        "submitted_pdfs": len(target_pdf_titles),
+                        "processed_pdfs": 0,
+                        "skipped_already_indexed_pdfs": len(skipped_already_indexed_titles),
+                        "skipped_already_indexed_titles": skipped_already_indexed_titles,
+                        "failed_pdfs": failed_pdf_errors,
+                    }
+                raise ValueError("No text could be extracted from the selected PDFs.")
+
             # Stage 2: Build index
             all_texts = [p.text for p in all_paragraphs]
             if self.use_chunk_contextualization:
                 try:
-                    for pdf_hash, context_info in per_pdf_context.items():
+                    pdf_titles_with_chunks = [
+                        pdf_title
+                        for pdf_title, context_info in per_pdf_context.items()
+                        if context_info.get("paragraph_indices")
+                    ]
+
+                    for pdf_idx, pdf_title in enumerate(pdf_titles_with_chunks):
+                        if progress_callback:
+                            progress_callback(
+                                "contextualization",
+                                pdf_idx,
+                                len(pdf_titles_with_chunks),
+                                f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_titles_with_chunks)}: {pdf_title[:80]}",
+                            )
+
+                        context_info = per_pdf_context[pdf_title]
                         paragraph_indices = context_info.get("paragraph_indices", [])
                         if not paragraph_indices:
                             continue
 
                         document_text = context_info.get("document_text", "")
                         if not document_text.strip():
-                            logger.warning("Skipping contextualization for pdf_hash=%s due to empty document text", pdf_hash)
+                            logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
                             continue
 
                         base_chunks = [all_texts[i] for i in paragraph_indices]
@@ -321,8 +389,8 @@ class ZoteroRAG:
 
                         if len(contextualized_chunks) != len(paragraph_indices):
                             logger.warning(
-                                "Contextualization size mismatch for pdf_hash=%s (%s vs %s), using original chunks",
-                                pdf_hash,
+                                "Contextualization size mismatch for %s (%s vs %s), using original chunks",
+                                pdf_title,
                                 len(contextualized_chunks),
                                 len(paragraph_indices),
                             )
@@ -330,6 +398,14 @@ class ZoteroRAG:
 
                         for offset, para_abs_idx in enumerate(paragraph_indices):
                             all_texts[para_abs_idx] = contextualized_chunks[offset]
+
+                        if progress_callback:
+                            progress_callback(
+                                "contextualization",
+                                pdf_idx + 1,
+                                len(pdf_titles_with_chunks),
+                                f"Contextualized PDF {pdf_idx + 1}/{len(pdf_titles_with_chunks)}: {pdf_title[:80]}",
+                            )
                 except Exception as e:
                     logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
                 finally:
@@ -347,10 +423,19 @@ class ZoteroRAG:
             )
         except Exception as e:
             logger.error(f"Error during upsert_paragraphs: {str(e)}")
+            raise
         finally:
+            _ = self._rollback_pdfs(set(target_pdf_titles), set(per_pdf_context.keys()))
             self.qdrant_manager.close_connection()
 
-        return indexed
+        return {
+            "indexed_chunks": indexed,
+            "submitted_pdfs": len(target_pdf_titles),
+            "processed_pdfs": len(per_pdf_context),
+            "skipped_already_indexed_pdfs": len(skipped_already_indexed_titles),
+            "skipped_already_indexed_titles": skipped_already_indexed_titles,
+            "failed_pdfs": failed_pdf_errors,
+        }
     
     def delete_pdf_by_title(self, pdf_title: str) -> bool:
         """Delete all paragraphs from a specific PDF in the index.
@@ -368,6 +453,7 @@ class ZoteroRAG:
 
             success = self.qdrant_manager.delete_pdf_from_index(normalized_title)
             if success:
+                self.pdf_processor.remove_cache_item(normalized_title)
                 self.pdf_cache.remove_pdf(normalized_title)
                 logger.info(f"Successfully deleted paragraphs for PDF: {normalized_title}")
             else:
@@ -388,6 +474,8 @@ class ZoteroRAG:
         try:
             self.qdrant_manager.initialize_connection()
             self.qdrant_manager.clear_collection()
+            self.pdf_cache.clear_cache()
+            self.pdf_processor.clear_cache()
             logger.info("Successfully cleared the Qdrant collection.")
             return True
         except Exception as e:

@@ -112,6 +112,21 @@ class PDFCacheHandler:
         else:
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
+        
+    def clear_cache(self) -> None:
+        """Remove all PDF files from the cache folder."""
+        if not os.path.isdir(self.folder_path):
+            logger.warning(f"Cache folder does not exist for clearing: {self.folder_path}")
+            return
+        
+        for root, _dirs, files in os.walk(self.folder_path):
+            for filename in files:
+                pdf_path = os.path.join(root, filename)
+                try:
+                    os.remove(pdf_path)
+                    logger.info(f"Removed cached PDF file: {pdf_path}")
+                except Exception as e:
+                    logger.error(f"Error removing cached PDF file '{pdf_path}': {e}")
 
     def get_items(self) -> List[Dict]:
         """Get PDF items from the folder.

@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import streamlit as st
+import time
 from zotero_rag import ZoteroRAG
 import re
 
@@ -311,17 +312,6 @@ def show_setup_tab():
                 key="indexed_pdf_filter"
             )
 
-            col_count, col_page = st.columns([1, 1])
-            with col_count:
-                st.metric("Total indexed", total_pdfs)
-            with col_page:
-                page_size = st.selectbox(
-                    "Rows per page",
-                    options=[25, 50, 100, 200],
-                    index=0,
-                    key="indexed_pdf_page_size"
-                )
-
             if filter_text:
                 filtered_pdfs = [
                     item for item in indexed_pdfs
@@ -332,17 +322,25 @@ def show_setup_tab():
 
             if filtered_pdfs:
                 total_filtered = len(filtered_pdfs)
+                page_size = 10
                 items_per_page = page_size * 2
                 max_page = max((total_filtered - 1) // items_per_page + 1, 1)
-                current_page = st.number_input(
-                    "Page",
-                    min_value=1,
-                    max_value=max_page,
-                    value=1,
-                    step=1,
-                    key="indexed_pdf_page"
-                )
 
+                col_count, col_chunks, col_page = st.columns(3)
+                with col_count:
+                    st.metric("Total indexed", total_pdfs)
+                with col_chunks:
+                    st.metric("Total chunks", sum(x["chunk_count"] for x in indexed_pdfs))
+                with col_page:
+                    current_page = st.number_input(
+                        "Page",
+                        min_value=1,
+                        max_value=max_page,
+                        value=1,
+                        step=1,
+                        key="indexed_pdf_page"
+                    )
+                
                 start = (current_page - 1) * items_per_page
                 end = start + items_per_page
                 page_items = filtered_pdfs[start:end]
@@ -403,32 +401,93 @@ def show_setup_tab():
                     else:
                         result = st.session_state.rag.ingest_pdf(uploaded_pdfs)
 
-                        pdf_progress_bar = st.progress(0)
-                        encoding_progress_bar = st.progress(0)
-                        def progress_callback(stage, current, total, message):
-                            if stage == 'pdf':
-                                progress = current / total if total > 0 else 0
-                                pdf_progress_bar.progress(progress, text=message)
-                            elif stage == 'encoding':
-                                progress = current / total if total > 0 else 0
-                                encoding_progress_bar.progress(progress, text=message)
-                        
-                        try:
-                            num_chunks = st.session_state.rag.upsert_pdfs(
-                                target_pdf_titles=result.get('ingested_titles', []),
-                                progress_callback=progress_callback
+                        failed_uploads = result.get("failed_uploads", [])
+                        already_indexed_titles = result.get("already_indexed_titles", [])
+
+                        if failed_uploads:
+                            st.warning(f"{len(failed_uploads)} PDF could not be uploaded to cache.")
+                            with st.expander("Show upload issues"):
+                                for item in failed_uploads:
+                                    st.write(f"- {item.get('name', 'Unknown file')}: {item.get('error', 'Unknown error')}")
+
+                        if already_indexed_titles:
+                            st.warning(
+                                f"{len(already_indexed_titles)} PDF already in cache and skipped before indexing."
                             )
-                            st.session_state.indexed = True
-                            pdf_progress_bar.empty()
-                            encoding_progress_bar.empty()
-                            st.success(f"✅ Indexing complete: {result['ingested']} new PDFs, {result['already_indexed']} already indexed, total chunks upserted: {num_chunks}")
-                            st.rerun()
-                        except Exception as e:
-                            pdf_progress_bar.empty()
-                            encoding_progress_bar.empty()
-                            st.error(f"Error building index: {e}")
-                            with st.expander("Show full error"):
-                                st.exception(e)
+                            with st.expander("Show cached duplicates"):
+                                for title in already_indexed_titles:
+                                    st.write(f"- {title}")
+
+                        target_titles = result.get('ingested_titles', [])
+                        if not target_titles:
+                            if result.get("ingested", 0) == 0 and result.get("already_indexed", 0) > 0:
+                                st.info("No new PDF to index: all selected files were already present in cache.")
+                            elif result.get("ingested", 0) == 0:
+                                st.warning("No valid PDF available for indexing.")
+                        else:
+                            stage_status = st.empty()
+                            pdf_progress_bar = st.progress(0, text="PDF analysis pending...")
+                            contextualization_progress_bar = st.progress(0, text="Contextualization pending...")
+                            encoding_progress_bar = st.progress(0, text="Embedding pending...")
+                            upsert_progress_bar = st.progress(0, text="Qdrant upsert pending...")
+
+                            def progress_callback(stage, current, total, message):
+                                progress = current / total if total > 0 else 0
+                                stage_status.info(message)
+                                if stage == 'pdf':
+                                    pdf_progress_bar.progress(progress, text=f"PDF analysis: {message}")
+                                elif stage == 'contextualization':
+                                    contextualization_progress_bar.progress(progress, text=f"Contextualization: {message}")
+                                elif stage == 'encoding':
+                                    encoding_progress_bar.progress(progress, text=f"Embedding: {message}")
+                                elif stage == 'upserting':
+                                    upsert_progress_bar.progress(progress, text=f"Qdrant upsert: {message}")
+
+                            try:
+                                upsert_report = st.session_state.rag.upsert_pdfs(
+                                    target_pdf_titles=target_titles,
+                                    progress_callback=progress_callback
+                                )
+
+                                indexed_chunks = int(upsert_report.get("indexed_chunks", 0))
+                                skipped_indexed_titles = upsert_report.get("skipped_already_indexed_titles", [])
+                                failed_pdfs = upsert_report.get("failed_pdfs", [])
+
+                                stage_status.success("Indexing workflow completed.")
+                                pdf_progress_bar.progress(1.0, text="PDF analysis completed")
+                                contextualization_progress_bar.progress(1.0, text="Contextualization completed")
+                                encoding_progress_bar.progress(1.0, text="Embedding completed")
+                                upsert_progress_bar.progress(1.0, text="Qdrant upsert completed")
+
+                                if indexed_chunks > 0:
+                                    st.session_state.indexed = True
+                                    st.success(
+                                        f"✅ Indexing complete: {result.get('ingested', 0)} new PDFs processed, {indexed_chunks} chunks upserted."
+                                    )
+                                else:
+                                    st.info("Indexing finished but no new chunks were upserted.")
+
+                                if skipped_indexed_titles:
+                                    st.warning(
+                                        f"{len(skipped_indexed_titles)} PDF skipped because already indexed in Qdrant."
+                                    )
+                                    with st.expander("Show Qdrant duplicates"):
+                                        for title in skipped_indexed_titles:
+                                            st.write(f"- {title}")
+
+                                if failed_pdfs:
+                                    st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
+                                    with st.expander("Show processing errors"):
+                                        for item in failed_pdfs:
+                                            st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
+
+                                time.sleep(2.0)
+                                st.rerun()
+                            except Exception as e:
+                                stage_status.error("Indexing failed.")
+                                st.error(f"Error building index: {e}")
+                                with st.expander("Show full error"):
+                                    st.exception(e)
 
             #TODO: una possibile azione può essere di selezionare una collection di zotero invece della cartella
 
@@ -447,6 +506,7 @@ def show_setup_tab():
                         deleted = st.session_state.rag.delete_pdf_by_title(pdf_name_to_delete.strip())
                         if deleted:
                             st.success(f"PDF '{pdf_name_to_delete}' deletion requested.")
+                            time.sleep(1.0)
                             st.rerun()
                         else:
                             st.warning(f"No PDF named '{pdf_name_to_delete}' found in index.")
@@ -460,6 +520,7 @@ def show_setup_tab():
                         st.session_state.rag.clear_index()
                         st.session_state.indexed = False
                         st.success("Full index clear requested.")
+                        st.rerun()
     
     st.markdown("---")
     
