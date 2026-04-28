@@ -128,6 +128,21 @@ class PDFCacheHandler:
                 except Exception as e:
                     logger.error(f"Error removing cached PDF file '{pdf_path}': {e}")
 
+    def get_pdf_path(self, title: str) -> Union[str, None]:
+        """Get full path of a cached PDF by title."""
+        if not title:
+            logger.warning("Title cannot be empty for getting PDF path")
+            return None
+
+        sanitized_title = self._sanitize_filename(title)
+        candidate_path = os.path.join(self.folder_path, f"{sanitized_title}.pdf")
+
+        if os.path.isfile(candidate_path):
+            return candidate_path
+
+        logger.warning(f"PDF file not found for title '{title}': {candidate_path}")
+        return None
+
     def get_items(self) -> List[Dict]:
         """Get PDF items from the folder.
         

@@ -68,7 +68,6 @@ def answer_to_dict(answer: Answer) -> Dict[str, Any]:
         'context': answer.context,
         'pdf_path': answer.pdf_path,
         'page_num': answer.page_num,
-        'item_key': answer.item_key,
         'title': answer.title,
         'section': answer.section,
         'start_char': answer.start_char,

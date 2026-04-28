@@ -307,6 +307,7 @@ class QdrantManager:
                 page_num=payload.get('page_num', -1),
                 para_idx=payload.get('para_idx', -1),
                 title=payload.get('title', ''),
+                pdf_hash=payload.get('pdf_hash', ''),
                 section=payload.get('section', ''),
                 sentence_count=payload.get('sentence_count', 0),
                 sentences=payload.get('sentences', [])

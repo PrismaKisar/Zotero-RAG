@@ -66,8 +66,6 @@ def main():
         st.session_state.collections_loaded = False
     if 'collections' not in st.session_state:
         st.session_state.collections = []
-    if 'collection_name' not in st.session_state:
-        st.session_state.collection_name = None
     if 'dense_model_name' not in st.session_state:
         st.session_state.dense_model_name = "BAAI/bge-base-en-v1.5"
     if 'model_loaded' not in st.session_state:
@@ -1047,8 +1045,7 @@ def show_search_tab():
         with col6:
             if st.button("💾 Highlight All", width="stretch"):
                 # Answers already have the highlighting info
-                coll_name = st.session_state.rag.collection_name or "All_Library"
-                output_dir = os.path.join(st.session_state.output_dir, coll_name, "highlighted")
+                output_dir = os.path.join(st.session_state.output_dir, "highlighted_results")
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Group answers by PDF

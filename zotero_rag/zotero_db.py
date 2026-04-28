@@ -40,6 +40,7 @@ class ZoteroDatabase:
         
     def _sanitize_filename(self, name: str) -> str:
         """Converts a string into a safe filename."""
+        import re
         if not name:
             return "_All_Library"
         s = name.replace(" ", "_")

@@ -611,6 +611,24 @@ class ZoteroRAG:
             custom_config=custom_config
         )
         
+        return self._attach_pdf_paths(answers)
+    
+    def _attach_pdf_paths(self, answers: List[Answer]) -> List[Answer]:
+        """Resolve cached PDF paths for extracted answers.
+        
+        Args:
+            answers: List of Answer objects with title but no pdf_path.
+        
+        Returns:
+            List of Answer objects with pdf_path set where available."""
+        
+        for ans in answers:
+            pdf_path = self.pdf_cache.get_pdf_path(ans.title)
+            if pdf_path:
+                ans.pdf_path = pdf_path
+            else:
+                ans.pdf_path = None
+
         return answers
     
     def highlight_pdf(self, answers_for_pdf: List[Answer], output_path: str) -> str:

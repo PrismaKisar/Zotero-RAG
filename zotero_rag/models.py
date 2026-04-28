@@ -1,7 +1,7 @@
 """Data models for the Zotero RAG system."""
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
 @dataclass
@@ -38,9 +38,7 @@ class Answer:
     """Represents an extracted answer to a question."""
     text: str  # The answer text extracted from passage
     context: str  # Full paragraph context
-    pdf_path: str
     page_num: int
-    item_key: str
     title: str
     section: str = "body"
     start_char: int = 0  # Character position in context where answer starts
@@ -51,12 +49,13 @@ class Answer:
     sentence_coords: List[str] = field(default_factory=list)  # TEI coordinates for highlighting
     retrieval_score: float = 0.0  # Semantic search distance/score
     rerank_score: float = 0.0  # CrossEncoder reranking score
+    pdf_path: Optional[str] = None
     
     def __reduce__(self):
         """Custom pickle support for dataclass."""
         return (
             self.__class__,
-            (self.text, self.context, self.pdf_path, self.page_num, self.item_key, self.title,
+            (self.text, self.context, self.pdf_path, self.page_num, self.title,
              self.section, self.start_char, self.end_char, self.score, self.query, self.color, 
              self.sentence_coords, self.retrieval_score, self.rerank_score)
         )

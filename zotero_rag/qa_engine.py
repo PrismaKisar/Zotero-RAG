@@ -464,9 +464,7 @@ class QAEngine:
             answers.append(Answer(
                 text=expanded_text,
                 context=target_paragraph.text,
-                pdf_path=target_paragraph.pdf_path,
                 page_num=target_paragraph.page_num,
-                item_key=target_paragraph.item_key,
                 title=target_paragraph.title,
                 section=target_paragraph.section,
                 start_char=new_start,
@@ -510,7 +508,7 @@ class QAEngine:
             def dedup_list(alist):
                 seen, uniq = set(), []
                 for a in alist:
-                    sig = (a.pdf_path, " ".join(a.text.lower().split()))
+                    sig = (a.title, " ".join(a.text.lower().split()))
                     if sig not in seen:
                         seen.add(sig)
                         uniq.append(a)
@@ -535,7 +533,7 @@ class QAEngine:
             for ans in answers:
                 if not is_valid_score(ans): continue
                 
-                sig = (ans.pdf_path, " ".join(ans.text.lower().split()))
+                sig = (ans.title, " ".join(ans.text.lower().split()))
                 if sig not in seen_answers:
                     seen_answers.add(sig)
                     unique_answers.append(ans)
