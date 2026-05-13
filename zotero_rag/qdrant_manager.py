@@ -163,6 +163,7 @@ class QdrantManager:
                         paragraphs: List[Paragraph],
                         dense_embeddings: List[List[float]],
                         sparse_embeddings: List[Dict[str, List[float]]],
+                        contextual_texts: Optional[List[str]] = None, #:FIXME: debug
                         progress_callback=None) -> int:
         """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
 
@@ -186,6 +187,11 @@ class QdrantManager:
 
         if len(sparse_embeddings) != len(paragraphs):
             raise ValueError("Sparse embeddings count does not match paragraphs count.")
+
+        if contextual_texts is None:    #FIXME: debug
+            contextual_texts = [p.text for p in paragraphs]
+        elif len(contextual_texts) != len(paragraphs):
+            raise ValueError("Contextual texts count does not match paragraphs count.")
         
         self.paragraphs = paragraphs
 
@@ -203,6 +209,7 @@ class QdrantManager:
                 vector=vector_config,
                 payload={
                     'text': para.text,
+                    'contextual_text': contextual_texts[i], #FIXME: debug
                     'page_num': para.page_num,
                     'para_idx': para.para_idx,
                     'title': para.title,

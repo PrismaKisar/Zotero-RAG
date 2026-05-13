@@ -413,12 +413,14 @@ class ZoteroRAG:
             else:
                 logger.info("Chunk contextualization disabled: using original chunks for embedding.")
 
+            contextual_texts = list(all_texts) #FIXME: debug
             hybrid_embeddings = self.embedding_manager.encode_paragraphs(progress_callback, all_texts)
 
             indexed = self.qdrant_manager.upsert_paragraphs(
                 all_paragraphs,
                 dense_embeddings=hybrid_embeddings["dense"],
                 sparse_embeddings=hybrid_embeddings["sparse"],
+                contextual_texts=contextual_texts, #FIXME: debug
                 progress_callback=progress_callback,
             )
         except Exception as e:

@@ -643,90 +643,92 @@ def show_search_tab():
     )
     
     st.markdown("---")
-    
-    # Question type selector
-    st.subheader("Question Type")
-    
-    question_type_options = list(QUESTION_TYPE_PRESETS.keys())
-    question_type_labels = [
-        f"{QUESTION_TYPE_PRESETS[qt]['emoji']} {qt.title()} - {QUESTION_TYPE_PRESETS[qt]['description']}"
-        for qt in question_type_options
-    ]
-    
-    selected_idx = question_type_options.index(st.session_state.selected_question_type)
-    selected_label = st.selectbox(
-        "Select question type to apply preset parameters",
-        question_type_labels,
-        index=selected_idx,
-        key="question_type_selector"
-    )
-    
-    # Extract question type from label
-    selected_question_type = question_type_options[question_type_labels.index(selected_label)]
-    st.session_state.selected_question_type = selected_question_type
-    
+
+    col_question_type, col_adjust = st.columns([1, 2], gap="large")
+
+    with col_question_type:
+        # Question type selector
+        st.subheader("Question Type")
+
+        question_type_options = list(QUESTION_TYPE_PRESETS.keys())
+        question_type_labels = [
+            f"{QUESTION_TYPE_PRESETS[qt]['emoji']} {qt.title()} - {QUESTION_TYPE_PRESETS[qt]['description']}"
+            for qt in question_type_options
+        ]
+
+        selected_idx = question_type_options.index(st.session_state.selected_question_type)
+        selected_label = st.selectbox(
+            "Select question type to apply preset parameters",
+            question_type_labels,
+            index=selected_idx,
+            key="question_type_selector"
+        )
+
+        # Extract question type from label
+        selected_question_type = question_type_options[question_type_labels.index(selected_label)]
+        st.session_state.selected_question_type = selected_question_type
+
     preset = QUESTION_TYPE_PRESETS[selected_question_type]
-    
-    st.markdown("---")
-    
-    # Always show configurable parameters (pre-filled with preset values)
-    st.subheader("Adjust Parameters (optional)")
-    col_retrieval, col_rerank, col_qa = st.columns(3)
-    
-    with col_retrieval:
-        retrieval_threshold = st.number_input(
-            "1. Retrieval Distance",
-            min_value=0.1, max_value=10.0, 
-            value=preset['retrieval_threshold'], 
-            step=0.1,
-            help="Stage 1 (FAISS): Higher = more paragraphs retrieved."
-        )
 
-    with col_rerank:
-        rerank_threshold = st.number_input(
-            "2. Rerank Threshold",
-            min_value=0.0, max_value=1.0, 
-            value=preset['rerank_threshold'], 
-            step=0.05,
-            help="Stage 2 (CrossEncoder): Minimum semantic similarity score (0.0-1.0)."
-        )
+    with col_adjust:
+        # Always show configurable parameters (pre-filled with preset values)
+        st.subheader("Adjust Parameters (optional)")
+        col_retrieval, col_rerank, col_qa = st.columns(3)
 
-    with col_qa:
-        qa_score_threshold = st.number_input(
-            "3. QA Confidence",
-            min_value=0.0, max_value=1.0, 
-            value=preset['qa_score_threshold'], 
-            step=0.05,
-            help="Stage 3 (QA Model): Confidence threshold."
-        )
-    
-    col_min_words, col_max_length, col_paraphrases = st.columns(3)
-    with col_min_words:
-        min_answer_words = st.number_input(
-            "Min Answer Words",
-            min_value=1, max_value=20, 
-            value=preset['min_answer_words'], 
-            step=1,
-            help="Minimum words in an answer."
-        )
-    
-    with col_max_length:
-        max_answer_length = st.number_input(
-            "Max Answer Length",
-            min_value=10, max_value=500, 
-            value=preset['max_answer_length'], 
-            step=10,
-            help="Maximum words in an answer."
-        )
-    
-    with col_paraphrases:
-        num_paraphrases = st.number_input(
-            "Question Paraphrases",
-            min_value=0, max_value=10, 
-            value=2, 
-            step=1,
-            help="Number of question paraphrases to generate (0 = disabled, uses only original question)."
-        )
+        with col_retrieval:
+            retrieval_threshold = st.number_input(
+                "1. Retrieval Distance",
+                min_value=0.1, max_value=10.0,
+                value=preset['retrieval_threshold'],
+                step=0.1,
+                help="Stage 1 (FAISS): Higher = more paragraphs retrieved."
+            )
+
+        with col_rerank:
+            rerank_threshold = st.number_input(
+                "2. Rerank Threshold",
+                min_value=0.0, max_value=1.0,
+                value=preset['rerank_threshold'],
+                step=0.05,
+                help="Stage 2 (CrossEncoder): Minimum semantic similarity score (0.0-1.0)."
+            )
+
+        with col_qa:
+            qa_score_threshold = st.number_input(
+                "3. QA Confidence",
+                min_value=0.0, max_value=1.0,
+                value=preset['qa_score_threshold'],
+                step=0.05,
+                help="Stage 3 (QA Model): Confidence threshold."
+            )
+
+        col_min_words, col_max_length, col_paraphrases = st.columns(3)
+        with col_min_words:
+            min_answer_words = st.number_input(
+                "Min Answer Words",
+                min_value=1, max_value=20,
+                value=preset['min_answer_words'],
+                step=1,
+                help="Minimum words in an answer."
+            )
+
+        with col_max_length:
+            max_answer_length = st.number_input(
+                "Max Answer Length",
+                min_value=10, max_value=500,
+                value=preset['max_answer_length'],
+                step=10,
+                help="Maximum words in an answer."
+            )
+
+        with col_paraphrases:
+            num_paraphrases = st.number_input(
+                "Question Paraphrases",
+                min_value=0, max_value=10,
+                value=2,
+                step=1,
+                help="Number of question paraphrases to generate (0 = disabled, uses only original question)."
+            )
     
     # Build custom config if user modified any values from preset
     if (qa_score_threshold != preset['qa_score_threshold'] or
@@ -757,6 +759,12 @@ def show_search_tab():
         st.session_state.highlight_color_preset = 'Yellow'
     if 'highlight_color_custom' not in st.session_state:
         st.session_state.highlight_color_custom = (1.0, 1.0, 0.0)
+
+    def _get_selected_highlight_color():
+        color_preset = st.session_state.get('highlight_color_preset', 'Yellow')
+        if color_preset == 'Custom':
+            return st.session_state.get('highlight_color_custom', (1.0, 1.0, 0.0))
+        return COLOR_PRESETS.get(color_preset, (1.0, 1.0, 0.0))
     
     st.markdown("---")
     
@@ -934,13 +942,6 @@ def show_search_tab():
             qa_status.text(f"🤖 Stage 2 - QA Extraction: {message} {time_info}")
         
         try:
-            # Get highlight color from session state
-            color_preset = st.session_state.get('highlight_color_preset', 'Yellow')
-            if color_preset == 'Custom':
-                highlight_color = st.session_state.get('highlight_color_custom', (1.0, 1.0, 0.0))
-            else:
-                highlight_color = COLOR_PRESETS[color_preset]
-            
             # Prepare selected paraphrases (if any)
             selected_paraphrases = None
             if (num_paraphrases > 0 and 
@@ -963,9 +964,13 @@ def show_search_tab():
                 question_type=selected_question_type,
                 custom_config=custom_config,
                 num_paraphrases=num_paraphrases,
-                highlight_color=highlight_color,
                 question_variations=selected_paraphrases
             )
+
+            st.session_state.search_run_id = st.session_state.get('search_run_id', 0) + 1
+            st.session_state.highlight_selected = {
+                i: True for i in range(len(st.session_state.search_results))
+            }
             
             # Mark completion
             rerank_progress_bar.progress(1.0)
@@ -994,6 +999,14 @@ def show_search_tab():
     
     # Display results
     if st.session_state.search_results:
+        if 'search_run_id' not in st.session_state:
+            st.session_state.search_run_id = 1
+        if ('highlight_selected' not in st.session_state or
+            len(st.session_state.highlight_selected) != len(st.session_state.search_results)):
+            st.session_state.highlight_selected = {
+                i: True for i in range(len(st.session_state.search_results))
+            }
+
         # Get question type info
         question_type = st.session_state.get('current_question_type', 'general')
         preset = QUESTION_TYPE_PRESETS.get(question_type, QUESTION_TYPE_PRESETS['general'])
@@ -1006,8 +1019,10 @@ def show_search_tab():
         st.success(f"✅ Found {len(st.session_state.search_results)} answers for: *{st.session_state.current_query}*")
         
         # Navigation and actions
-        st.markdown("---")
-        col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 2])
+        st.write("")
+        st.write("")
+        st.write("")
+        col1, col2, col3, spaceCol, col4 = st.columns([1, 1, 1, 3, 1], gap="large")
         
         with col1:
             if st.button("⬅️ Previous"):
@@ -1023,6 +1038,9 @@ def show_search_tab():
                 # Wrap around: if at last result, go to first
                 st.session_state.current_index = (st.session_state.current_index + 1) % len(st.session_state.search_results)
                 st.rerun()
+
+        with spaceCol:
+            pass # Empty column for spacing
         
         with col4:
             if st.button("📖 Open PDF"):
@@ -1038,62 +1056,14 @@ def show_search_tab():
                     st.success(f"✅ Opened PDF at page {answer.page_num + 1}")
                 except Exception as e:
                     st.error(f"Could not open PDF: {e}")
-        
-        with col5:
-            pass  # Empty column for spacing
-        
-        with col6:
-            if st.button("💾 Highlight All", width="stretch"):
-                # Answers already have the highlighting info
-                output_dir = os.path.join(st.session_state.output_dir, "highlighted_results")
-                os.makedirs(output_dir, exist_ok=True)
-                
-                # Group answers by PDF
-                pdfs_answers = {}
-                for answer in st.session_state.search_results:
-                    if answer.pdf_path not in pdfs_answers:
-                        pdfs_answers[answer.pdf_path] = []
-                    pdfs_answers[answer.pdf_path].append(answer)
-                
-                highlighted_paths = []
-                failed_pdfs = []
-                progress_bar = st.progress(0)
-                
-                for idx, (pdf_path, answers) in enumerate(pdfs_answers.items()):
-                    original_filename = os.path.basename(pdf_path)
-                    name_without_ext = os.path.splitext(original_filename)[0]
-                    output_filename = f"{name_without_ext}_highlighted.pdf"
-                    output_path = os.path.join(output_dir, output_filename)
-                    
-                    result_path = st.session_state.rag.highlight_pdf(answers, output_path)
-                    if result_path:
-                        highlighted_paths.append(result_path)
-                    else:
-                        failed_pdfs.append(original_filename)
-                    
-                    progress_bar.progress((idx + 1) / len(pdfs_answers))
-                
-                progress_bar.empty()
-                
-                if failed_pdfs:
-                    st.error(f"❌ Failed to highlight {len(failed_pdfs)} PDF(s)")
-                    with st.expander("Show failed PDFs"):
-                        for pdf_name in failed_pdfs:
-                            st.text(f"📄 {pdf_name}")
-                
-                if highlighted_paths:
-                    st.success(f"✅ Successfully highlighted {len(highlighted_paths)} PDF(s)")
-                    with st.expander("Show highlighted files"):
-                        for path in highlighted_paths:
-                            st.text(f"📄 {os.path.basename(path)}")
-                        st.text(f"📁 Location: {output_dir}")
-        
-        # Color selection for next search/highlights
-        st.markdown("---")
-        st.subheader("🎨 Highlight Color (for next search)")
-        
-        col_preset, col_rgb = st.columns([1, 2])
-        
+
+        # Highlight color selection for Highlight Selected
+        st.write("")
+        st.write("")
+        st.subheader("🎨 Highlight Color")
+
+        col_preset, col_rgb, col_highlight = st.columns([1, 2, 1], gap="large")
+
         with col_preset:
             color_preset = st.selectbox(
                 "Color Preset",
@@ -1103,7 +1073,7 @@ def show_search_tab():
                 key="color_preset_results"
             )
             st.session_state.highlight_color_preset = color_preset
-        
+
         with col_rgb:
             if color_preset == 'Custom':
                 # Show RGB sliders for custom color
@@ -1118,32 +1088,98 @@ def show_search_tab():
                 st.session_state.highlight_color_custom = highlight_color_next
             else:
                 highlight_color_next = COLOR_PRESETS[color_preset]
-            
+
             # Show color preview
             color_hex_next = rgb_to_hex(highlight_color_next)
             st.markdown(
                 f"**Preview:** <span style='background-color: {color_hex_next}; padding: 5px 20px; border: 1px solid #ccc;'>&nbsp;&nbsp;&nbsp;&nbsp;</span>",
                 unsafe_allow_html=True
             )
+
+        with col_highlight:
+            if st.button("💾 Highlight Selected Articles", width="stretch"):
+                highlight_color_override = _get_selected_highlight_color()
+                selected_indices = [
+                    i for i, selected in st.session_state.highlight_selected.items() if selected
+                ]
+                selected_answers = [
+                    ans for i, ans in enumerate(st.session_state.search_results)
+                    if i in selected_indices
+                ]
+
+                if not selected_answers:
+                    st.warning("Select at least one answer to highlight.")
+                else:
+                    output_dir = os.path.join(st.session_state.output_dir, "highlighted_results")
+                    os.makedirs(output_dir, exist_ok=True)
+
+                    # Group answers by PDF
+                    pdfs_answers = {}
+                    for answer in selected_answers:
+                        answer.color = highlight_color_override
+                        if answer.pdf_path not in pdfs_answers:
+                            pdfs_answers[answer.pdf_path] = []
+                        pdfs_answers[answer.pdf_path].append(answer)
+
+                    highlighted_paths = []
+                    failed_pdfs = []
+                    progress_bar = st.progress(0)
+
+                    for idx, (pdf_path, answers) in enumerate(pdfs_answers.items()):
+                        original_filename = os.path.basename(pdf_path)
+                        name_without_ext = os.path.splitext(original_filename)[0]
+                        output_filename = f"{name_without_ext}_highlighted.pdf"
+                        output_path = os.path.join(output_dir, output_filename)
+
+                        result_path = st.session_state.rag.highlight_pdf(answers, output_path)
+                        if result_path:
+                            highlighted_paths.append(result_path)
+                        else:
+                            failed_pdfs.append(original_filename)
+
+                        progress_bar.progress((idx + 1) / len(pdfs_answers))
+
+                    progress_bar.empty()
+
+                    if failed_pdfs:
+                        st.error(f"❌ Failed to highlight {len(failed_pdfs)} PDF(s)")
+                        with st.expander("Show failed PDFs"):
+                            for pdf_name in failed_pdfs:
+                                st.text(f"📄 {pdf_name}")
+
+                    if highlighted_paths:
+                        st.success(f"✅ Successfully highlighted {len(highlighted_paths)} PDF(s)")
+                        with st.expander("Show highlighted files"):
+                            for path in highlighted_paths:
+                                st.text(f"📄 {os.path.basename(path)}")
+                            st.text(f"📁 Location: {output_dir}")
         
         # Current result display
         st.markdown("---")
         answer = st.session_state.search_results[st.session_state.current_index]
-        
-        # Result card with color indicator
-        color_hex = rgb_to_hex(answer.color)
-                
+
         st.subheader(f"📄 {answer.title}")
-        st.markdown(
-            f"""**PDF**: {os.path.basename(answer.pdf_path)}<br>
-            **Page**: {answer.page_num + 1} | 
-            **Section**: {answer.section or 'Unknown'} | 
-            **Retrieval Score**: {answer.retrieval_score:.4f} | 
-            **Rerank Score**: {answer.rerank_score:.4f} | 
-            **QA Score**: {answer.score:.4f} | 
-            **Highlight Color**: <span style="color: {color_hex}; font-size: 20px;">●</span>""",
-            unsafe_allow_html=True
-        )
+        info_col, select_col = st.columns([5, 1], gap="large")
+
+        with info_col:
+            st.markdown(
+                f"""**PDF**: {os.path.basename(answer.pdf_path)}<br>
+                **Page**: {answer.page_num + 1} | 
+                **Section**: {answer.section or 'Unknown'} | 
+                **Retrieval Score**: {answer.retrieval_score:.4f} | 
+                **Rerank Score**: {answer.rerank_score:.4f} | 
+                **QA Score**: {answer.score:.4f}""",
+                unsafe_allow_html=True
+            )
+
+        with select_col:
+            selection_key = f"highlight_select_{st.session_state.search_run_id}_{st.session_state.current_index}"
+            highlight_this = st.checkbox(
+                "Highlight this answer",
+                value=st.session_state.highlight_selected.get(st.session_state.current_index, True),
+                key=selection_key
+            )
+            st.session_state.highlight_selected[st.session_state.current_index] = highlight_this
         
         # Answer display
         st.subheader("💡 Answer")
