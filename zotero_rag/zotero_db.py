@@ -5,6 +5,8 @@ import sqlite3
 import logging
 from typing import List, Dict, Optional
 
+from models import PDFIngestItem, PathSource
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,19 +69,19 @@ class ZoteroDatabase:
         conn.close()
         return collections
     
-    def get_items(self, collection_name: str = None) -> List[Dict]:
+    def get_items(self, collection_name: str = None) -> List[PDFIngestItem]:
         """Get PDF items from Zotero library or a specific collection.
         
         Args:
             collection_name: Name of the collection to filter by. If None, get all items.
             
         Returns:
-            List of dictionaries with 'key', 'path', and 'title' keys.
+            List of PDFIngestItem objects with title and source.
         """
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.execute("PRAGMA query_only = ON")
         cursor = conn.cursor()
-        items = []
+        items: List[PDFIngestItem] = []
         
         if collection_name:
             # Get items from specific collection
@@ -138,11 +140,7 @@ class ZoteroDatabase:
             
             # Only include if file exists
             if pdf_path and os.path.exists(pdf_path):
-                items.append({
-                    'key': key, 
-                    'path': pdf_path, 
-                    'title': title
-                })
+                items.append(PDFIngestItem(title=title, source=PathSource(pdf_path)))
         
         conn.close()
         return items

@@ -12,7 +12,7 @@ import warnings
 import nltk
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
-from models import Paragraph, Answer
+from models import Paragraph, Answer, PDFIngestItem, IngestResult
 from zotero_db import ZoteroDatabase
 from pdf_cache_handler import PDFCacheHandler
 from pdf_processor import PDFProcessor
@@ -199,44 +199,68 @@ class ZoteroRAG:
         finally:
             self.qdrant_manager.close_connection()
 
-    def ingest_pdf(self, uploaded_pdfs: List[UploadedFile]) -> Dict[str, Union[int, List[str], List[Dict[str, str]]]]:
-        """Ingest multiple uploaded PDFs and return their metadata.
+    def _ingest_pdfs(self, uploaded_pdfs: List[PDFIngestItem]) -> IngestResult:
+        """Ingest PDFs into cache and prepare for indexing.
 
         Args:
-            uploaded_pdfs: List of UploadedFile objects from Streamlit file uploader.
+            uploaded_pdfs: List of PDFIngestItem objects for PDFs to ingest.
 
         Returns:
-            Dictionary with ingestion counters and list of ingested PDF titles.
+            IngestResult with summary and error details.
         """
         if not uploaded_pdfs:
             raise ValueError("uploaded_pdfs cannot be empty")
-        
-        ingested_count = 0
-        already_indexed_count = 0
-        ingested_titles: List[str] = []
-        already_indexed_titles: List[str] = []
-        failed_uploads: List[Dict[str, str]] = []
+
+        result = IngestResult()
         for uploaded_pdf in uploaded_pdfs:
             try:
                 ingest_result = self.pdf_cache.ingest_pdf(uploaded_pdf)
                 if ingest_result["already_indexed"]:
-                    already_indexed_count += 1
-                    already_indexed_titles.append(str(ingest_result["title"]))
+                    result.already_indexed += 1
+                    result.already_indexed_titles.append(str(ingest_result["title"]))
                 else:
-                    ingested_count += 1
-                    ingested_titles.append(str(ingest_result["title"]))
+                    result.ingested += 1
+                    result.ingested_titles.append(str(ingest_result["title"]))
             except Exception as e:
-                logger.error(f"Error ingesting PDF '{uploaded_pdf.name}': {str(e)}")
-                failed_uploads.append({"name": str(uploaded_pdf.name), "error": str(e)})
+                logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {str(e)}")
+                result.failed_uploads.append(
+                    {"title": str(uploaded_pdf.title), "error": str(e)}
+                )
 
-        return {
-            "ingested": ingested_count,
-            "already_indexed": already_indexed_count,
-            "ingested_titles": ingested_titles,
-            "already_indexed_titles": already_indexed_titles,
-            "failed_uploads": failed_uploads,
-        }
-    
+        return result
+
+    def ingest_pdfs_from_upload(self, uploaded_pdfs: List[UploadedFile]) -> IngestResult:
+        """Ingest PDFs from user uploads.
+
+        Args:
+            uploaded_pdfs: List of UploadedFile objects from Streamlit file uploader.
+        
+        Returns:
+            IngestResult with summary and error details.
+        """
+        if not uploaded_pdfs:
+            raise ValueError("uploaded_pdfs cannot be empty")
+        
+        return self._ingest_pdfs(self.pdf_cache.get_items_from_upload(uploaded_pdfs))
+        
+    def ingest_pdfs_from_zotero(self, collection_name: str) -> IngestResult:
+        """Ingest PDFs from a specific Zotero collection.
+
+        Args:
+            zotero_data_dir: Path to Zotero data directory. Auto-detect if None.
+            collection_name: Name of the Zotero collection to ingest from.
+
+        Returns:
+            IngestResult with summary and error details.
+        """ 
+        if not collection_name:
+            raise ValueError("collection_name cannot be empty")
+        
+        source = ZoteroDatabase(None)
+        uploaded_pdfs = source.get_items(collection_name)
+        
+        return self._ingest_pdfs(uploaded_pdfs)
+
     def _rollback_pdfs(self, uploaded_pdf: set[str], indexed_pdf: set[str]) -> bool:
         """Determine which PDFs to remove from cache based on ingestion vs indexing results.
         

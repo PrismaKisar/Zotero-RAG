@@ -1,7 +1,9 @@
 """Data models for the Zotero RAG system."""
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+import hashlib
+import shutil
+from typing import Any, Dict, List, Tuple, Optional, Protocol
 
 
 @dataclass
@@ -59,3 +61,69 @@ class Answer:
              self.section, self.start_char, self.end_char, self.score, self.query, self.color, 
              self.sentence_coords, self.retrieval_score, self.rerank_score)
         )
+
+
+@dataclass
+class IngestResult:
+    """Summary of an ingestion operation."""
+
+    ingested: int = 0
+    already_indexed: int = 0
+    ingested_titles: List[str] = field(default_factory=list)
+    already_indexed_titles: List[str] = field(default_factory=list)
+    failed_uploads: List[Dict[str, str]] = field(default_factory=list)
+
+
+class PDFSource(Protocol):
+    """Strategy interface for PDF ingestion sources."""
+
+    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+        ...
+
+    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+        ...
+
+
+@dataclass
+class UploadSource:
+    """PDF source backed by an in-memory upload."""
+
+    uploaded_file: Any
+
+    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+        h = hashlib.sha256()
+        self.uploaded_file.seek(0)
+        for chunk in iter(lambda: self.uploaded_file.read(chunk_size), b""):
+            h.update(chunk)
+        self.uploaded_file.seek(0)
+        return h.hexdigest()
+
+    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+        self.uploaded_file.seek(0)
+        with open(dest_path, "wb") as out_file:
+            shutil.copyfileobj(self.uploaded_file, out_file, length=chunk_size)
+        self.uploaded_file.seek(0)
+
+
+@dataclass
+class PathSource:
+    """PDF source backed by a file path."""
+
+    path: str
+
+    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+        h = hashlib.sha256()
+        with open(self.path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+        shutil.copy2(self.path, dest_path)
+
+
+@dataclass
+class PDFIngestItem:
+    """Represents a PDF ingestion source."""
+    title: str
+    source: PDFSource

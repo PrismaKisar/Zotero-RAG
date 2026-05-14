@@ -7,6 +7,8 @@ from typing import List, Dict, Union
 
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
+from models import PDFIngestItem, UploadSource
+
 logger = logging.getLogger(__name__)
 
 class PDFCacheHandler:
@@ -37,33 +39,40 @@ class PDFCacheHandler:
         s = name.replace(" ", "_").replace("/", "_").replace("\\", "_")
         s = re.sub(r'(?u)[^-\w.]', '', s)
         return s
+    
+    def _compute_pdf_hash(self, file_path: str, chunk_size: int = 1024 * 1024) -> str:
+            """Compute SHA-256 hash of a PDF file."""
+            h = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(chunk_size), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+    
+    def get_items_from_upload(self, uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]:
+        items: List[PDFIngestItem] = []
+        for uploaded_file in uploaded_files:
+            if uploaded_file is None:
+                logger.warning("Skipping None uploaded file")
+                continue
 
-    def ingest_pdf(self, uploaded_pdf: UploadedFile) -> Dict[str, bool]:
-        """Save uploaded PDF to target directory with a unique name.
-        
-        Args:
-            uploaded_pdf: UploadedFile object from Streamlit file uploader.
+            title = os.path.splitext(uploaded_file.name)[0]
+            items.append(PDFIngestItem(title=title, source=UploadSource(uploaded_file)))
 
-        Returns:
-            Dictionary with title and already_indexed flag.
-        """
+        return items
+
+    def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> Dict[str, bool]:
         if uploaded_pdf is None:
             raise ValueError("uploaded_pdf cannot be None")
 
-        original_stem = os.path.splitext(uploaded_pdf.name)[0]
-        base_title = self._sanitize_filename(original_stem)
-
-        pdf_bytes = uploaded_pdf.getvalue()
-        incoming_hash = hashlib.sha256(pdf_bytes).hexdigest()
-
-        counter = 0
+        base_title = self._sanitize_filename(uploaded_pdf.title)
         candidate_title = base_title
         candidate_filename = f"{candidate_title}.pdf"
         candidate_path = os.path.join(self.folder_path, candidate_filename)
 
+        incoming_hash = uploaded_pdf.source.compute_hash()
+        counter = 0
         while os.path.exists(candidate_path):
-            with open(candidate_path, "rb") as existing_file:
-                existing_hash = hashlib.sha256(existing_file.read()).hexdigest()
+            existing_hash = self._compute_pdf_hash(candidate_path)
 
             if existing_hash == incoming_hash:
                 logger.info(f"Skipped duplicate PDF upload for title '{candidate_title}'")
@@ -77,8 +86,10 @@ class PDFCacheHandler:
             candidate_filename = f"{candidate_title}.pdf"
             candidate_path = os.path.join(self.folder_path, candidate_filename)
 
-        with open(candidate_path, "wb") as out_file:
-            out_file.write(pdf_bytes)
+        try:
+            uploaded_pdf.source.write_to(candidate_path)
+        except Exception as e:
+            raise IOError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
 
         return {
             "title": candidate_title,

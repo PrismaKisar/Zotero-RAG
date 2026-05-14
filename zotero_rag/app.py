@@ -7,6 +7,7 @@ Run with: streamlit run app.py
 import os
 import sys
 import subprocess
+import sqlite3
 import streamlit as st
 import time
 from zotero_rag import ZoteroRAG
@@ -29,6 +30,128 @@ def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
     r, g, b = [int(x * 255) for x in rgb]
     return f'#{r:02x}{g:02x}{b:02x}'
+
+def _load_zotero_collections():
+    try:
+        with st.spinner("Loading Zotero collections..."):
+            st.session_state.collections = ZoteroRAG.list_collections()
+            st.session_state.collections_loaded = True
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e):
+            st.error("⚠️ Zotero database is locked")
+            st.warning("""
+            **The database is currently locked by Zotero.**
+            
+            You have two options:
+            
+            1. **Close Zotero** (Recommended)
+            - Close the Zotero application completely
+            - Then refresh this page
+            
+            2. **Keep Zotero open** (Advanced)
+            - The app will try to read the database in read-only mode
+            - Click the button below to retry
+            """)
+            
+            if st.button("🔄 Retry Connection"):
+                st.rerun()
+        else:
+            st.error(f"Database error: {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"Error loading Zotero: {e}")
+        st.info("Make sure Zotero is installed and the database is accessible")
+
+
+def _run_ingest_and_index(result):
+    if result is None:
+        st.warning("No ingest result returned.")
+        return
+
+    if result.failed_uploads:
+        st.warning(f"{len(result.failed_uploads)} PDF could not be uploaded to cache.")
+        with st.expander("Show upload issues"):
+            for item in result.failed_uploads:
+                st.write(f"- {item.get('title', 'Unknown file')}: {item.get('error', 'Unknown error')}")
+
+    if result.already_indexed_titles:
+        st.warning(
+            f"{len(result.already_indexed_titles)} PDF already in cache and skipped before indexing."
+        )
+        with st.expander("Show cached duplicates"):
+            for title in result.already_indexed_titles:
+                st.write(f"- {title}")
+
+    if not result.ingested_titles:
+        if result.ingested == 0 and result.already_indexed > 0:
+            st.info("No new PDF to index: all selected files were already present in cache.")
+        elif result.ingested == 0:
+            st.warning("No valid PDF available for indexing.")
+        return
+
+    stage_status = st.empty()
+    pdf_progress_bar = st.progress(0, text="PDF analysis pending...")
+    contextualization_progress_bar = st.progress(0, text="Contextualization pending...")
+    encoding_progress_bar = st.progress(0, text="Embedding pending...")
+    upsert_progress_bar = st.progress(0, text="Qdrant upsert pending...")
+
+    def progress_callback(stage, current, total, message):
+        progress = current / total if total > 0 else 0
+        stage_status.info(message)
+        if stage == 'pdf':
+            pdf_progress_bar.progress(progress, text=f"PDF analysis: {message}")
+        elif stage == 'contextualization':
+            contextualization_progress_bar.progress(progress, text=f"Contextualization: {message}")
+        elif stage == 'encoding':
+            encoding_progress_bar.progress(progress, text=f"Embedding: {message}")
+        elif stage == 'upserting':
+            upsert_progress_bar.progress(progress, text=f"Qdrant upsert: {message}")
+
+    try:
+        upsert_report = st.session_state.rag.upsert_pdfs(
+            target_pdf_titles=result.ingested_titles,
+            progress_callback=progress_callback
+        )
+
+        indexed_chunks = int(upsert_report.get("indexed_chunks", 0))
+        skipped_indexed_titles = upsert_report.get("skipped_already_indexed_titles", [])
+        failed_pdfs = upsert_report.get("failed_pdfs", [])
+
+        stage_status.success("Indexing workflow completed.")
+        pdf_progress_bar.progress(1.0, text="PDF analysis completed")
+        contextualization_progress_bar.progress(1.0, text="Contextualization completed")
+        encoding_progress_bar.progress(1.0, text="Embedding completed")
+        upsert_progress_bar.progress(1.0, text="Qdrant upsert completed")
+
+        if indexed_chunks > 0:
+            st.session_state.indexed = True
+            st.success(
+                f"✅ Indexing complete: {result.ingested} new PDFs processed, {indexed_chunks} chunks upserted."
+            )
+        else:
+            st.info("Indexing finished but no new chunks were upserted.")
+
+        if skipped_indexed_titles:
+            st.warning(
+                f"{len(skipped_indexed_titles)} PDF skipped because already indexed in Qdrant."
+            )
+            with st.expander("Show Qdrant duplicates"):
+                for title in skipped_indexed_titles:
+                    st.write(f"- {title}")
+
+        if failed_pdfs:
+            st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
+            with st.expander("Show processing errors"):
+                for item in failed_pdfs:
+                    st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
+
+        time.sleep(2.0)
+        st.rerun()
+    except Exception as e:
+        stage_status.error("Indexing failed.")
+        st.error(f"Error building index: {e}")
+        with st.expander("Show full error"):
+            st.exception(e)
 
 def main():
     st.set_page_config(
@@ -66,6 +189,8 @@ def main():
         st.session_state.collections_loaded = False
     if 'collections' not in st.session_state:
         st.session_state.collections = []
+    if 'collection_name' not in st.session_state:
+        st.session_state.collection_name = None
     if 'dense_model_name' not in st.session_state:
         st.session_state.dense_model_name = "BAAI/bge-base-en-v1.5"
     if 'model_loaded' not in st.session_state:
@@ -397,97 +522,41 @@ def show_setup_tab():
                     elif not uploaded_pdfs:
                         st.warning("Select at least one PDF file.")
                     else:
-                        result = st.session_state.rag.ingest_pdf(uploaded_pdfs)
+                        result = st.session_state.rag.ingest_pdfs_from_upload(
+                            uploaded_pdfs
+                        )
+                        _run_ingest_and_index(result)
 
-                        failed_uploads = result.get("failed_uploads", [])
-                        already_indexed_titles = result.get("already_indexed_titles", [])
+            with st.expander("📚 Add PDFs from Zotero", expanded=False):
+                _load_zotero_collections()
+                if st.session_state.collections_loaded and st.session_state.collections:
+                    collection_options = ["All Library"]
+                    for coll in st.session_state.collections:
+                        name = coll['name']
+                        if coll['parent_id']:
+                            parent_name = next((c['name'] for c in st.session_state.collections 
+                                            if c['id'] == coll['parent_id']), "Unknown")
+                            name = f"{parent_name} > {name}"
+                        collection_options.append(name)
+                    
+                    selected_collection = st.selectbox(
+                        "Choose which Zotero collection to search",
+                        collection_options,
+                        key="collection_selector"
+                    )
+                    
+                    st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
+                else:
+                    st.session_state.collection_name = None
 
-                        if failed_uploads:
-                            st.warning(f"{len(failed_uploads)} PDF could not be uploaded to cache.")
-                            with st.expander("Show upload issues"):
-                                for item in failed_uploads:
-                                    st.write(f"- {item.get('name', 'Unknown file')}: {item.get('error', 'Unknown error')}")
-
-                        if already_indexed_titles:
-                            st.warning(
-                                f"{len(already_indexed_titles)} PDF already in cache and skipped before indexing."
+                if st.button("Index PDFs from selected collection", width="stretch", key="btn_index_collection"):
+                    if st.session_state.rag is None:
+                        st.error("Load a model first.")
+                    else:
+                        result = st.session_state.rag.ingest_pdfs_from_zotero(
+                                st.session_state.collection_name
                             )
-                            with st.expander("Show cached duplicates"):
-                                for title in already_indexed_titles:
-                                    st.write(f"- {title}")
-
-                        target_titles = result.get('ingested_titles', [])
-                        if not target_titles:
-                            if result.get("ingested", 0) == 0 and result.get("already_indexed", 0) > 0:
-                                st.info("No new PDF to index: all selected files were already present in cache.")
-                            elif result.get("ingested", 0) == 0:
-                                st.warning("No valid PDF available for indexing.")
-                        else:
-                            stage_status = st.empty()
-                            pdf_progress_bar = st.progress(0, text="PDF analysis pending...")
-                            contextualization_progress_bar = st.progress(0, text="Contextualization pending...")
-                            encoding_progress_bar = st.progress(0, text="Embedding pending...")
-                            upsert_progress_bar = st.progress(0, text="Qdrant upsert pending...")
-
-                            def progress_callback(stage, current, total, message):
-                                progress = current / total if total > 0 else 0
-                                stage_status.info(message)
-                                if stage == 'pdf':
-                                    pdf_progress_bar.progress(progress, text=f"PDF analysis: {message}")
-                                elif stage == 'contextualization':
-                                    contextualization_progress_bar.progress(progress, text=f"Contextualization: {message}")
-                                elif stage == 'encoding':
-                                    encoding_progress_bar.progress(progress, text=f"Embedding: {message}")
-                                elif stage == 'upserting':
-                                    upsert_progress_bar.progress(progress, text=f"Qdrant upsert: {message}")
-
-                            try:
-                                upsert_report = st.session_state.rag.upsert_pdfs(
-                                    target_pdf_titles=target_titles,
-                                    progress_callback=progress_callback
-                                )
-
-                                indexed_chunks = int(upsert_report.get("indexed_chunks", 0))
-                                skipped_indexed_titles = upsert_report.get("skipped_already_indexed_titles", [])
-                                failed_pdfs = upsert_report.get("failed_pdfs", [])
-
-                                stage_status.success("Indexing workflow completed.")
-                                pdf_progress_bar.progress(1.0, text="PDF analysis completed")
-                                contextualization_progress_bar.progress(1.0, text="Contextualization completed")
-                                encoding_progress_bar.progress(1.0, text="Embedding completed")
-                                upsert_progress_bar.progress(1.0, text="Qdrant upsert completed")
-
-                                if indexed_chunks > 0:
-                                    st.session_state.indexed = True
-                                    st.success(
-                                        f"✅ Indexing complete: {result.get('ingested', 0)} new PDFs processed, {indexed_chunks} chunks upserted."
-                                    )
-                                else:
-                                    st.info("Indexing finished but no new chunks were upserted.")
-
-                                if skipped_indexed_titles:
-                                    st.warning(
-                                        f"{len(skipped_indexed_titles)} PDF skipped because already indexed in Qdrant."
-                                    )
-                                    with st.expander("Show Qdrant duplicates"):
-                                        for title in skipped_indexed_titles:
-                                            st.write(f"- {title}")
-
-                                if failed_pdfs:
-                                    st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
-                                    with st.expander("Show processing errors"):
-                                        for item in failed_pdfs:
-                                            st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
-
-                                time.sleep(2.0)
-                                st.rerun()
-                            except Exception as e:
-                                stage_status.error("Indexing failed.")
-                                st.error(f"Error building index: {e}")
-                                with st.expander("Show full error"):
-                                    st.exception(e)
-
-            #TODO: una possibile azione può essere di selezionare una collection di zotero invece della cartella
+                        _run_ingest_and_index(result)
 
             with st.expander("🗑️ Remove one PDF", expanded=False):
                 pdf_name_to_delete = st.text_input(
