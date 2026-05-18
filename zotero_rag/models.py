@@ -67,11 +67,19 @@ class Answer:
 class IngestResult:
     """Summary of an ingestion operation."""
 
-    ingested: int = 0
-    already_indexed: int = 0
     ingested_titles: List[str] = field(default_factory=list)
-    already_indexed_titles: List[str] = field(default_factory=list)
+    duplicate_title_titles: List[str] = field(default_factory=list)
     failed_uploads: List[Dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class UpsertResult:
+    """Summary of an indexing operation."""
+
+    indexed_chunks: int = 0
+    processed_pdfs: int = 0
+    already_indexed_titles: List[str] = field(default_factory=list)
+    failed_pdfs: List[Dict[str, str]] = field(default_factory=list)
 
 
 class PDFSource(Protocol):
@@ -90,13 +98,13 @@ class UploadSource:
 
     uploaded_file: Any
 
-    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
-        h = hashlib.sha256()
-        self.uploaded_file.seek(0)
-        for chunk in iter(lambda: self.uploaded_file.read(chunk_size), b""):
-            h.update(chunk)
-        self.uploaded_file.seek(0)
-        return h.hexdigest()
+    # def compute_hash(self, chunk_size: int = 1024 * 1024) -> str: TODO: non penso servano più
+    #     h = hashlib.sha256()
+    #     self.uploaded_file.seek(0)
+    #     for chunk in iter(lambda: self.uploaded_file.read(chunk_size), b""):
+    #         h.update(chunk)
+    #     self.uploaded_file.seek(0)
+    #     return h.hexdigest()
 
     def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
         self.uploaded_file.seek(0)
@@ -111,12 +119,12 @@ class PathSource:
 
     path: str
 
-    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
-        h = hashlib.sha256()
-        with open(self.path, "rb") as f:
-            for chunk in iter(lambda: f.read(chunk_size), b""):
-                h.update(chunk)
-        return h.hexdigest()
+    # def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:  TODO: non penso servano più
+    #     h = hashlib.sha256()
+    #     with open(self.path, "rb") as f:
+    #         for chunk in iter(lambda: f.read(chunk_size), b""):
+    #             h.update(chunk)
+    #     return h.hexdigest()
 
     def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
         shutil.copy2(self.path, dest_path)

@@ -8,7 +8,7 @@ import tempfile
 import shutil
 import re
 import xml.etree.ElementTree as ET
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import requests
 from grobid_client.grobid_client import GrobidClient
 
@@ -69,6 +69,15 @@ class PDFProcessor:
         except Exception:
             return False
         
+    def _sanitize_filename(self, name: str) -> str:
+        """Converts a string into a safe filename."""
+        import re
+        if not name:
+            return "_All_Library"
+        s = name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        s = re.sub(r'(?u)[^-\w.]', '', s)
+        return s
+    
     def compute_pdf_hash(self, pdf_title: str, chunk_size: int = 1024 * 1024) -> str:
         """Compute a hash of the PDF file for caching and change detection.
 
@@ -86,33 +95,63 @@ class PDFProcessor:
                 h.update(chunk)
         return h.hexdigest()
     
-    def remove_cache_item(self, pdf_title: str):
+    def remove_cache_item(self, pdf_title: str) -> bool:
         """Remove cached TEI XML for a given PDF title."""
+        if not pdf_title:
+            logger.warning("PDF title cannot be empty for cache removal")
+            return False
+
         pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
-        mtime = os.path.getmtime(pdf_path)
-        cache_key = hashlib.md5(f"{pdf_path}:{mtime}".encode("utf-8")).hexdigest()
-        cache_path = os.path.join(self.tei_cache_dir, f"{cache_key}.tei.xml")
-        logger.info(f"Removing cache item for PDF '{pdf_title}' at {cache_path}")
-        if os.path.exists(cache_path):
+        if not os.path.exists(pdf_path):
+            logger.warning(f"PDF not found for TEI cache removal: {pdf_path}")
+            return False
+
+        pdf_hash = self.compute_pdf_hash(pdf_title)
+        return self.remove_cache_item_by_hash(pdf_hash)
+
+    def remove_cache_item_by_hash(self, pdf_hash: str) -> bool:
+        """Remove cached TEI XML for a given PDF hash."""
+        if not pdf_hash:
+            logger.warning("PDF hash cannot be empty for cache removal")
+            return False
+
+        cache_paths = [
+            os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml"),
+            os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei"),
+        ]
+
+        removed = False
+        for cache_path in cache_paths:
+            if not os.path.exists(cache_path):
+                continue
             try:
                 os.remove(cache_path)
-                logger.info(f"Removed cache item: {cache_path}")
+                logger.info(f"Removed cached TEI XML file: {cache_path}")
+                removed = True
             except Exception as e:
-                logger.error(f"Error removing cache item '{cache_path}': {e}")
+                raise IOError(
+                    f"Error removing cached TEI XML file '{cache_path}': {e}"
+                ) from e
 
-    def clear_cache(self):
-        """Clear all cached TEI XML files."""
+        if not removed:
+            logger.warning(
+                f"Cache item not found for removal (hash: {pdf_hash})"
+            )
+
+        return removed
+
+    def clear_index_cache(self, deleted_pdfs: Dict[str, str]) -> None:
+        """Remove cached TEI XML files for the deleted PDFs."""
         if not os.path.isdir(self.tei_cache_dir):
             logger.warning(f"Cache directory does not exist for clearing: {self.tei_cache_dir}")
             return
         
-        for filename in os.listdir(self.tei_cache_dir):
-            file_path = os.path.join(self.tei_cache_dir, filename)
-            try:
-                os.remove(file_path)
-                logger.info(f"Removed cache file: {file_path}")
-            except Exception as e:
-                logger.error(f"Error removing cache file '{file_path}': {e}")
+        for pdf_hash, title in deleted_pdfs.items():
+            if not pdf_hash:
+                logger.warning("Skipping cache clearing for entry with empty hash")
+                continue
+            self.remove_cache_item_by_hash(pdf_hash)
+
     
     def _parse_pdf(self, pdf_path: str) -> Optional[ET.Element]:
         """Parse a single PDF using GROBID and return TEI XML root.
@@ -124,10 +163,9 @@ class PDFProcessor:
             XML Element root of the TEI document, or None if parsing failed.
         """
         try:
-            # Cache check: use pdf path + mtime to build stable key
-            mtime = os.path.getmtime(pdf_path)
-            cache_key = hashlib.md5(f"{pdf_path}:{mtime}".encode("utf-8")).hexdigest()
-            cache_path = os.path.join(self.tei_cache_dir, f"{cache_key}.tei.xml")
+            base_title = os.path.splitext(os.path.basename(pdf_path))[0]
+            pdf_hash = self.compute_pdf_hash(self._sanitize_filename(base_title))
+            cache_path = os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml")
             
             if os.path.exists(cache_path):
                 try:

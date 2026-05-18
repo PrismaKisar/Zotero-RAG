@@ -27,9 +27,11 @@ class QdrantManager:
         self.dense_model_name = dense_model_name
         self.qdrant_url = qdrant_url
         self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(dense_model_name)
+        self.lookup_collection = "zoteroRAG_registry"
         self.vector_size = vector_size
         self.paragraphs: List[Paragraph] = []
         self.client: Optional[qc.QdrantClient] = None
+        self.conn_initialized = False
     
     @staticmethod
     def _sanitize_model_name(model_name: str) -> str:
@@ -38,22 +40,29 @@ class QdrantManager:
         return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
     
     @staticmethod
-    def generate_point_id(title: str, paragraph_index) -> str:
+    def _generate_point_id(pdf_hash: str, paragraph_index: int) -> str:
         """Generate a unique point ID for Qdrant."""
-        input_str = f"{title}_{paragraph_index}"
+        if paragraph_index is None:
+            input_str = f"{pdf_hash}"
+        else:
+            input_str = f"{pdf_hash}_{paragraph_index}"
         NAMESPACE_RAG = uuid.UUID("12345678-1234-5678-1234-567812345678")
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
- 
-    def initialize_connection(self):
-        """Connect to Qdrant client and ensure collection exists."""
+
+    def _start_connection(self):
+        """Start connection to Qdrant client."""
         self.client = qc.QdrantClient(
             url=self.qdrant_url,
         )
 
         if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
-        
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+    
         logger.info("Connected to Qdrant client")
+
+    def _initialize_connection(self):
+        """Initialize Qdrant collections and indices if they don't exist, then start connection."""
+        self._start_connection()
         
         if not self.client.collection_exists(self.qdrant_collection):
             self.client.create_collection(
@@ -72,13 +81,7 @@ class QdrantManager:
                 }
             )
 
-            # Create an index on 'title' and 'pdf_hash' payload field for efficient lookups
-            self.client.create_payload_index(
-                collection_name=self.qdrant_collection,
-                field_name="title",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
-            )
-
+            # Create an index on 'pdf_hash' payload field for efficient lookups
             self.client.create_payload_index(
                 collection_name=self.qdrant_collection,
                 field_name="pdf_hash",
@@ -89,6 +92,31 @@ class QdrantManager:
         else:
             logger.info(f"Qdrant collection already exists: {self.qdrant_collection}")
 
+        if not self.client.collection_exists(self.lookup_collection):
+            self.client.create_collection(
+                collection_name=self.lookup_collection,
+                vectors_config=None,
+            )
+
+            # Create an index on 'models' payload field for efficient lookups
+            self.client.create_payload_index(
+                collection_name=self.lookup_collection,
+                field_name="models",
+                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+            )
+            logger.info(f"Created Qdrant lookup collection: {self.lookup_collection}")
+        else:
+            logger.info(f"Qdrant lookup collection already exists: {self.lookup_collection}")
+
+        self.conn_initialized = True
+
+    def open_connection(self):
+        """Open connection to Qdrant client."""
+        if self.conn_initialized is False:
+            self._initialize_connection()
+        else:
+            self._start_connection()
+        
     def close_connection(self):
         """Disconnect from Qdrant client."""
         if self.client:
@@ -106,58 +134,78 @@ class QdrantManager:
             True if the pdf is already indexed, False otherwise.
         """
         if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+
+        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        flt = qmodels.Filter(
+            must=[
+                qmodels.HasIdCondition(has_id=[lookup_id]),
+                qmodels.FieldCondition(
+                    key="models",
+                    match=qmodels.MatchValue(value=self.dense_model_name),
+                ),
+            ]
+        )
+
+        next_offset = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.lookup_collection,
+                scroll_filter=flt,
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+                offset=next_offset,
+            )
+
+            if points:
+                return True
+
+            if not next_offset or not points:
+                break
+
+        return False
+    
+    def list_indexed_pdfs(self) -> List[Dict[str, str]]:
+        """List PDFs that have been indexed in Qdrant.
         
+        Returns:
+            List of dictionaries with 'title' and 'pdf_hash' keys.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+
         flt = qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
-                    key="pdf_hash",
-                    match=qmodels.MatchValue(value=pdf_hash),
+                    key="models",
+                    match=qmodels.MatchValue(value=self.dense_model_name),
                 )
             ]
         )
 
-        # Search for any point with a payload containing the file hash
-        points, _ = self.client.scroll(
-            collection_name=self.qdrant_collection,
-            scroll_filter=flt,
-            limit=1,
-            with_payload=False,
-            with_vectors=False
-        )
-        return len(points) > 0
-    
-    def list_indexed_pdfs(self) -> List[Dict]:
-        """List PDFs that have been indexed in Qdrant.
-        
-        Returns:
-            List of dictionaries with 'title' and 'chunk_count' keys.
-        """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+        indexed = []
+        next_offset = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.lookup_collection,
+                scroll_filter=flt,
+                limit=128,
+                with_payload=["title", "pdf_hash"],
+                with_vectors=False,
+                offset=next_offset,
+            )
+            for point in points:
+                payload = point.payload or {}
+                indexed.append({
+                    "title": payload.get("title", ""),
+                    "pdf_hash": payload.get("pdf_hash", "")
+                })
 
-        points_count = self.client.count(
-            collection_name=self.qdrant_collection,
-            exact=False,
-        ).count
+            if not next_offset or not points:
+                break
 
-        points_count = (points_count // 50) + 1 #FIXME: magic number da sistemare
-
-        result = self.client.facet(
-            collection_name=self.qdrant_collection,
-            key="title",
-            limit=max(int(points_count), 1),
-            exact=False,
-        )
-
-        return [
-            {
-                "title": str(hit.value),
-                "chunk_count": int(hit.count),
-            }
-            for hit in result.hits
-            if getattr(hit, "value", None)
-        ]
+        return indexed
     
     def upsert_paragraphs(self,
                         paragraphs: List[Paragraph],
@@ -177,7 +225,7 @@ class QdrantManager:
             Number of paragraphs upserted.
         """
         if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
 
         if not paragraphs:
             raise ValueError("No paragraphs provided for indexing.")
@@ -196,9 +244,11 @@ class QdrantManager:
         self.paragraphs = paragraphs
 
         points = []
+        pdf_indexed_titles: Dict[str, str] = {}
         for i, para in enumerate(self.paragraphs):
-            point_id = self.generate_point_id(para.title, para.para_idx)
-            
+            point_id = QdrantManager._generate_point_id(para.pdf_hash, para.para_idx)
+            pdf_indexed_titles.setdefault(para.pdf_hash, para.title)
+                        
             vector_config = {
                 "": dense_embeddings[i],
                 "text-sparse": sparse_embeddings[i]
@@ -233,40 +283,154 @@ class QdrantManager:
                 progress_callback('upserting', min(i + batch_size, len(points)), len(points), 
                                 f"Upserted {min(i + batch_size, len(points))}/{len(points)} paragraphs...")
         logger.info(f"Upserted {len(points)} paragraphs into Qdrant collection: {self.qdrant_collection}")
+
+        # Update lookup collection with indexed PDFs
+        for pdf_hash, pdf_title in pdf_indexed_titles.items():
+            lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+            existing = self.client.retrieve(
+                collection_name=self.lookup_collection,
+                ids=[lookup_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            if existing:
+                payload = existing[0].payload or {}
+                models = payload.get("models") or []
+                if isinstance(models, str):
+                    models = [models]
+
+                if self.dense_model_name not in models:
+                    models.append(self.dense_model_name)
+
+                update_payload = {
+                    "pdf_hash": pdf_hash,
+                    "models": models,
+                }
+                
+                # if not payload.get("title"): TODO: non pensoserva sta roba
+                #     update_payload["title"] = pdf_title
+
+                self.client.set_payload(
+                    collection_name=self.lookup_collection,
+                    payload=update_payload,
+                    points=[lookup_id],
+                )
+            else:
+                self.client.upsert(
+                    collection_name=self.lookup_collection,
+                    points=[
+                        qmodels.PointStruct(
+                            id=lookup_id,
+                            vector={},
+                            payload={
+                                "pdf_hash": pdf_hash,
+                                "title": pdf_title,
+                                "models": [self.dense_model_name],
+                            },
+                        )
+                    ],
+                )
+
         return len(points)
     
-    def delete_pdf_from_index(self, pdf_title: str):
+    def delete_pdf_from_index(self, pdf_hash: str) -> Dict[str, bool]:
         """Delete all paragraphs associated with a specific PDF hash from the Qdrant collection.
         
         Args:
             pdf_hash: Hash of the PDF whose paragraphs should be deleted.
+
+        Returns:
+            Dictionary indicating whether the entry was deleted and if it had other models.
         """
         if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
         
         flt = qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
-                    key="title",
-                    match=qmodels.MatchValue(value=pdf_title),
+                    key="pdf_hash",
+                    match=qmodels.MatchValue(value=pdf_hash),
                 )
             ]
         )
 
-        bool = self.client.delete(
+        delete_result = self.client.delete(
             collection_name=self.qdrant_collection,
             points_selector=qmodels.FilterSelector(filter=flt)
         )
 
-        return bool
-
-    def clear_collection(self):
-        """Clear all data from the Qdrant collection."""
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+        if delete_result:
+            res = self.delete_registry_entry(pdf_hash)
+            if res["deleted"]:
+                return res
+        raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
+    
+    def delete_registry_entry(self, pdf_hash: str) -> Dict[str, bool]:
+        """Delete the registry entry for a specific PDF hash from the lookup collection.
         
+        Args:
+            pdf_hash: Hash of the PDF whose registry entry should be deleted.
+        Returns:
+            Dictionary indicating whether the entry was deleted and if it had other models.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+        
+        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        existing = self.client.retrieve(
+            collection_name=self.lookup_collection,
+            ids=[lookup_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        if existing:
+            payload = existing[0].payload or {}
+            models = payload.get("models") or []
+            if isinstance(models, str):
+                models = [models]
+
+            models = [m for m in models if m != self.dense_model_name]
+
+            if not models:
+
+                self.client.delete(
+                    collection_name=self.lookup_collection,
+                    points_selector=qmodels.PointIdsList(points=[lookup_id]),
+                )
+                return {"deleted": True, "had_other_models": False}
+            else:
+                self.client.set_payload(
+                    collection_name=self.lookup_collection,
+                    payload={"models": models},
+                    points=[lookup_id],
+                )
+            return {"deleted": True, "had_other_models": True}
+        return {"deleted": False, "had_other_models": False}
+
+    def clear_collection(self) -> Dict[str, str]:
+        """Clear all data from the Qdrant collection.
+        
+        Returns:
+            Dictionary of deleted PDF hashes and their titles.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+        
+        indexed_pdfs = self.list_indexed_pdfs()
+        deleted_entries: Dict[str, str] = {}
+        for item in indexed_pdfs:
+            pdf_hash = item.get("pdf_hash")
+            if pdf_hash:
+                res = self.delete_pdf_from_index(pdf_hash)
+                if res["deleted"] and not res["had_other_models"]:
+                    deleted_entries[pdf_hash] = item.get("title", "")
+
         self.client.delete_collection(self.qdrant_collection)
+        self.conn_initialized = False
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
+        return deleted_entries
 
     def search(self,
                query_dense_embedding: List[float],
@@ -283,7 +447,7 @@ class QdrantManager:
             List of tuples (Paragraph, score) for relevant paragraphs.
         """
         if not self.client:
-            raise ValueError("Qdrant client is not connected. Call initialize_connection() first.")
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
 
         search_result = self.client.query_points(
             collection_name=self.qdrant_collection,

@@ -48,7 +48,7 @@ class PDFCacheHandler:
                     h.update(chunk)
             return h.hexdigest()
     
-    def get_items_from_upload(self, uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]:
+    def get_items_from_upload(self, uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]: #TODO: dovrebbe essere privato in zoteroRAG
         items: List[PDFIngestItem] = []
         for uploaded_file in uploaded_files:
             if uploaded_file is None:
@@ -65,26 +65,18 @@ class PDFCacheHandler:
             raise ValueError("uploaded_pdf cannot be None")
 
         base_title = self._sanitize_filename(uploaded_pdf.title)
-        candidate_title = base_title
-        candidate_filename = f"{candidate_title}.pdf"
+        candidate_filename = f"{base_title}.pdf"
         candidate_path = os.path.join(self.folder_path, candidate_filename)
 
-        incoming_hash = uploaded_pdf.source.compute_hash()
-        counter = 0
-        while os.path.exists(candidate_path):
-            existing_hash = self._compute_pdf_hash(candidate_path)
-
-            if existing_hash == incoming_hash:
-                logger.info(f"Skipped duplicate PDF upload for title '{candidate_title}'")
-                return {
-                    "title": candidate_title,
-                    "already_indexed": True,
-                }
-
-            counter += 1
-            candidate_title = f"{base_title}_({counter})"
-            candidate_filename = f"{candidate_title}.pdf"
-            candidate_path = os.path.join(self.folder_path, candidate_filename)
+        if os.path.exists(candidate_path):
+            logger.warning(
+                "PDF with title '%s' already exist in cache, skipping upload",
+                base_title,
+            )
+            return {
+                "title": base_title,
+                "duplicate_title": True,
+            }
 
         try:
             uploaded_pdf.source.write_to(candidate_path)
@@ -92,8 +84,8 @@ class PDFCacheHandler:
             raise IOError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
 
         return {
-            "title": candidate_title,
-            "already_indexed": False,
+            "title": base_title,
+            "duplicate_title": False,
         }
 
     def remove_pdf(self, title: str) -> bool:
@@ -124,20 +116,21 @@ class PDFCacheHandler:
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
         
-    def clear_cache(self) -> None:
-        """Remove all PDF files from the cache folder."""
+    def clear_index_cache(self, deleted_pdfs: Dict[str, str]) -> None:
+        """Remove all PDF files from cache that are listed in deleted_pdfs."""
         if not os.path.isdir(self.folder_path):
             logger.warning(f"Cache folder does not exist for clearing: {self.folder_path}")
             return
         
-        for root, _dirs, files in os.walk(self.folder_path):
-            for filename in files:
-                pdf_path = os.path.join(root, filename)
-                try:
-                    os.remove(pdf_path)
-                    logger.info(f"Removed cached PDF file: {pdf_path}")
-                except Exception as e:
-                    logger.error(f"Error removing cached PDF file '{pdf_path}': {e}")
+        for pdf_hash, title in deleted_pdfs.items():
+            if not title:
+                logger.warning(f"Skipping deletion for PDF with empty title (hash: {pdf_hash})")
+                continue
+
+            if self.remove_pdf(title):
+                logger.info(f"Cleared cached PDF for deleted entry: {title} (hash: {pdf_hash})")
+            else:
+                raise IOError(f"Failed to clear cached PDF for deleted entry: {title} (hash: {pdf_hash})")
 
     def get_pdf_path(self, title: str) -> Union[str, None]:
         """Get full path of a cached PDF by title."""
@@ -154,35 +147,20 @@ class PDFCacheHandler:
         logger.warning(f"PDF file not found for title '{title}': {candidate_path}")
         return None
 
-    def get_items(self) -> List[Dict]:
+    def get_cached_items(self) -> List[str]:
         """Get PDF items from the folder.
-        
-        Args:
-            collection_name: Ignored for folder source (for API compatibility).
             
         Returns:
-            List of dictionaries with 'key', 'path', and 'title' keys.
+            List of cached PDFs titles
         """
         items = []
         
         # Walk through the folder and find all PDFs
-        for root, _dirs, files in os.walk(self.folder_path):
+        for _root, _dirs, files in os.walk(self.folder_path):
             for filename in files:
-                if filename.lower().endswith('.pdf'):
-                    pdf_path = os.path.join(root, filename)
-                    
-                    # Use filename (without extension) as title
+                if filename.lower().endswith(".pdf"):
                     title = self._sanitize_filename(os.path.splitext(filename)[0])
-                    
-                    # Use relative path as key (for uniqueness)
-                    rel_path = os.path.relpath(pdf_path, self.folder_path)
-                    key = rel_path.replace(os.sep, '_')
-                    
-                    items.append({
-                        'key': key,
-                        'path': pdf_path,
-                        'title': title
-                    })
+                    items.append(title)
         
         logger.info(f"Found {len(items)} PDF files in {self.folder_path}")
         return items

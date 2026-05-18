@@ -7,12 +7,12 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple, Union, Any
+from typing import List, Dict, Tuple, Optional
 import warnings
 import nltk
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
-from models import Paragraph, Answer, PDFIngestItem, IngestResult
+from models import Paragraph, Answer, PDFIngestItem, IngestResult, UpsertResult
 from zotero_db import ZoteroDatabase
 from pdf_cache_handler import PDFCacheHandler
 from pdf_processor import PDFProcessor
@@ -82,6 +82,7 @@ class ZoteroRAG:
             ollama_url: URL of the Ollama service.
             model_device: Device to use for models ('cpu', 'cuda'). Auto-detect if None.
             encode_batch_size: Batch size for encoding. If None, auto-detect (targets 75% memory).
+            qa_batch_size: Batch size for QA extraction. If None, auto-detect (targets 75% memory).
             rerank_batch_size: Batch size for reranking. If None, auto-detect (targets 75% memory).
             use_chunk_contextualization: Whether to contextualize chunks with Ollama before embedding.
             output_base_dir: Base directory for storing outputs.
@@ -184,20 +185,44 @@ class ZoteroRAG:
             self.query_color_map[query] = self.query_colors[color_idx]
         return self.query_color_map[query]
     
-    def get_indexed_pdfs(self) -> List[Dict]:
-        """Get list of indexed PDFs.
+    def get_indexed_pdfs(self) -> List[str]:
+        """Get list of indexed PDFs titles.
         
         Returns:
-            List of dictionaries with 'title', 'chunk_count'.
+            List of indexed PDF titles.
         """
         try:
-            self.qdrant_manager.initialize_connection()
-            return self.qdrant_manager.list_indexed_pdfs()
+            self.qdrant_manager.open_connection()
+            indexed_pdfs = self.qdrant_manager.list_indexed_pdfs()
+            return [item["title"] for item in indexed_pdfs]
         except Exception as e:
             logger.error(f"Error during get_indexed_pdfs: {str(e)}")
             return []
         finally:
             self.qdrant_manager.close_connection()
+
+    def consistency_check(self, indexed_pdfs: List[str]) -> bool:
+        """Check consistency between indexed PDFs and cached PDFs.
+        
+        Args:
+            indexed_pdfs: List of PDF titles that are currently indexed in Qdrant.
+        
+        Returns:
+            True if all indexed PDFs have corresponding cache entries, False otherwise.
+        """
+        if not indexed_pdfs:
+            return True
+        
+        cached_pdfs = set(self.pdf_cache.get_cached_items())
+        indexed_pdfs_set = set(indexed_pdfs)
+
+        missing_in_cache = indexed_pdfs_set - cached_pdfs
+
+        if missing_in_cache:
+            logger.warning(f"Consistency check failed: {len(missing_in_cache)} indexed PDFs missing in cache: {missing_in_cache}")
+            return False
+        
+        return True
 
     def _ingest_pdfs(self, uploaded_pdfs: List[PDFIngestItem]) -> IngestResult:
         """Ingest PDFs into cache and prepare for indexing.
@@ -215,12 +240,12 @@ class ZoteroRAG:
         for uploaded_pdf in uploaded_pdfs:
             try:
                 ingest_result = self.pdf_cache.ingest_pdf(uploaded_pdf)
-                if ingest_result["already_indexed"]:
-                    result.already_indexed += 1
-                    result.already_indexed_titles.append(str(ingest_result["title"]))
+                title = str(ingest_result.get("title", uploaded_pdf.title))
+                
+                if ingest_result["duplicate_title"]:
+                    result.duplicate_title_titles.append(title)
                 else:
-                    result.ingested += 1
-                    result.ingested_titles.append(str(ingest_result["title"]))
+                    result.ingested_titles.append(title)
             except Exception as e:
                 logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {str(e)}")
                 result.failed_uploads.append(
@@ -261,17 +286,22 @@ class ZoteroRAG:
         
         return self._ingest_pdfs(uploaded_pdfs)
 
-    def _rollback_pdfs(self, uploaded_pdf: set[str], indexed_pdf: set[str]) -> bool:
+    def _rollback_pdfs(self, uploaded_pdf: set[str], indexed_pdf: set[str],
+        skipped_pdf: Optional[set[str]] = None) -> bool:
         """Determine which PDFs to remove from cache based on ingestion vs indexing results.
         
         Args:
             uploaded_pdf: Set of PDF titles that were uploaded/ingested.
             indexed_pdf: Set of PDF titles that were actually indexed in Qdrant.
+            skipped_pdf: Set of PDF titles intentionally skipped (e.g., hash duplicates).
 
         Returns:
             True if rollback was performed, False otherwise.
         """
-        to_remove = uploaded_pdf - indexed_pdf
+        if skipped_pdf is None:
+            skipped_pdf = set()
+
+        to_remove = (uploaded_pdf - indexed_pdf) | skipped_pdf
         if not to_remove:
             return False
         
@@ -284,28 +314,24 @@ class ZoteroRAG:
         
         return True
 
-    def upsert_pdfs(self, target_pdf_titles: List[str], progress_callback=None) -> Dict[str, Any]:
+    def upsert_pdfs(self, target_pdf_titles: List[str], progress_callback=None) -> UpsertResult:
         """Process PDFs, extract paragraphs, and upsert into Qdrant index.
-            If a pdf has already been indexed (based on hash), it will be skipped.
         
         Args:
             target_pdf_titles: List of PDF titles to process. Must not be empty.
             progress_callback: Function(stage, current, total, message) for progress updates.
                              stage is one of: 'pdf', 'contextualization', 'encoding', 'upserting'.
         Returns:
-            Dictionary with indexing summary and warning/error details.
+            UpsertResult with indexing summary and warning/error details.
         """
         if target_pdf_titles is None or target_pdf_titles == []:
             raise ValueError("No new PDF titles provided for upsert. Skipping indexing stage.")
 
-        indexed = 0
         all_paragraphs = []
         per_pdf_context = {}
-        skipped_already_indexed_titles: List[str] = []
-        failed_pdf_errors: List[Dict[str, str]] = []
-
+        result = UpsertResult()
         try:
-            self.qdrant_manager.initialize_connection()
+            self.qdrant_manager.open_connection()
             
             # Stage 1: Process PDFs and extract paragraphs
             for idx, title in enumerate(target_pdf_titles):
@@ -319,11 +345,21 @@ class ZoteroRAG:
 
                 try:
                     current_pdf_hash = self.pdf_processor.compute_pdf_hash(title)
-
-                    if self.qdrant_manager.is_pdf_indexed(current_pdf_hash):
-                        logger.info(f"Skipping already indexed PDF: {title}")
-                        skipped_already_indexed_titles.append(title)
-                        continue
+                    try:
+                        if self.qdrant_manager.is_pdf_indexed(current_pdf_hash):
+                            result.already_indexed_titles.append(title)
+                            if progress_callback:
+                                progress_callback(
+                                    'pdf',
+                                    idx + 1,
+                                    len(target_pdf_titles),
+                                    f"Skipped (already indexed): {title[:80]}",
+                                )
+                            continue
+                    except Exception as e:
+                        logger.warning(
+                            "Qdrant index check failed for '%s': %s", title, str(e),
+                        )
 
                     paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(title)
 
@@ -353,7 +389,7 @@ class ZoteroRAG:
                         per_pdf_context[title]["paragraph_indices"].append(len(all_paragraphs) - 1)
                 except Exception as e:
                     logger.error("Failed to process PDF '%s': %s", title, str(e))
-                    failed_pdf_errors.append({"title": title, "error": str(e)})
+                    result.failed_pdfs.append({"title": title, "error": str(e)})
 
                 if progress_callback:
                     progress_callback(
@@ -363,18 +399,12 @@ class ZoteroRAG:
                         f"Analysed PDF {idx + 1}/{len(target_pdf_titles)}: {title[:80]}",
                     )
 
+            result.processed_pdfs = len(per_pdf_context)
+
             if not all_paragraphs:
-                if skipped_already_indexed_titles and not failed_pdf_errors:
-                    logger.info("No new paragraphs to index. All PDFs were already indexed.")
-                    return {
-                        "indexed_chunks": 0,
-                        "submitted_pdfs": len(target_pdf_titles),
-                        "processed_pdfs": 0,
-                        "skipped_already_indexed_pdfs": len(skipped_already_indexed_titles),
-                        "skipped_already_indexed_titles": skipped_already_indexed_titles,
-                        "failed_pdfs": failed_pdf_errors,
-                    }
-                raise ValueError("No text could be extracted from the selected PDFs.")
+                if not result.failed_pdfs and not result.already_indexed_titles:
+                    raise ValueError("No text could be extracted from the selected PDFs.")
+                return result
 
             # Stage 2: Build index
             all_texts = [p.text for p in all_paragraphs]
@@ -440,7 +470,7 @@ class ZoteroRAG:
             contextual_texts = list(all_texts) #FIXME: debug
             hybrid_embeddings = self.embedding_manager.encode_paragraphs(progress_callback, all_texts)
 
-            indexed = self.qdrant_manager.upsert_paragraphs(
+            result.indexed_chunks = self.qdrant_manager.upsert_paragraphs(
                 all_paragraphs,
                 dense_embeddings=hybrid_embeddings["dense"],
                 sparse_embeddings=hybrid_embeddings["sparse"],
@@ -451,40 +481,39 @@ class ZoteroRAG:
             logger.error(f"Error during upsert_paragraphs: {str(e)}")
             raise
         finally:
-            _ = self._rollback_pdfs(set(target_pdf_titles), set(per_pdf_context.keys()))
+            _ = self._rollback_pdfs(
+                set(target_pdf_titles),
+                set(per_pdf_context.keys()),
+                set(result.already_indexed_titles),
+            )
             self.qdrant_manager.close_connection()
 
-        return {
-            "indexed_chunks": indexed,
-            "submitted_pdfs": len(target_pdf_titles),
-            "processed_pdfs": len(per_pdf_context),
-            "skipped_already_indexed_pdfs": len(skipped_already_indexed_titles),
-            "skipped_already_indexed_titles": skipped_already_indexed_titles,
-            "failed_pdfs": failed_pdf_errors,
-        }
+        return result
     
     def delete_pdf_by_title(self, pdf_title: str) -> bool:
         """Delete all paragraphs from a specific PDF in the index.
         
         Args:
-            pdf_title: Title (or filename/path) of the PDF to delete.
+            pdf_title: Title of the PDF to delete.
         
         Returns:
             True if deletion was successful, False otherwise.
         """
         try:
-            self.qdrant_manager.initialize_connection()
+            self.qdrant_manager.open_connection()
 
             normalized_title = self._sanitize_filename(pdf_title)
+            pdf_hash = self.pdf_processor.compute_pdf_hash(normalized_title)
 
-            success = self.qdrant_manager.delete_pdf_from_index(normalized_title)
-            if success:
+            delete_result = self.qdrant_manager.delete_pdf_from_index(pdf_hash)
+            deleted = delete_result.get("deleted", False)
+            if deleted:
                 self.pdf_processor.remove_cache_item(normalized_title)
                 self.pdf_cache.remove_pdf(normalized_title)
                 logger.info(f"Successfully deleted paragraphs for PDF: {normalized_title}")
             else:
                 logger.warning(f"No paragraphs found to delete for PDF: {normalized_title}")
-            return success
+            return deleted
         except Exception as e:
             logger.error(f"Error during delete_pdf_from_index: {str(e)}")
             return False
@@ -498,10 +527,10 @@ class ZoteroRAG:
             True if the collection was cleared successfully, False otherwise.
         """
         try:
-            self.qdrant_manager.initialize_connection()
-            self.qdrant_manager.clear_collection()
-            self.pdf_cache.clear_cache()
-            self.pdf_processor.clear_cache()
+            self.qdrant_manager.open_connection()
+            deleted_pdfs = self.qdrant_manager.clear_collection()
+            self.pdf_cache.clear_index_cache(deleted_pdfs)
+            self.pdf_processor.clear_index_cache(deleted_pdfs)
             logger.info("Successfully cleared the Qdrant collection.")
             return True
         except Exception as e:
@@ -561,7 +590,7 @@ class ZoteroRAG:
         try:
             all_candidates = []
             seen_paragraphs = set()
-            self.qdrant_manager.initialize_connection()
+            self.qdrant_manager.open_connection()
             
             for i, q_var in enumerate(question_variations):
                 query_embeddings = self.embedding_manager.encode_query(q_var)

@@ -74,19 +74,25 @@ def _run_ingest_and_index(result):
             for item in result.failed_uploads:
                 st.write(f"- {item.get('title', 'Unknown file')}: {item.get('error', 'Unknown error')}")
 
-    if result.already_indexed_titles:
+    duplicate_title_titles = getattr(result, "duplicate_title_titles", [])
+
+    if duplicate_title_titles:
         st.warning(
-            f"{len(result.already_indexed_titles)} PDF already in cache and skipped before indexing."
+            f"{len(duplicate_title_titles)} PDF(s) skipped due to duplicate titles"
         )
         with st.expander("Show cached duplicates"):
-            for title in result.already_indexed_titles:
-                st.write(f"- {title}")
+            if duplicate_title_titles:
+                st.write("Duplicate titles:")
+                for title in duplicate_title_titles:
+                    st.write(f"- {title}")
 
     if not result.ingested_titles:
-        if result.ingested == 0 and result.already_indexed > 0:
-            st.info("No new PDF to index: all selected files were already present in cache.")
-        elif result.ingested == 0:
-            st.warning("No valid PDF available for indexing.")
+        if duplicate_title_titles:
+            st.info(
+                "No new PDF to index: all selected files were skipped due to duplicate titles."
+            )
+        else:
+            st.info("No new PDF to index.")
         return
 
     stage_status = st.empty()
@@ -113,9 +119,24 @@ def _run_ingest_and_index(result):
             progress_callback=progress_callback
         )
 
-        indexed_chunks = int(upsert_report.get("indexed_chunks", 0))
-        skipped_indexed_titles = upsert_report.get("skipped_already_indexed_titles", [])
-        failed_pdfs = upsert_report.get("failed_pdfs", [])
+        indexed_chunks = int(getattr(upsert_report, "indexed_chunks", 0))
+        processed_pdfs = int(getattr(upsert_report, "processed_pdfs", 0))
+        failed_pdfs = getattr(upsert_report, "failed_pdfs", [])
+        already_indexed_titles = getattr(upsert_report, "already_indexed_titles", [])
+
+        if already_indexed_titles:
+            st.info(
+                f"{len(already_indexed_titles)} PDF(s) skipped because already indexed in Qdrant."
+            )
+            with st.expander("Show Qdrant duplicates"):
+                for title in already_indexed_titles:
+                    st.write(f"- {title}")
+
+        if failed_pdfs:
+            st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
+            with st.expander("Show processing errors"):
+                for item in failed_pdfs:
+                    st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
 
         stage_status.success("Indexing workflow completed.")
         pdf_progress_bar.progress(1.0, text="PDF analysis completed")
@@ -126,26 +147,12 @@ def _run_ingest_and_index(result):
         if indexed_chunks > 0:
             st.session_state.indexed = True
             st.success(
-                f"✅ Indexing complete: {result.ingested} new PDFs processed, {indexed_chunks} chunks upserted."
+                f"✅ Indexing complete: {processed_pdfs} new PDFs processed, {indexed_chunks} chunks upserted."
             )
         else:
             st.info("Indexing finished but no new chunks were upserted.")
 
-        if skipped_indexed_titles:
-            st.warning(
-                f"{len(skipped_indexed_titles)} PDF skipped because already indexed in Qdrant."
-            )
-            with st.expander("Show Qdrant duplicates"):
-                for title in skipped_indexed_titles:
-                    st.write(f"- {title}")
-
-        if failed_pdfs:
-            st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
-            with st.expander("Show processing errors"):
-                for item in failed_pdfs:
-                    st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
-
-        time.sleep(2.0)
+        time.sleep(5.0)
         st.rerun()
     except Exception as e:
         stage_status.error("Indexing failed.")
@@ -408,24 +415,19 @@ def show_setup_tab():
             st.markdown("### 📄 Indexed PDFs")
 
             try:
-                indexed_pdfs_raw = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
+                indexed_titles = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
             except Exception:
-                indexed_pdfs_raw = []
+                indexed_titles = []
 
-            new_indexed = len(indexed_pdfs_raw) > 0
+            new_indexed = len(indexed_titles) > 0
             if st.session_state.indexed != new_indexed:
                 st.session_state.indexed = new_indexed
                 st.rerun()
 
-            indexed_pdfs = [
-                {
-                    "title": str(x.get("title", "")),
-                    "chunk_count": int(x.get("chunk_count", 0) or 0),
-                }
-                for x in indexed_pdfs_raw
-                if x.get("title")
-            ]
-            total_pdfs = len(indexed_pdfs)
+            total_pdfs = len(indexed_titles)
+
+            if not st.session_state.rag.consistency_check(indexed_titles):
+                st.warning("⚠️ Consistency check failed: some PDFs in the index may be missing from the cache or have changed. Consider re-indexing to ensure data integrity.")
 
             filter_text = st.text_input(
                 "Search indexed PDFs",
@@ -435,13 +437,18 @@ def show_setup_tab():
                 key="indexed_pdf_filter"
             )
 
+            def _get_pdf_title(item):
+                if isinstance(item, dict):
+                    return item.get("title", "")
+                return str(item)
+
             if filter_text:
                 filtered_pdfs = [
-                    item for item in indexed_pdfs
-                    if filter_text.lower() in item["title"].lower()
+                    item for item in indexed_titles
+                    if filter_text.lower() in _get_pdf_title(item).lower()
                 ]
             else:
-                filtered_pdfs = indexed_pdfs
+                filtered_pdfs = indexed_titles
 
             if filtered_pdfs:
                 total_filtered = len(filtered_pdfs)
@@ -449,11 +456,9 @@ def show_setup_tab():
                 items_per_page = page_size * 2
                 max_page = max((total_filtered - 1) // items_per_page + 1, 1)
 
-                col_count, col_chunks, col_page = st.columns(3)
+                col_count, col_page = st.columns(2)
                 with col_count:
                     st.metric("Total indexed", total_pdfs)
-                with col_chunks:
-                    st.metric("Total chunks", sum(x["chunk_count"] for x in indexed_pdfs))
                 with col_page:
                     current_page = st.number_input(
                         "Page",
@@ -477,10 +482,8 @@ def show_setup_tab():
                     left_value = left_column_items[row_idx] if row_idx < len(left_column_items) else None
                     right_value = right_column_items[row_idx] if row_idx < len(right_column_items) else None
                     two_col_rows.append({
-                        "PDF Name (1)": left_value["title"] if left_value else "",
-                        "Chunks (1)": left_value["chunk_count"] if left_value else None,
-                        "PDF Name (2)": right_value["title"] if right_value else "",
-                        "Chunks (2)": right_value["chunk_count"] if right_value else None,
+                        "PDF Name (1)": _get_pdf_title(left_value) if left_value else "",
+                        "PDF Name (2)": _get_pdf_title(right_value) if right_value else "",
                     })
 
                 st.caption(f"Showing {start + 1}-{min(end, total_filtered)} of {total_filtered} PDFs")
@@ -490,9 +493,7 @@ def show_setup_tab():
                     height=420,
                     column_config={
                         "PDF Name (1)": st.column_config.TextColumn(width="large"),
-                        "Chunks (1)": st.column_config.NumberColumn(width="small", format="%d"),
                         "PDF Name (2)": st.column_config.TextColumn(width="large"),
-                        "Chunks (2)": st.column_config.NumberColumn(width="small", format="%d"),
                     },
                     hide_index=True
                 )
@@ -573,7 +574,7 @@ def show_setup_tab():
                         deleted = st.session_state.rag.delete_pdf_by_title(pdf_name_to_delete.strip())
                         if deleted:
                             st.success(f"PDF '{pdf_name_to_delete}' deletion requested.")
-                            time.sleep(1.0)
+                            time.sleep(2.0)
                             st.rerun()
                         else:
                             st.warning(f"No PDF named '{pdf_name_to_delete}' found in index.")
@@ -586,6 +587,8 @@ def show_setup_tab():
                     else:
                         st.session_state.rag.clear_index()
                         st.session_state.indexed = False
+                        st.session_state.model_loaded = False
+                        st.session_state.rag = None
                         st.success("Full index clear requested.")
                         st.rerun()
     
