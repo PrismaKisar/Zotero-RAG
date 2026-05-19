@@ -474,7 +474,8 @@ class QAEngine:
                 color=color,
                 sentence_coords=sentence_coords,
                 retrieval_score=meta['retrieval_score'],
-                rerank_score=meta['rerank_score']
+                rerank_score=meta['rerank_score'],
+                pdf_hash=target_paragraph.pdf_hash
             ))
 
         # Sort by score descending

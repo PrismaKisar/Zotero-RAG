@@ -1,7 +1,6 @@
 """PDF processing using GROBID service."""
 
 import os
-import hashlib
 import logging
 import threading
 import tempfile
@@ -11,6 +10,8 @@ import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional, Dict
 import requests
 from grobid_client.grobid_client import GrobidClient
+
+from pdf_utils import compute_file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -69,44 +70,16 @@ class PDFProcessor:
         except Exception:
             return False
         
-    def _sanitize_filename(self, name: str) -> str:
-        """Converts a string into a safe filename."""
-        import re
-        if not name:
-            return "_All_Library"
-        s = name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        s = re.sub(r'(?u)[^-\w.]', '', s)
-        return s
+    @staticmethod
+    def _is_hash_name(name: str) -> bool:
+        return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
     
-    def compute_pdf_hash(self, pdf_title: str, chunk_size: int = 1024 * 1024) -> str:
-        """Compute a hash of the PDF file for caching and change detection.
-
-        Args:
-            pdf_path: Path to the PDF file.
-            chunk_size: Size of chunks to read for hashing (default 1MB).
-        
-        Returns:
-            Hexadecimal hash string representing the PDF content.
-        """
-        h = hashlib.sha256()
-        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
-        with open(pdf_path, "rb") as f:
-            for chunk in iter(lambda: f.read(chunk_size), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    
-    def remove_cache_item(self, pdf_title: str) -> bool:
-        """Remove cached TEI XML for a given PDF title."""
-        if not pdf_title:
-            logger.warning("PDF title cannot be empty for cache removal")
+    def remove_cache_item(self, pdf_hash: str) -> bool:
+        """Remove cached TEI XML for a given PDF hash."""
+        if not pdf_hash:
+            logger.warning("PDF hash cannot be empty for cache removal")
             return False
 
-        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
-        if not os.path.exists(pdf_path):
-            logger.warning(f"PDF not found for TEI cache removal: {pdf_path}")
-            return False
-
-        pdf_hash = self.compute_pdf_hash(pdf_title)
         return self.remove_cache_item_by_hash(pdf_hash)
 
     def remove_cache_item_by_hash(self, pdf_hash: str) -> bool:
@@ -153,18 +126,23 @@ class PDFProcessor:
             self.remove_cache_item_by_hash(pdf_hash)
 
     
-    def _parse_pdf(self, pdf_path: str) -> Optional[ET.Element]:
+    def _parse_pdf(self, pdf_path: str, pdf_hash: Optional[str] = None) -> Optional[ET.Element]:
         """Parse a single PDF using GROBID and return TEI XML root.
         
         Args:
             pdf_path: Path to the PDF file.
+            pdf_hash: Precomputed hash for TEI cache naming.
             
         Returns:
             XML Element root of the TEI document, or None if parsing failed.
         """
         try:
-            base_title = os.path.splitext(os.path.basename(pdf_path))[0]
-            pdf_hash = self.compute_pdf_hash(self._sanitize_filename(base_title))
+            if not pdf_hash:
+                base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+                if self._is_hash_name(base_name):
+                    pdf_hash = base_name.lower()
+                else:
+                    pdf_hash = compute_file_hash(pdf_path)
             cache_path = os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml")
             
             if os.path.exists(cache_path):
@@ -317,22 +295,27 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_title: str, 
+    def extract_text_chunks(self, pdf_hash: str, pdf_title: Optional[str] = None,
             ) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
         """Extract paragraphs from PDF using GROBID.
         
         Args:
-            pdf_path: Path to the PDF file.
-            item_title: Title of the document.
+            pdf_hash: Hash of the cached PDF file.
+            pdf_title: Optional display title for logging.
             
         Returns:
             - List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
             - Full document text reconstructed from extracted paragraphs.
         """
-        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_title}.pdf")
-        tei_root = self._parse_pdf(pdf_path)
+        if not pdf_hash:
+            raise ValueError("pdf_hash cannot be empty")
+
+        pdf_path = os.path.join(self.pdf_cache_dir, f"{pdf_hash}.pdf")
+
+        tei_root = self._parse_pdf(pdf_path, pdf_hash=pdf_hash)
         if tei_root is None:
-            logger.warning(f"GROBID parsing failed for {pdf_path}; no paragraphs extracted")
+            title_info = f" ({pdf_title})" if pdf_title else ""
+            logger.warning(f"GROBID parsing failed for {pdf_path}{title_info}; no paragraphs extracted")
             return [], ""
 
         paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root)

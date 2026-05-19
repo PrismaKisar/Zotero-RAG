@@ -2,12 +2,12 @@
 
 import os
 import logging
-import hashlib
+import re
 from typing import List, Dict, Union
 
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
-from models import PDFIngestItem, UploadSource
+from models import PDFIngestItem, UploadSource, CachedPDF
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +31,9 @@ class PDFCacheHandler:
 
         logger.info(f"Initialized PDFCacheHandler with folder: {self.folder_path}")
 
-    def _sanitize_filename(self, name: str) -> str:
-        """Converts a string into a safe filename."""
-        import re
-        if not name:
-            return "_All_Library"
-        s = name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        s = re.sub(r'(?u)[^-\w.]', '', s)
-        return s
-    
-    def _compute_pdf_hash(self, file_path: str, chunk_size: int = 1024 * 1024) -> str:
-            """Compute SHA-256 hash of a PDF file."""
-            h = hashlib.sha256()
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(chunk_size), b""):
-                    h.update(chunk)
-            return h.hexdigest()
+    @staticmethod
+    def _is_hash_name(name: str) -> bool:
+        return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
     
     def get_items_from_upload(self, uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]: #TODO: dovrebbe essere privato in zoteroRAG
         items: List[PDFIngestItem] = []
@@ -60,48 +47,43 @@ class PDFCacheHandler:
 
         return items
 
-    def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> Dict[str, bool]:
+    def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> CachedPDF:
         if uploaded_pdf is None:
             raise ValueError("uploaded_pdf cannot be None")
 
-        base_title = self._sanitize_filename(uploaded_pdf.title)
-        candidate_filename = f"{base_title}.pdf"
+        pdf_hash = uploaded_pdf.source.compute_hash()
+        candidate_filename = f"{pdf_hash}.pdf"
         candidate_path = os.path.join(self.folder_path, candidate_filename)
 
-        if os.path.exists(candidate_path):
-            logger.warning(
-                "PDF with title '%s' already exist in cache, skipping upload",
-                base_title,
-            )
-            return {
-                "title": base_title,
-                "duplicate_title": True,
-            }
+        created = False
+        if not os.path.exists(candidate_path):
+            try:
+                uploaded_pdf.source.write_to(candidate_path)
+                created = True
+            except Exception as e:
+                raise IOError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
 
-        try:
-            uploaded_pdf.source.write_to(candidate_path)
-        except Exception as e:
-            raise IOError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
+        title = uploaded_pdf.title or "Unknown"
+        return CachedPDF(
+            pdf_hash=pdf_hash,
+            title=title,
+            cache_path=candidate_path,
+            created=created,
+        )
 
-        return {
-            "title": base_title,
-            "duplicate_title": False,
-        }
-
-    def remove_pdf(self, title: str) -> bool:
-        """Remove PDF file from cache by title.
+    def remove_pdf(self, pdf_hash: str) -> bool:
+        """Remove PDF file from cache by hash.
         
         Args:
-            title: Title of the PDF to remove (without extension).
+            pdf_hash: SHA-256 hash of the PDF to remove.
         Returns:
             True if deletion was successful, False otherwise.
         """
-        if not title:
-            logger.warning("Title cannot be empty for PDF removal")
+        if not pdf_hash:
+            logger.warning("PDF hash cannot be empty for PDF removal")
             return False
 
-        sanitized_title = self._sanitize_filename(title)
-        candidate_filename = f"{sanitized_title}.pdf"
+        candidate_filename = f"{pdf_hash}.pdf"
         candidate_path = os.path.join(self.folder_path, candidate_filename)
 
         if os.path.exists(candidate_path):
@@ -123,47 +105,48 @@ class PDFCacheHandler:
             return
         
         for pdf_hash, title in deleted_pdfs.items():
-            if not title:
-                logger.warning(f"Skipping deletion for PDF with empty title (hash: {pdf_hash})")
+            if not pdf_hash:
+                logger.warning("Skipping deletion for entry with empty hash")
                 continue
 
-            if self.remove_pdf(title):
+            if self.remove_pdf(pdf_hash):
                 logger.info(f"Cleared cached PDF for deleted entry: {title} (hash: {pdf_hash})")
             else:
                 raise IOError(f"Failed to clear cached PDF for deleted entry: {title} (hash: {pdf_hash})")
 
-    def get_pdf_path(self, title: str) -> Union[str, None]:
-        """Get full path of a cached PDF by title."""
-        if not title:
-            logger.warning("Title cannot be empty for getting PDF path")
+    def get_pdf_path(self, pdf_hash: str) -> Union[str, None]:
+        """Get full path of a cached PDF by hash."""
+        if not pdf_hash:
+            logger.warning("PDF hash cannot be empty for getting PDF path")
             return None
 
-        sanitized_title = self._sanitize_filename(title)
-        candidate_path = os.path.join(self.folder_path, f"{sanitized_title}.pdf")
-
+        candidate_path = os.path.join(self.folder_path, f"{pdf_hash}.pdf")
         if os.path.isfile(candidate_path):
             return candidate_path
 
-        logger.warning(f"PDF file not found for title '{title}': {candidate_path}")
+        logger.warning(f"PDF file not found for hash '{pdf_hash}': {candidate_path}")
         return None
 
     def get_cached_items(self) -> List[str]:
         """Get PDF items from the folder.
             
         Returns:
-            List of cached PDFs titles
+            List of cached PDF hashes
         """
-        items = []
+        items = set()
         
         # Walk through the folder and find all PDFs
         for _root, _dirs, files in os.walk(self.folder_path):
             for filename in files:
                 if filename.lower().endswith(".pdf"):
-                    title = self._sanitize_filename(os.path.splitext(filename)[0])
-                    items.append(title)
-        
+                    base_name = os.path.splitext(filename)[0]
+                    if self._is_hash_name(base_name):
+                        items.add(base_name.lower())
+                    else:
+                        logger.warning("Ignoring non-hash cached PDF: %s", filename)
+
         logger.info(f"Found {len(items)} PDF files in {self.folder_path}")
-        return items
+        return list(items)
     
     def list_collections(self) -> List[Dict]:
         """Return empty list for API compatibility with ZoteroDatabase.

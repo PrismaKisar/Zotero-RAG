@@ -13,13 +13,7 @@ import time
 from zotero_rag import ZoteroRAG
 import re
 
-def _sanitize_filename(name: str) -> str:
-    """Converts a string into a safe filename."""
-    if not name:
-        return "_All_Library"
-    s = name.replace(" ", "_")
-    s = re.sub(r'(?u)[^-\w.]', '', s)
-    return s
+from pdf_utils import sanitize_filename
 
 def _sanitize_model_name(model_name: str) -> str:
     """Convert model name to safe filename component."""
@@ -74,26 +68,17 @@ def _run_ingest_and_index(result):
             for item in result.failed_uploads:
                 st.write(f"- {item.get('title', 'Unknown file')}: {item.get('error', 'Unknown error')}")
 
-    duplicate_title_titles = getattr(result, "duplicate_title_titles", [])
+    ingested_pdfs = getattr(result, "ingested_pdfs", [])
 
-    if duplicate_title_titles:
-        st.warning(
-            f"{len(duplicate_title_titles)} PDF(s) skipped due to duplicate titles"
-        )
-        with st.expander("Show cached duplicates"):
-            if duplicate_title_titles:
-                st.write("Duplicate titles:")
-                for title in duplicate_title_titles:
-                    st.write(f"- {title}")
-
-    if not result.ingested_titles:
-        if duplicate_title_titles:
-            st.info(
-                "No new PDF to index: all selected files were skipped due to duplicate titles."
-            )
-        else:
-            st.info("No new PDF to index.")
+    if not ingested_pdfs:
+        st.info("No new PDF to index.")
         return
+
+    created_count = len([item for item in ingested_pdfs if getattr(item, "created", False)])
+    if created_count < len(ingested_pdfs):
+        st.info(
+            f"Using cache for {len(ingested_pdfs) - created_count} PDF(s) already stored by hash."
+        )
 
     stage_status = st.empty()
     pdf_progress_bar = st.progress(0, text="PDF analysis pending...")
@@ -115,22 +100,50 @@ def _run_ingest_and_index(result):
 
     try:
         upsert_report = st.session_state.rag.upsert_pdfs(
-            target_pdf_titles=result.ingested_titles,
+            target_pdfs=ingested_pdfs,
             progress_callback=progress_callback
         )
 
         indexed_chunks = int(getattr(upsert_report, "indexed_chunks", 0))
         processed_pdfs = int(getattr(upsert_report, "processed_pdfs", 0))
         failed_pdfs = getattr(upsert_report, "failed_pdfs", [])
-        already_indexed_titles = getattr(upsert_report, "already_indexed_titles", [])
+        already_indexed_info = getattr(upsert_report, "already_indexed_info", [])
+        title_overrides = getattr(upsert_report, "title_overrides", [])
+        duplicate_title_titles = getattr(upsert_report, "duplicate_title_titles", [])
 
-        if already_indexed_titles:
+        if already_indexed_info:
             st.info(
-                f"{len(already_indexed_titles)} PDF(s) skipped because already indexed in Qdrant."
+                f"{len(already_indexed_info)} PDF(s) skipped because already indexed in Qdrant."
             )
             with st.expander("Show Qdrant duplicates"):
-                for title in already_indexed_titles:
+                for item in already_indexed_info:
+                    input_title = item.get("input_title", "")
+                    indexed_title = item.get("indexed_title", "")
+                    if indexed_title and indexed_title != input_title:
+                        st.write(f"- {input_title} -> {indexed_title}")
+                    else:
+                        st.write(f"- {input_title or indexed_title}")
+
+        if duplicate_title_titles:
+            st.warning(
+                f"{len(duplicate_title_titles)} PDF(s) skipped because the title is already in use."
+            )
+            with st.expander("Show duplicate titles"):
+                for title in duplicate_title_titles:
                     st.write(f"- {title}")
+
+        if title_overrides:
+            st.info(
+                f"{len(title_overrides)} PDF(s) use existing registry titles."
+            )
+            with st.expander("Show registry title overrides"):
+                for item in title_overrides:
+                    input_title = item.get("input_title", "")
+                    indexed_title = item.get("indexed_title", "")
+                    if indexed_title and indexed_title != input_title:
+                        st.write(f"- {input_title} -> {indexed_title}")
+                    else:
+                        st.write(f"- {input_title or indexed_title}")
 
         if failed_pdfs:
             st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
@@ -573,7 +586,7 @@ def show_setup_tab():
                     else:
                         deleted = st.session_state.rag.delete_pdf_by_title(pdf_name_to_delete.strip())
                         if deleted:
-                            st.success(f"PDF '{pdf_name_to_delete}' deletion requested.")
+                            st.success(f"Deleted PDF '{pdf_name_to_delete}' from index.")
                             time.sleep(2.0)
                             st.rerun()
                         else:
@@ -1198,16 +1211,16 @@ def show_search_tab():
                     progress_bar = st.progress(0)
 
                     for idx, (pdf_path, answers) in enumerate(pdfs_answers.items()):
-                        original_filename = os.path.basename(pdf_path)
-                        name_without_ext = os.path.splitext(original_filename)[0]
-                        output_filename = f"{name_without_ext}_highlighted.pdf"
+                        display_title = answers[0].title or os.path.splitext(os.path.basename(pdf_path))[0]
+                        safe_title = sanitize_filename(display_title)
+                        output_filename = f"{safe_title}_highlighted.pdf"
                         output_path = os.path.join(output_dir, output_filename)
 
                         result_path = st.session_state.rag.highlight_pdf(answers, output_path)
                         if result_path:
                             highlighted_paths.append(result_path)
                         else:
-                            failed_pdfs.append(original_filename)
+                            failed_pdfs.append(display_title)
 
                         progress_bar.progress((idx + 1) / len(pdfs_answers))
 
@@ -1235,7 +1248,7 @@ def show_search_tab():
 
         with info_col:
             st.markdown(
-                f"""**PDF**: {os.path.basename(answer.pdf_path)}<br>
+                f"""**PDF**: {answer.title}<br>
                 **Page**: {answer.page_num + 1} | 
                 **Section**: {answer.section or 'Unknown'} | 
                 **Retrieval Score**: {answer.retrieval_score:.4f} | 

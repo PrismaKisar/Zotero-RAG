@@ -8,6 +8,8 @@ import argparse
 from pathlib import Path
 from typing import List, Dict, Optional
 
+from pdf_utils import sanitize_filename
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,7 +188,7 @@ class CollectionPDFExporter:
         # Export PDFs
         for pdf in pdfs:
             # Sanitize filename
-            safe_title = self._sanitize_filename(pdf['title'])
+            safe_title = sanitize_filename(pdf['title'])
             dest_filename = f"{safe_title}.pdf"
             dest_path = collection_folder / dest_filename
             
@@ -209,27 +211,6 @@ class CollectionPDFExporter:
         for child in collection_info['children']:
             self._export_collection_recursive(child, collection_folder, stats)
     
-    @staticmethod
-    def _sanitize_filename(filename: str) -> str:
-        """Sanitize filename for filesystem compatibility.
-        
-        Args:
-            filename: Original filename.
-            
-        Returns:
-            Sanitized filename.
-        """
-        # Replace problematic characters
-        invalid_chars = '<>:"/\\|?*'
-        for char in invalid_chars:
-            filename = filename.replace(char, '_')
-        
-        # Trim to reasonable length
-        max_length = 200
-        if len(filename) > max_length:
-            filename = filename[:max_length]
-        
-        return filename.strip()
     
     def export_collection(
         self, 

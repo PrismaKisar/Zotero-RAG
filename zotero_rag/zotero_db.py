@@ -40,15 +40,6 @@ class ZoteroDatabase:
         if not os.path.exists(self.db_path):
             raise FileNotFoundError(f"Zotero database not found at {self.db_path}")
         
-    def _sanitize_filename(self, name: str) -> str:
-        """Converts a string into a safe filename."""
-        import re
-        if not name:
-            return "_All_Library"
-        s = name.replace(" ", "_")
-        s = re.sub(r'(?u)[^-\w.]', '', s)
-        return s
-    
     def list_collections(self) -> List[Dict]:
         """Load collections from the Zotero database.
         
@@ -126,7 +117,8 @@ class ZoteroDatabase:
                 "WHERE d.itemID = ? AND f.fieldName = 'title'", 
                 (src_id,)
             )
-            title = self._sanitize_filename(r[0] if (r := cursor.fetchone()) else "Unknown")
+            raw_title = r[0] if (r := cursor.fetchone()) else "Unknown"
+            title = str(raw_title).strip() if raw_title else "Unknown"
             
             # Resolve storage path
             if path and path.startswith('storage:'):

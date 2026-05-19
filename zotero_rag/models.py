@@ -1,9 +1,10 @@
 """Data models for the Zotero RAG system."""
 
 from dataclasses import dataclass, field
-import hashlib
 import shutil
 from typing import Any, Dict, List, Tuple, Optional, Protocol
+
+from pdf_utils import compute_file_hash, compute_stream_hash
 
 
 @dataclass
@@ -52,23 +53,33 @@ class Answer:
     retrieval_score: float = 0.0  # Semantic search distance/score
     rerank_score: float = 0.0  # CrossEncoder reranking score
     pdf_path: Optional[str] = None
+    pdf_hash: Optional[str] = None
     
     def __reduce__(self):
         """Custom pickle support for dataclass."""
         return (
             self.__class__,
             (self.text, self.context, self.pdf_path, self.page_num, self.title,
-             self.section, self.start_char, self.end_char, self.score, self.query, self.color, 
-             self.sentence_coords, self.retrieval_score, self.rerank_score)
+             self.section, self.start_char, self.end_char, self.score, self.query, self.color,
+             self.sentence_coords, self.retrieval_score, self.rerank_score, self.pdf_hash)
         )
+
+
+@dataclass
+class CachedPDF:
+    """Represents a cached PDF stored by content hash."""
+
+    pdf_hash: str
+    title: str
+    cache_path: str
+    created: bool = False
 
 
 @dataclass
 class IngestResult:
     """Summary of an ingestion operation."""
 
-    ingested_titles: List[str] = field(default_factory=list)
-    duplicate_title_titles: List[str] = field(default_factory=list)
+    ingested_pdfs: List[CachedPDF] = field(default_factory=list)
     failed_uploads: List[Dict[str, str]] = field(default_factory=list)
 
 
@@ -78,7 +89,9 @@ class UpsertResult:
 
     indexed_chunks: int = 0
     processed_pdfs: int = 0
-    already_indexed_titles: List[str] = field(default_factory=list)
+    already_indexed_info: List[Dict[str, str]] = field(default_factory=list)
+    title_overrides: List[Dict[str, str]] = field(default_factory=list)
+    duplicate_title_titles: List[str] = field(default_factory=list)
     failed_pdfs: List[Dict[str, str]] = field(default_factory=list)
 
 
@@ -98,13 +111,8 @@ class UploadSource:
 
     uploaded_file: Any
 
-    # def compute_hash(self, chunk_size: int = 1024 * 1024) -> str: TODO: non penso servano più
-    #     h = hashlib.sha256()
-    #     self.uploaded_file.seek(0)
-    #     for chunk in iter(lambda: self.uploaded_file.read(chunk_size), b""):
-    #         h.update(chunk)
-    #     self.uploaded_file.seek(0)
-    #     return h.hexdigest()
+    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+        return compute_stream_hash(self.uploaded_file, chunk_size=chunk_size)
 
     def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
         self.uploaded_file.seek(0)
@@ -119,12 +127,8 @@ class PathSource:
 
     path: str
 
-    # def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:  TODO: non penso servano più
-    #     h = hashlib.sha256()
-    #     with open(self.path, "rb") as f:
-    #         for chunk in iter(lambda: f.read(chunk_size), b""):
-    #             h.update(chunk)
-    #     return h.hexdigest()
+    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+        return compute_file_hash(self.path, chunk_size=chunk_size)
 
     def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
         shutil.copy2(self.path, dest_path)

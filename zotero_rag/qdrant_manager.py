@@ -104,6 +104,12 @@ class QdrantManager:
                 field_name="models",
                 field_schema=qmodels.PayloadSchemaType.KEYWORD,
             )
+            # Create an index on title to allow lookups by name
+            self.client.create_payload_index(
+                collection_name=self.lookup_collection,
+                field_name="title",
+                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+            )
             logger.info(f"Created Qdrant lookup collection: {self.lookup_collection}")
         else:
             logger.info(f"Qdrant lookup collection already exists: {self.lookup_collection}")
@@ -212,7 +218,7 @@ class QdrantManager:
                         dense_embeddings: List[List[float]],
                         sparse_embeddings: List[Dict[str, List[float]]],
                         contextual_texts: Optional[List[str]] = None, #:FIXME: debug
-                        progress_callback=None) -> int:
+                        progress_callback=None) -> tuple[int, List[Dict[str, str]]]:
         """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
 
         Args:
@@ -222,7 +228,7 @@ class QdrantManager:
             progress_callback: Function(stage, current, total, message) for progress updates.
 
         Returns:
-            Number of paragraphs upserted.
+            Tuple of (number of paragraphs upserted, title override info).
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
@@ -247,7 +253,8 @@ class QdrantManager:
         pdf_indexed_titles: Dict[str, str] = {}
         for i, para in enumerate(self.paragraphs):
             point_id = QdrantManager._generate_point_id(para.pdf_hash, para.para_idx)
-            pdf_indexed_titles.setdefault(para.pdf_hash, para.title)
+            if para.pdf_hash not in pdf_indexed_titles:
+                pdf_indexed_titles[para.pdf_hash] = para.title
                         
             vector_config = {
                 "": dense_embeddings[i],
@@ -285,55 +292,140 @@ class QdrantManager:
         logger.info(f"Upserted {len(points)} paragraphs into Qdrant collection: {self.qdrant_collection}")
 
         # Update lookup collection with indexed PDFs
+        title_overrides: List[Dict[str, str]] = []
         for pdf_hash, pdf_title in pdf_indexed_titles.items():
-            lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
-            existing = self.client.retrieve(
+            canonical_title = self.register_pdf_title(pdf_hash, pdf_title)
+            if canonical_title and canonical_title != pdf_title:
+                title_overrides.append({
+                    "input_title": pdf_title,
+                    "indexed_title": canonical_title,
+                    "pdf_hash": pdf_hash,
+                })
+
+        return len(points), title_overrides
+
+    def register_pdf_title(self, pdf_hash: str, title: str) -> Optional[str]:
+        """Register or update the title for a given PDF hash in the lookup collection.
+
+        Args:
+            pdf_hash: Hash of the PDF to register.
+            title: Title to associate with the PDF hash.
+
+        Returns:
+            The canonical title for the PDF hash, or None if it could not be resolved.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+
+        if not pdf_hash:
+            raise ValueError("PDF hash is required to register title.")
+
+        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        existing = self.client.retrieve(
+            collection_name=self.lookup_collection,
+            ids=[lookup_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        normalized_title = (title or "").strip()
+        payload = (existing[0].payload or {}) if existing else {}
+        current_title = (payload.get("title") or "").strip() or None
+
+        if normalized_title and self._title_in_use_by_other_hash(normalized_title, pdf_hash):
+            logger.warning(
+                "Title '%s' already in use; skipping registry update for hash %s",
+                normalized_title,
+                pdf_hash,
+            )
+            return current_title
+
+        if existing:
+            models = payload.get("models") or []
+            if isinstance(models, str):
+                models = [models]
+            if self.dense_model_name not in models:
+                models.append(self.dense_model_name)
+
+            primary_title = current_title or normalized_title
+            update_payload = {
+                "pdf_hash": pdf_hash,
+                "models": models,
+                "title": primary_title or "",
+            }
+            self.client.set_payload(
                 collection_name=self.lookup_collection,
-                ids=[lookup_id],
-                with_payload=True,
-                with_vectors=False,
+                payload=update_payload,
+                points=[lookup_id],
+            )
+            return primary_title or None
+
+        self.client.upsert(
+            collection_name=self.lookup_collection,
+            points=[
+                qmodels.PointStruct(
+                    id=lookup_id,
+                    vector={},
+                    payload={
+                        "pdf_hash": pdf_hash,
+                        "title": normalized_title,
+                        "models": [self.dense_model_name],
+                    },
+                )
+            ],
+        )
+        return normalized_title or None
+
+    def _title_in_use_by_other_hash(self, title: str, pdf_hash: str) -> bool:
+        if not title:
+            return False
+
+        match = self.find_pdf_hash_by_title(title, filter_by_model=False)
+        return bool(match and match != pdf_hash)
+
+    def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> Optional[str]:
+        """Return the pdf_hash for a given title.
+
+        Args:
+            title: Title to look up.
+            filter_by_model: If True, only consider entries indexed by the current model.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+
+        if not title:
+            return None
+
+        must_conditions = [
+            qmodels.FieldCondition(
+                key="title",
+                match=qmodels.MatchValue(value=title),
+            )
+        ]
+        if filter_by_model:
+            must_conditions.append(
+                qmodels.FieldCondition(
+                    key="models",
+                    match=qmodels.MatchValue(value=self.dense_model_name),
+                )
             )
 
-            if existing:
-                payload = existing[0].payload or {}
-                models = payload.get("models") or []
-                if isinstance(models, str):
-                    models = [models]
+        flt = qmodels.Filter(must=must_conditions)
 
-                if self.dense_model_name not in models:
-                    models.append(self.dense_model_name)
+        points, _ = self.client.scroll(
+            collection_name=self.lookup_collection,
+            scroll_filter=flt,
+            limit=1,
+            with_payload=["pdf_hash"],
+            with_vectors=False,
+        )
 
-                update_payload = {
-                    "pdf_hash": pdf_hash,
-                    "models": models,
-                }
-                
-                # if not payload.get("title"): TODO: non pensoserva sta roba
-                #     update_payload["title"] = pdf_title
+        if not points:
+            return None
 
-                self.client.set_payload(
-                    collection_name=self.lookup_collection,
-                    payload=update_payload,
-                    points=[lookup_id],
-                )
-            else:
-                self.client.upsert(
-                    collection_name=self.lookup_collection,
-                    points=[
-                        qmodels.PointStruct(
-                            id=lookup_id,
-                            vector={},
-                            payload={
-                                "pdf_hash": pdf_hash,
-                                "title": pdf_title,
-                                "models": [self.dense_model_name],
-                            },
-                        )
-                    ],
-                )
+        payload = points[0].payload or {}
+        return payload.get("pdf_hash")
 
-        return len(points)
-    
     def delete_pdf_from_index(self, pdf_hash: str) -> Dict[str, bool]:
         """Delete all paragraphs associated with a specific PDF hash from the Qdrant collection.
         
