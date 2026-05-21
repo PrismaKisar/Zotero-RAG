@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List
 
 import numpy as np
+import math
 from fastembed import SparseTextEmbedding, TextEmbedding
 import ollama
 import torch
@@ -99,48 +100,130 @@ class EmbeddingManager:
 
         return max(start_size, int(last_safe_size * target_memory_fraction))
 
-    def generate_contextual_chunks(self, document_text:str, all_texts:List[str]) -> List[str]:
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough estimate of token count for a given text, used for batch size probing."""
+        return len(text) // 4
+
+    def _generate_document_summary(self, document_text: str) -> str:
+        """Generates a concise global summary of the given document.
+
+        Args:
+            document_text: The full text of the document to summarize.
+            
+        Returns:
+            A concise summary string that captures the main themes and content of the document.
+        """
+        client = ollama.Client(host=self.ollama_url)
+
+        required_ctx = (len(document_text) // 4) + 1024
+        optimal_num_ctx = max(2048, min(required_ctx, 16384))
+
+        prompt = (
+            "You are an expert AI assistant preparing metadata for a vector database.\n"
+            "Read the following document and write a highly dense, entity-rich summary of its contents in exactly one continuous paragraph.\n"
+            "Do NOT use bullet points, numbered lists, or bold text formatting.\n"
+            "Focus explicitly on naming the specific systems, methodologies, and metrics discussed (e.g., algorithms, datasets, performance multiples).\n\n"
+            f"<document>\n{document_text}\n</document>"
+        )
+
+        try:
+            response = client.generate(
+                model=self.context_model_name,
+                prompt=prompt,
+                options={
+                    "temperature": 0.1, 
+                    "num_predict": 400,
+                    "num_ctx": optimal_num_ctx
+                },
+                keep_alive=-1
+            )
+            return response['response'].strip()
+        except Exception as e:
+            logger.warning(f"Document summary generation failed: {e}")
+            return ""
+
+    # TODO: si può migliorare la stima anche contando il batch_size.
+    #       inoltre si può aumentare la dimensione di llm_batch_size a 6
+    def generate_contextual_chunks(self, document_text:str, all_texts:List[str], llm_batch_size: int = 3) -> List[str]:
         """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
         
         Args:
             document_text: The full text of the document.
             all_texts: List of text chunks to contextualize.
+            llm_batch_size: Number of chunks to process in each LLM call. Default is 3 to balance memory and performance.
             
         Returns:
             List of contextualized text chunks, where each chunk is prefixed with a succinct context.
         """
         contextualized_results = []
-
-        prompt = (
-            """<document> {document_text} </document> 
-                Here is the chunk we want to situate within the whole document <chunk> {chunk_text} </chunk> 
-                Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. 
-                Answer only with the succinct context and nothing else. """
-        )
-
         client = ollama.Client(host=self.ollama_url)
 
-        for chunk in all_texts:
-            formatted_prompt = prompt.format(document_text=document_text, chunk_text=chunk)
-            response = client.generate(
-                model=self.context_model_name,
-                prompt=formatted_prompt,
-                options={
-                    "temperature": 0.1, 
-                    "num_predict": 100,
-                    "num_ctx": 32768 #FIXME: da capire se serve (in caso i PDF sono tanto tanto lunghi)
-                },
-                keep_alive=-1
-            )
-                
-            context_prefix = response['response'].strip()
-            full_chunk = f"{context_prefix}\n\n{chunk}"
+        doc_summary = self._generate_document_summary(document_text)
 
-            contextualized_results.append(full_chunk)
+        logger.info(f"Document summary generated: {doc_summary}")  # Log the beginning of the summary for debugging
+
+        # Dynamic calculation of required context window to avoid memory waste.
+        required_ctx = (len(doc_summary) // 4) + 1024
+        optimal_num_ctx = max(2048, min(required_ctx, 16384))
+
+        # Prompt template for generating contextualized chunks. Using batchs to reduce number of LLM calls and improve efficiency.
+        prompt_template = (
+            f"<document_summary>\n{doc_summary}\n</document_summary>\n\n"
+            "You are an assistant organizing a vector database. Based on the global summary above, "
+            "provide a short, succinct context to situate each of the following paragraphs. "
+            "Format your response strictly using XML tags for the context, like this:\n"
+            "<context1>context for paragraph 1</context1>\n"
+            "<context2>context for paragraph 2</context2>\n\n"
+        )
+
+        logger.info(f"Generating contextualized chunks with context window {optimal_num_ctx} tokens...")
+
+        for i in range(0, len(all_texts), llm_batch_size):
+            batch_chunks = all_texts[i:i + llm_batch_size]
+            chunks_formatted = "\n".join([f"--- PARAGRAPH {j+1} ---\n{chunk}\n" for j, chunk in enumerate(batch_chunks)])
+
+            formatted_prompt = prompt_template.format(
+                doc_summary=doc_summary, 
+                batch_length=len(batch_chunks),
+                chunks_formatted=chunks_formatted
+            )
+
+            try:
+                response = client.generate(
+                    model=self.context_model_name,
+                    prompt=formatted_prompt,
+                    options={
+                        "temperature": 0.1, 
+                        "num_predict": 100 * len(batch_chunks),
+                        "num_ctx": optimal_num_ctx
+                    },
+                    keep_alive=-1
+                )
+
+                response_text = response['response'].strip()
+
+                logger.info(f"LLM response for batch {i//llm_batch_size + 1}:\n{response_text}")  # Log the beginning of the response for debugging
+
+                for j, chunk in enumerate(batch_chunks):
+                    tag_start = f"<context{j+1}>"
+                    tag_end = f"</context{j+1}>"
+
+                    if tag_start in response_text and tag_end in response_text:
+                        context_prefix = response_text.split(tag_start)[1].split(tag_end)[0].strip()
+                    else:
+                        context_prefix = ""
+
+                    full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
+                    contextualized_results.append(full_chunk)
+            except Exception as e:
+                logger.warning(f"Contextual chunk generation failed for batch starting at index {i}: {e}")
+                contextualized_results.extend(batch_chunks)
+
+        self._flush_ollama_cache()
 
         return contextualized_results
 
-    def flush_ollama_cache(self):
+    def _flush_ollama_cache(self):
         """Flush Ollama's model cache to free up memory."""
         try:
             ollama.generate(model=self.context_model_name, keep_alive=0)
@@ -149,7 +232,15 @@ class EmbeddingManager:
             logger.warning("Failed to flush Ollama cache: %s", str(e))
 
     def encode_paragraphs(self, progress_callback, all_texts: List[str]) -> Dict:
-        """Encode paragraphs into dense+sparse vectors with progress updates."""
+        """Encode paragraphs into dense+sparse vectors with progress updates.
+        
+        Args:
+            progress_callback: Function to call with progress updates (stage, current, total, message).
+            all_texts: List of paragraph texts to encode.
+        
+        Returns:
+            Dictionary with 'dense' and 'sparse' keys containing the respective embeddings.
+        """
         if not all_texts:
             return {"dense": [], "sparse": []}
 
@@ -237,7 +328,14 @@ class EmbeddingManager:
         }
 
     def encode_query(self, query: str) -> Dict[str, List[float]]:
-        """Encode a single query into dense+sparse vectors."""
+        """Encode a single query into dense+sparse vectors.
+        
+        Args:
+            query: The query string to encode.
+        
+        Returns:
+            Dictionary with 'dense' and 'sparse' keys containing the respective embeddings.
+        """
         query_dense_embedding = next(iter(self.dense_model.embed([query]))).tolist()
 
         query_sparse_obj = next(iter(self.sparse_model.embed([query])))

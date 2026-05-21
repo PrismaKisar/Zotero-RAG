@@ -493,8 +493,6 @@ class ZoteroRAG:
                             )
                 except Exception as e:
                     logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
-                finally:
-                    self.embedding_manager.flush_ollama_cache()
             else:
                 logger.info("Chunk contextualization disabled: using original chunks for embedding.")
 

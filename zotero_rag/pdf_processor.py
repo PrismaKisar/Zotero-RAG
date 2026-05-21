@@ -226,6 +226,10 @@ class PDFProcessor:
         
         # Define TEI namespace
         ns = {'tei': 'http://www.tei-c.org/ns/1.0'}
+
+        # Buffer to handle short paragraphs
+        pending_short_para = ""
+        pending_coords = []
         
         # Extract from abstract (each <p> is a paragraph)
         abstract = tei_root.find('.//tei:abstract', ns)
@@ -233,10 +237,20 @@ class PDFProcessor:
             for p_elem in abstract.findall('.//tei:p', ns):
                 p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
                 
-                if p_text and len(p_text.split()) >= 10:
-                    paragraphs.append((p_text, page_num, para_idx, 'abstract', sentences_coords))
-                    full_text_parts.append(p_text)
-                    para_idx += 1
+                if p_text:
+                    if pending_short_para:
+                        p_text = f"{pending_short_para} {p_text}"
+                        sentences_coords = pending_coords + sentences_coords
+                        pending_short_para = ""
+                        pending_coords = []
+
+                    if len(p_text.split()) < 10:
+                        pending_short_para = p_text
+                        pending_coords = sentences_coords
+                    else:
+                        paragraphs.append((p_text, page_num, para_idx, 'abstract', sentences_coords))
+                        full_text_parts.append(p_text)
+                        para_idx += 1
         
         # Extract from body (main content)
         body = tei_root.find('.//tei:body', ns)
@@ -244,17 +258,35 @@ class PDFProcessor:
             for section_div in body.findall('tei:div', ns):
                 # Determine section type from head element
                 head = section_div.find('tei:head', ns)
-                head_text = head.text.lower()
-                section_type = self._determine_section_type(head_text)
+                head_text_raw = "".join(head.itertext()).strip() if head is not None else ""
+                head_text_lower = head_text_raw.lower()
+                section_type = self._determine_section_type(head_text_lower)
                 
                 for p_elem in section_div.findall('.//tei:p', ns):
                     p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
                     
-                    if p_text and len(p_text.split()) >= 10:
-                        paragraphs.append((p_text, page_num, para_idx, section_type, sentences_coords))
-                        full_text_parts.append(p_text)
-                        para_idx += 1
+                    if p_text:
+                        if pending_short_para:
+                            p_text = f"{pending_short_para} {p_text}"
+                            sentences_coords = pending_coords + sentences_coords
+                            pending_short_para = ""
+                            pending_coords = []
+
+                        if len(p_text.split()) < 10:
+                            pending_short_para = p_text
+                            pending_coords = sentences_coords
+                        else:
+                            paragraphs.append((p_text, page_num, para_idx, section_type, sentences_coords))
+                            full_text_parts.append(p_text)
+                            para_idx += 1
         
+        if pending_short_para and paragraphs:
+            last_para = paragraphs[-1]
+            updated_text = f"{last_para[0]} {pending_short_para}"
+            updated_coords = last_para[4] + pending_coords
+            paragraphs[-1] = (updated_text, last_para[1], last_para[2], last_para[3], updated_coords)
+            full_text_parts.append(pending_short_para)
+
         document_text = "\n\n".join(full_text_parts)
         
         return paragraphs, document_text
@@ -265,12 +297,7 @@ class PDFProcessor:
         page_num = 0
         
         for s in p_elem.findall('.//tei:s', ns):
-            text_parts = []
-            for elem in s.iter():
-                if elem.text: text_parts.append(elem.text)
-                if elem.tail: text_parts.append(elem.tail)
-            
-            sentence_text = ''.join(text_parts).strip()
+            sentence_text = " ".join("".join(s.itertext()).split())
             coords = s.get('coords', '')
             
             if sentence_text:
@@ -278,13 +305,17 @@ class PDFProcessor:
                 if page_num == 0 and coords:
                     try:
                         page_num = int(coords.split(',')[0]) - 1
-                    except: pass
+                    except ValueError: 
+                        pass
                     
         paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
         return paragraph_text, sentences_with_coords, page_num
 
     def _determine_section_type(self, head_text):
         """Mappa il titolo della sezione a una categoria."""
+        if not head_text:
+            return 'body'
+
         mapping = {
             'abstract': 'abstract', 'introduction': 'introduction',
             'method': 'methods', 'procedure': 'methods',
