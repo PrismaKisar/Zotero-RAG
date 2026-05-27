@@ -6,7 +6,7 @@ import math
 import torch
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
 
-from models import Paragraph, Answer
+from models import Paragraph, Answer, ExpandedAnswerSpan, RerankedParagraph
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 class QAEngine:
     """Handles extractive question answering over text passages."""
     
-    def __init__(self, model_name: str = "deepset/roberta-base-squad2", 
-                 device: str = None,
-                 enable_question_expansion: bool = True,
-                 batch_size: int = 128):
+    def __init__(self, 
+                model_name: str = "deepset/roberta-base-squad2", 
+                device: str = None,
+                enable_question_expansion: bool = True,
+                batch_size: int = 128):
         """Initialize the QA engine.
         
         Args:
@@ -245,9 +246,10 @@ class QAEngine:
         
         return variations
     
-    def _expand_to_sentences(self, paragraph: Paragraph, 
+    def _expand_to_sentences(self, 
+                            paragraph: Paragraph, 
                             start_char: int, 
-                            end_char: int) -> Tuple[str, int, int, List[str]]:
+                            end_char: int) -> ExpandedAnswerSpan:
         """Expand answer span to include complete sentences and return their coordinates.
         
         Args:
@@ -259,7 +261,12 @@ class QAEngine:
             (expanded_text, new_start, new_end, sentence_coords) tuple.
         """
         if not paragraph.sentences:
-            return paragraph.text[start_char:end_char], start_char, end_char, []
+            return ExpandedAnswerSpan(
+                text=paragraph.text[start_char:end_char],
+                start_char=start_char,
+                end_char=end_char,
+                sentence_coords=[],
+            )
 
         # Map character positions to sentences
         start_sentence_idx = -1
@@ -300,17 +307,37 @@ class QAEngine:
             
         new_end = new_start + len(expanded_text)
         
-        return expanded_text, new_start, new_end, sentence_coords
+        return ExpandedAnswerSpan(
+            text=expanded_text,
+            start_char=new_start,
+            end_char=new_end,
+            sentence_coords=sentence_coords,
+        )
     
-    def extract_answers(self, question: str, 
-                       candidates: List[Tuple[Paragraph, float, float]],
-                       qa_score_threshold: float = 0.0,
-                       color: Tuple[float, float, float] = (1, 1, 0),
-                       progress_callback=None,
-                       question_variations: List[str] = None,
-                       question_type: str = 'general',
-                       custom_config: dict = None) -> List[Answer]:
-        """Extract answers from candidate paragraphs using QA model (Batched & Logged)."""
+    def extract_answers(self,
+                    question: str,
+                    candidates: List[RerankedParagraph],
+                    qa_score_threshold: float = 0.0,
+                    color: Tuple[float, float, float] = (1, 1, 0),
+                    progress_callback=None,
+                    question_variations: List[str] = None,
+                    question_type: str = 'general',
+                    custom_config: dict = None) -> List[Answer]:
+        """Extract answers for a given question from candidate paragraphs.
+        
+        Args:
+            question: The question to answer.
+            candidates: List of RerankedParagraph objects to extract answers from.
+            qa_score_threshold: Minimum confidence score to keep an answer.
+            color: Highlight color for the answer (R, G, B).
+            progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
+            question_variations: Optional list of question variations to use instead of generating them.
+            question_type: Type of question (e.g., 'factoid', 'methodology', 'explanation', etc.) to adjust extraction strategy.
+            custom_config: Optional dictionary to override default config parameters for the question type.
+            
+        Returns:
+            List of Answer objects extracted from the candidates.
+        """
         if self.model is None:
             raise RuntimeError("QA model not loaded.")
         
@@ -341,7 +368,8 @@ class QAEngine:
         batch_contexts = []
         metadata_map = [] 
         
-        for i, (paragraph, retrieval_score, rerank_score) in enumerate(candidates):
+        for i, candidate in enumerate(candidates):
+            paragraph = candidate.paragraph
             combined_text = paragraph.text
             
             # Prepare variations
@@ -350,8 +378,8 @@ class QAEngine:
                 batch_contexts.append(combined_text)
                 metadata_map.append({
                     'paragraph': paragraph,
-                    'retrieval_score': retrieval_score,
-                    'rerank_score': rerank_score,
+                    'retrieval_score': candidate.retrieval_score,
+                    'rerank_score': candidate.rerank_score,
                     'q_var': q_var,
                     'context_text': combined_text,
                     'candidate_idx': i
@@ -457,22 +485,22 @@ class QAEngine:
             local_start, local_end = raw_start, raw_end
 
             # Sentence expansion
-            expanded_text, new_start, new_end, sentence_coords = self._expand_to_sentences(
+            expanded = self._expand_to_sentences(
                 target_paragraph, local_start, local_end
             )
             
             answers.append(Answer(
-                text=expanded_text,
+                text=expanded.text,
                 context=target_paragraph.text,
                 page_num=target_paragraph.page_num,
                 title=target_paragraph.title,
                 section=target_paragraph.section,
-                start_char=new_start,
-                end_char=new_end,
+                start_char=expanded.start_char,
+                end_char=expanded.end_char,
                 score=best_res['score'],
                 query=meta['q_var'],
                 color=color,
-                sentence_coords=sentence_coords,
+                sentence_coords=expanded.sentence_coords,
                 retrieval_score=meta['retrieval_score'],
                 rerank_score=meta['rerank_score'],
                 pdf_hash=target_paragraph.pdf_hash

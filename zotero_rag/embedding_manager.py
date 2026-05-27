@@ -67,7 +67,7 @@ class EmbeddingManager:
 
         return int(len(sample_vector))
 
-    def _find_safe_batch_size(self,
+    def _find_safe_batch_size(self, 
                             sample_texts: List[str],
                             start_size: int = 2,
                             max_size: int = 128,
@@ -99,10 +99,6 @@ class EmbeddingManager:
                 return last_safe_size
 
         return max(start_size, int(last_safe_size * target_memory_fraction))
-
-    def _estimate_tokens(self, text: str) -> int:
-        """Rough estimate of token count for a given text, used for batch size probing."""
-        return len(text) // 4
 
     def _generate_document_summary(self, document_text: str) -> str:
         """Generates a concise global summary of the given document.
@@ -142,9 +138,12 @@ class EmbeddingManager:
             logger.warning(f"Document summary generation failed: {e}")
             return ""
 
-    # TODO: si può migliorare la stima anche contando il batch_size.
-    #       inoltre si può aumentare la dimensione di llm_batch_size a 6
-    def generate_contextual_chunks(self, document_text:str, all_texts:List[str], llm_batch_size: int = 3) -> List[str]:
+    # TODO: si può migliorare la stima di ctx_num anche contando il batch_size.
+    #       inoltre si può aumentare la dimensione di llm_batch_size a 6 se si usa summary (prima era 3)
+    def generate_contextual_chunks(self, 
+                                document_text:str,
+                                all_texts:List[str],
+                                llm_batch_size: int = 6) -> List[str]:
         """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
         
         Args:
@@ -160,7 +159,7 @@ class EmbeddingManager:
 
         doc_summary = self._generate_document_summary(document_text)
 
-        logger.info(f"Document summary generated: {doc_summary}")  # Log the beginning of the summary for debugging
+        #logger.info(f"Document summary generated: {doc_summary}") #FIXME: for debug
 
         # Dynamic calculation of required context window to avoid memory waste.
         required_ctx = (len(doc_summary) // 4) + 1024
@@ -175,8 +174,6 @@ class EmbeddingManager:
             "<context1>context for paragraph 1</context1>\n"
             "<context2>context for paragraph 2</context2>\n\n"
         )
-
-        logger.info(f"Generating contextualized chunks with context window {optimal_num_ctx} tokens...")
 
         for i in range(0, len(all_texts), llm_batch_size):
             batch_chunks = all_texts[i:i + llm_batch_size]
@@ -201,8 +198,6 @@ class EmbeddingManager:
                 )
 
                 response_text = response['response'].strip()
-
-                logger.info(f"LLM response for batch {i//llm_batch_size + 1}:\n{response_text}")  # Log the beginning of the response for debugging
 
                 for j, chunk in enumerate(batch_chunks):
                     tag_start = f"<context{j+1}>"
@@ -231,7 +226,7 @@ class EmbeddingManager:
         except Exception as e:
             logger.warning("Failed to flush Ollama cache: %s", str(e))
 
-    def encode_paragraphs(self, progress_callback, all_texts: List[str]) -> Dict:
+    def encode_paragraphs(self, progress_callback, all_texts: List[str]) -> Dict[str, List[float]]:
         """Encode paragraphs into dense+sparse vectors with progress updates.
         
         Args:

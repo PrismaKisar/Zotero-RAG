@@ -15,13 +15,15 @@ logger = logging.getLogger(__name__)
 class QdrantManager:
     """Manage Qdrant vector database for storing and searching paragraph vectors."""
     
-    def __init__(self, dense_model_name: str = "BAAI/bge-base-en-v1.5", 
-                 qdrant_url: str = "http://localhost:6333",
-                 vector_size: int = 768):
+    def __init__(self, 
+                dense_model_name: str = "BAAI/bge-base-en-v1.5", 
+                qdrant_url: str = "http://localhost:6333",
+                vector_size: int = 768):
         """Initialize the Qdrant manager.
         
         Args:
             dense_model_name: Name used to derive a deterministic collection name.
+            qdrant_url: URL of the Qdrant service.
             vector_size: Dimensionality of the dense vectors stored in Qdrant.
         """
         self.dense_model_name = dense_model_name
@@ -35,13 +37,28 @@ class QdrantManager:
     
     @staticmethod
     def _sanitize_model_name(model_name: str) -> str:
-        """Convert model name to safe filename component."""
+        """Convert model name to safe filename component.
+        
+        Args:
+            model_name: Original model name string.
+        
+        Returns:
+            Sanitized string suitable for use in collection names.
+        """
         model_short = model_name.split('/')[-1]
         return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
     
     @staticmethod
     def _generate_point_id(pdf_hash: str, paragraph_index: int) -> str:
-        """Generate a unique point ID for Qdrant."""
+        """Generate a unique point ID for Qdrant.
+        
+        Args:
+            pdf_hash: Hash of the PDF document.
+            paragraph_index: Index of the paragraph within the PDF (can be None for registry entries).
+            
+        Returns:
+            A deterministic UUID string based on the PDF hash and paragraph index.
+        """
         if paragraph_index is None:
             input_str = f"{pdf_hash}"
         else:
@@ -50,18 +67,31 @@ class QdrantManager:
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
 
     def _start_connection(self):
-        """Start connection to Qdrant client."""
+        """Start connection to Qdrant client and verify connectivity."""
         self.client = qc.QdrantClient(
             url=self.qdrant_url,
         )
+        try:
+            # Force a round-trip to verify the service is reachable.
+            self.client.get_collections()
+        except Exception as exc:
+            if self.client:
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+            self.client = None
+            message = (
+                f"Qdrant service not reachable at {self.qdrant_url}. "
+                "Start Qdrant and retry."
+            )
+            logger.error(message)
+            raise ConnectionError(message) from exc
 
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-    
         logger.info("Connected to Qdrant client")
 
     def _initialize_connection(self):
-        """Initialize Qdrant collections and indices if they don't exist, then start connection."""
+        """Initialize Qdrant client and ensure collections and indexes are set up."""
         self._start_connection()
         
         if not self.client.collection_exists(self.qdrant_collection):
@@ -377,6 +407,15 @@ class QdrantManager:
         return normalized_title or None
 
     def _title_in_use_by_other_hash(self, title: str, pdf_hash: str) -> bool:
+        """Check if a given title is already associated with a different PDF hash in the lookup collection.
+        
+        Args:
+            title: Title to check for usage.
+            pdf_hash: PDF hash to exclude from the check (i.e., allow if the title is used by the same hash).
+            
+        Returns:
+            True if the title is in use by a different PDF hash, False otherwise.
+        """
         if not title:
             return False
 
@@ -389,6 +428,9 @@ class QdrantManager:
         Args:
             title: Title to look up.
             filter_by_model: If True, only consider entries indexed by the current model.
+
+        Returns:
+            The pdf_hash associated with the title, or None if not found.
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
@@ -524,57 +566,79 @@ class QdrantManager:
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
         return deleted_entries
 
-    def search(self,
-               query_dense_embedding: List[float],
-               query_sparse_embedding: Dict[str, List[float]],
-               threshold: float = 0.7) -> List[tuple]:
-        """Search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
-            
+    def search_batch(self,
+                    query_embeddings: List[Dict[str, List[float]]],
+                    threshold: float = 0.7) -> List[List[Paragraph]]:
+        """Batch search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
+
         Args:
-            query_dense_embedding: Dense query embedding.
-            query_sparse_embedding: Sparse query embedding with indices/values keys.
-            limit: Number of results to return.
+            query_embeddings: List of query embedding dicts with 'dense' and 'sparse' keys.
+            threshold: Score threshold for dense prefetch filtering.
 
         Returns:
-            List of tuples (Paragraph, score) for relevant paragraphs.
+            List of lists of (Paragraph, score) tuples, aligned to query order.
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
 
-        search_result = self.client.query_points(
-            collection_name=self.qdrant_collection,
-            prefetch=[
-                qmodels.Prefetch(
-                    query=query_dense_embedding,
-                    using="",
-                    score_threshold=threshold,
-                    limit=20
-                ),
-                qmodels.Prefetch(
-                    query=query_sparse_embedding,
-                    using="text-sparse", #TODO: valutare se mettere un threshold anche quí, si potrebbe mettere 0.01 per eliminare 
-                    limit=20             #      i risultati che non matchano nemmeno con BM25... capiamo
-                ),
-            ],
-            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-            limit=20,
-            with_payload=True
-        )
-        
-        relevant_paragraphs = []
-        for result in search_result.points:
-            payload = result.payload
+        if not query_embeddings:
+            return []
 
-            para = Paragraph(
-                text=payload.get('text', ''),
-                page_num=payload.get('page_num', -1),
-                para_idx=payload.get('para_idx', -1),
-                title=payload.get('title', ''),
-                pdf_hash=payload.get('pdf_hash', ''),
-                section=payload.get('section', ''),
-                sentence_count=payload.get('sentence_count', 0),
-                sentences=payload.get('sentences', [])
+        result_limit = 20
+        requests = []
+        for query_embedding in query_embeddings:
+            dense_query = query_embedding.get("dense")
+            sparse_query = query_embedding.get("sparse")
+            if dense_query is None or sparse_query is None:
+                raise ValueError("Each query embedding must include 'dense' and 'sparse' keys.")
+            requests.append(
+                qmodels.QueryRequest(
+                    prefetch=[
+                        qmodels.Prefetch(
+                            query=dense_query,
+                            using="",
+                            score_threshold=threshold,
+                            limit=result_limit,
+                        ),
+                        qmodels.Prefetch(
+                            query=sparse_query,
+                            using="text-sparse",
+                            limit=result_limit
+                        ),
+                    ],
+                    query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+                    limit=result_limit,
+                    with_payload=True,
+                )
             )
-            relevant_paragraphs.append((para, result.score))
 
-        return relevant_paragraphs
+        search_results = self.client.query_batch_points(
+            collection_name=self.qdrant_collection,
+            requests=requests,
+        )
+
+        if hasattr(search_results, "result"):
+            search_results = search_results.result
+
+        if not isinstance(search_results, list):
+            search_results = [search_results]
+
+        relevant_batches = []
+        for response in search_results:
+            relevant_paragraphs = []
+            for result in response.points:
+                payload = result.payload or {}
+                para = Paragraph(
+                    text=payload.get('text', ''),
+                    page_num=payload.get('page_num', -1),
+                    para_idx=payload.get('para_idx', -1),
+                    title=payload.get('title', ''),
+                    pdf_hash=payload.get('pdf_hash', ''),
+                    section=payload.get('section', ''),
+                    sentence_count=payload.get('sentence_count', 0),
+                    sentences=payload.get('sentences', [])
+                )
+                relevant_paragraphs.append((para, result.score))
+            relevant_batches.append(relevant_paragraphs)
+
+        return relevant_batches

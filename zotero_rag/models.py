@@ -8,6 +8,16 @@ from pdf_utils import compute_file_hash, compute_stream_hash
 
 
 @dataclass
+class ExtractedParagraph:
+    """Represents a paragraph extracted from TEI before PDF metadata is attached."""
+    text: str
+    page_num: int
+    para_idx: int
+    section: str
+    sentences: List[Tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class Paragraph:
     """Represents a paragraph-level chunk for QA."""
     text: str
@@ -34,6 +44,14 @@ class Paragraph:
                 self.sentences,
             )
         )
+
+
+@dataclass
+class RerankedParagraph:
+    """Represents a paragraph with retrieval and rerank scores."""
+    paragraph: Paragraph
+    retrieval_score: float
+    rerank_score: float
 
 
 @dataclass
@@ -66,9 +84,17 @@ class Answer:
 
 
 @dataclass
+class ExpandedAnswerSpan:
+    """Represents an answer span expanded to full sentences."""
+    text: str
+    start_char: int
+    end_char: int
+    sentence_coords: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CachedPDF:
     """Represents a cached PDF stored by content hash."""
-
     pdf_hash: str
     title: str
     cache_path: str
@@ -78,7 +104,6 @@ class CachedPDF:
 @dataclass
 class IngestResult:
     """Summary of an ingestion operation."""
-
     ingested_pdfs: List[CachedPDF] = field(default_factory=list)
     failed_uploads: List[Dict[str, str]] = field(default_factory=list)
 
@@ -86,7 +111,6 @@ class IngestResult:
 @dataclass
 class UpsertResult:
     """Summary of an indexing operation."""
-
     indexed_chunks: int = 0
     processed_pdfs: int = 0
     already_indexed_info: List[Dict[str, str]] = field(default_factory=list)
@@ -108,7 +132,6 @@ class PDFSource(Protocol):
 @dataclass
 class UploadSource:
     """PDF source backed by an in-memory upload."""
-
     uploaded_file: Any
 
     def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
@@ -124,7 +147,6 @@ class UploadSource:
 @dataclass
 class PathSource:
     """PDF source backed by a file path."""
-
     path: str
 
     def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:

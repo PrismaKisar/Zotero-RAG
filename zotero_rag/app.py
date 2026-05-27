@@ -147,6 +147,12 @@ def _run_ingest_and_index(result):
 
         if failed_pdfs:
             st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
+            grobid_errors = [
+                item for item in failed_pdfs
+                if "GROBID service not reachable" in (item.get("error") or "")
+            ]
+            if grobid_errors:
+                st.error("GROBID is not running. Start the service and retry indexing.")
             with st.expander("Show processing errors"):
                 for item in failed_pdfs:
                     st.write(f"- {item.get('title', 'Unknown PDF')}: {item.get('error', 'Unknown error')}")
@@ -167,9 +173,15 @@ def _run_ingest_and_index(result):
 
         time.sleep(5.0)
         st.rerun()
+    except ConnectionError as e:
+        if "Qdrant" in str(e):
+            st.error("Qdrant is not running. Start the service and retry indexing.")
+        elif "GROBID" in str(e):
+            st.error("GROBID is not running. Start the service and retry indexing.")
+        else:
+            st.error(f"Connection error: {e}")
     except Exception as e:
         stage_status.error("Indexing failed.")
-        st.error(f"Error building index: {e}")
         with st.expander("Show full error"):
             st.exception(e)
 
@@ -429,7 +441,11 @@ def show_setup_tab():
 
             try:
                 indexed_titles = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
-            except Exception:
+            except Exception as e:
+                if isinstance(e, ConnectionError) and "Qdrant" in str(e):
+                    st.error("Qdrant is not running. Start the service to view indexed PDFs.")
+                else:
+                    st.error(f"Error fetching indexed PDFs: {e}")
                 indexed_titles = []
 
             new_indexed = len(indexed_titles) > 0
@@ -763,10 +779,10 @@ def show_search_tab():
         with col_retrieval:
             retrieval_threshold = st.number_input(
                 "1. Retrieval Distance",
-                min_value=0.1, max_value=10.0,
+                min_value=0.0, max_value=1.0,
                 value=preset['retrieval_threshold'],
-                step=0.1,
-                help="Stage 1 (FAISS): Higher = more paragraphs retrieved."
+                step=0.05,
+                help="Stage 1 (Cosine Similarity): Lower = more paragraphs retrieved (0.0-1.0)."
             )
 
         with col_rerank:

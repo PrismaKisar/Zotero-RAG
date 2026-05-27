@@ -12,6 +12,7 @@ import requests
 from grobid_client.grobid_client import GrobidClient
 
 from pdf_utils import compute_file_hash
+from models import ExtractedParagraph
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +38,17 @@ class PDFProcessor:
         'methods': True,
         'discussion': True,
     }
+
+    # Minimum word count before a paragraph is treated as standalone.
+    MIN_PARAGRAPH_WORDS = 10
     
     # Serialize calls to GROBID to avoid exhausting its internal pool
     GROBID_LOCK = threading.Lock()
     
-    def __init__(self, grobid_url: str = "http://localhost:8070", 
-                 grobid_timeout: int = 180, 
-                 output_base_dir: str = None):
+    def __init__(self, 
+                grobid_url: str = "http://localhost:8070", 
+                grobid_timeout: int = 180, 
+                output_base_dir: str = None):
         """Initialize PDF processor.
         
         Args:
@@ -75,15 +80,29 @@ class PDFProcessor:
         return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
     
     def remove_cache_item(self, pdf_hash: str) -> bool:
-        """Remove cached TEI XML for a given PDF hash."""
+        """Remove cached TEI XML for a given PDF hash.
+        
+        Args:
+            pdf_hash: Hash of the PDF whose cache should be removed.
+        
+        Returns:
+            True if cache was removed, False otherwise.
+        """
         if not pdf_hash:
             logger.warning("PDF hash cannot be empty for cache removal")
             return False
 
-        return self.remove_cache_item_by_hash(pdf_hash)
+        return self._remove_cache_item_by_hash(pdf_hash)
 
-    def remove_cache_item_by_hash(self, pdf_hash: str) -> bool:
-        """Remove cached TEI XML for a given PDF hash."""
+    def _remove_cache_item_by_hash(self, pdf_hash: str) -> bool:
+        """Helper method to remove cache item by hash, used internally and for public interface.
+        
+        Args:
+            pdf_hash: Hash of the PDF whose cache should be removed.
+            
+        Returns:
+            True if cache was removed, False otherwise.
+        """
         if not pdf_hash:
             logger.warning("PDF hash cannot be empty for cache removal")
             return False
@@ -113,17 +132,21 @@ class PDFProcessor:
 
         return removed
 
-    def clear_index_cache(self, deleted_pdfs: Dict[str, str]) -> None:
-        """Remove cached TEI XML files for the deleted PDFs."""
+    def clear_index_cache(self, deleted_pdfs: Dict[str, str]):
+        """Clear cached TEI XML files for deleted PDFs.
+        
+        Args:
+            deleted_pdfs: Dictionary mapping PDF hashes to their titles for logging.
+        """
         if not os.path.isdir(self.tei_cache_dir):
             logger.warning(f"Cache directory does not exist for clearing: {self.tei_cache_dir}")
             return
         
-        for pdf_hash, title in deleted_pdfs.items():
+        for pdf_hash, _ in deleted_pdfs.items():
             if not pdf_hash:
                 logger.warning("Skipping cache clearing for entry with empty hash")
                 continue
-            self.remove_cache_item_by_hash(pdf_hash)
+            self._remove_cache_item_by_hash(pdf_hash)
 
     
     def _parse_pdf(self, pdf_path: str, pdf_hash: Optional[str] = None) -> Optional[ET.Element]:
@@ -154,8 +177,12 @@ class PDFProcessor:
             
             # Only check GROBID availability if we need to parse (cache miss)
             if not self.is_alive():
-                logger.error(f"GROBID not reachable at {self.grobid_url}")
-                return None
+                message = (
+                    f"GROBID service not reachable at {self.grobid_url}. "
+                    "Start GROBID and retry."
+                )
+                logger.error(message)
+                raise ConnectionError(message)
             
             # Lazy initialization of GROBID client only when needed
             if self.grobid_client is None:
@@ -205,22 +232,78 @@ class PDFProcessor:
                 finally:
                     shutil.rmtree(in_dir, ignore_errors=True)
                     shutil.rmtree(out_dir, ignore_errors=True)
+        except ConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
+
+    def _collect_paragraphs_from_elements(self,
+                                    p_elements: List[ET.Element],
+                                    section_type: str,
+                                    paragraphs: List[ExtractedParagraph],
+                                    full_text_parts: List[str],
+                                    para_idx: int,
+                                    pending_short_para: str,
+                                    pending_coords: List[Tuple[str, str]],
+                                    ns: Dict[str, str]) -> Tuple[int, str, List[Tuple[str, str]]]:
+        """Process a list of <p> elements to extract paragraphs, handling short paragraphs.
+        
+        Args:
+            p_elements: List of <p> elements to process.
+            section_type: Section type for categorization.
+            paragraphs: List to append ExtractedParagraph objects to.
+            full_text_parts: List to append full text parts for context reconstruction.
+            para_idx: Current paragraph index for ordering.
+            pending_short_para: Buffer for short paragraph text that may need to be merged.
+            pending_coords: Buffer for coordinates of sentences in the pending short paragraph.
+            ns: Namespace dictionary for XML parsing.
+                
+        Returns:
+            Updated paragraph index, pending short paragraph text, and pending coordinates.
+        """
+        for p_elem in p_elements:
+            p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
+
+            if not p_text:
+                continue
+
+            if pending_short_para:
+                p_text = f"{pending_short_para} {p_text}"
+                sentences_coords = pending_coords + sentences_coords
+                pending_short_para = ""
+                pending_coords = []
+
+            if len(p_text.split()) < self.MIN_PARAGRAPH_WORDS:
+                pending_short_para = p_text
+                pending_coords = sentences_coords
+                continue
+
+            paragraphs.append(
+                ExtractedParagraph(
+                    text=p_text,
+                    page_num=page_num,
+                    para_idx=para_idx,
+                    section=section_type,
+                    sentences=sentences_coords,
+                )
+            )
+            full_text_parts.append(p_text)
+            para_idx += 1
+
+        return para_idx, pending_short_para, pending_coords
     
-    def _extract_paragraphs_from_tei(self, tei_root: ET.Element
-            ) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
+    def _extract_paragraphs_from_tei(self, tei_root: ET.Element) -> Tuple[List[ExtractedParagraph], str]:
         """Extract paragraphs from TEI XML structure.
         
         Args:
             tei_root: Root element of TEI XML.
             
         Returns:
-            - List of (paragraph_text, page_number, paragraph_index, section_type, sentences)
+            - List of ExtractedParagraph objects
             - document_text: Full cleaned text of the PDF for context.
         """
-        paragraphs = []
+        paragraphs: List[ExtractedParagraph] = []
         full_text_parts = []
         para_idx = 0
         
@@ -234,23 +317,16 @@ class PDFProcessor:
         # Extract from abstract (each <p> is a paragraph)
         abstract = tei_root.find('.//tei:abstract', ns)
         if abstract is not None:
-            for p_elem in abstract.findall('.//tei:p', ns):
-                p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
-                
-                if p_text:
-                    if pending_short_para:
-                        p_text = f"{pending_short_para} {p_text}"
-                        sentences_coords = pending_coords + sentences_coords
-                        pending_short_para = ""
-                        pending_coords = []
-
-                    if len(p_text.split()) < 10:
-                        pending_short_para = p_text
-                        pending_coords = sentences_coords
-                    else:
-                        paragraphs.append((p_text, page_num, para_idx, 'abstract', sentences_coords))
-                        full_text_parts.append(p_text)
-                        para_idx += 1
+            para_idx, pending_short_para, pending_coords = self._collect_paragraphs_from_elements(
+                abstract.findall('.//tei:p', ns),
+                "abstract",
+                paragraphs,
+                full_text_parts,
+                para_idx,
+                pending_short_para,
+                pending_coords,
+                ns,
+            )
         
         # Extract from body (main content)
         body = tei_root.find('.//tei:body', ns)
@@ -262,37 +338,68 @@ class PDFProcessor:
                 head_text_lower = head_text_raw.lower()
                 section_type = self._determine_section_type(head_text_lower)
                 
-                for p_elem in section_div.findall('.//tei:p', ns):
-                    p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
-                    
-                    if p_text:
-                        if pending_short_para:
-                            p_text = f"{pending_short_para} {p_text}"
-                            sentences_coords = pending_coords + sentences_coords
-                            pending_short_para = ""
-                            pending_coords = []
-
-                        if len(p_text.split()) < 10:
-                            pending_short_para = p_text
-                            pending_coords = sentences_coords
-                        else:
-                            paragraphs.append((p_text, page_num, para_idx, section_type, sentences_coords))
-                            full_text_parts.append(p_text)
-                            para_idx += 1
+                para_idx, pending_short_para, pending_coords = self._collect_paragraphs_from_elements(
+                    section_div.findall('.//tei:p', ns),
+                    section_type,
+                    paragraphs,
+                    full_text_parts,
+                    para_idx,
+                    pending_short_para,
+                    pending_coords,
+                    ns,
+                )
         
         if pending_short_para and paragraphs:
             last_para = paragraphs[-1]
-            updated_text = f"{last_para[0]} {pending_short_para}"
-            updated_coords = last_para[4] + pending_coords
-            paragraphs[-1] = (updated_text, last_para[1], last_para[2], last_para[3], updated_coords)
+            last_para.text = f"{last_para.text} {pending_short_para}"
+            last_para.sentences.extend(pending_coords)
             full_text_parts.append(pending_short_para)
 
         document_text = "\n\n".join(full_text_parts)
+        title_text = self._extract_title_from_tei(tei_root, ns)
+        if title_text:
+            title_block = f"Title: {title_text}"
+            document_text = f"{title_block}\n\n{document_text}" if document_text else title_block
         
         return paragraphs, document_text
 
+    def _extract_title_from_tei(self, tei_root: ET.Element, ns: Dict[str, str]) -> str:
+        """Extract document title from TEI header when available.
+        
+        Args:
+            tei_root: Root element of TEI XML.
+            ns: Namespace dictionary for XML parsing.
+            
+        Returns:
+            Extracted title text or empty string if not found.
+        """
+        title_xpaths = [
+            ".//tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:title[@type='main']",
+            ".//tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:title",
+            ".//tei:teiHeader//tei:titleStmt/tei:title",
+            ".//tei:teiHeader//tei:sourceDesc//tei:biblStruct/tei:analytic/tei:title",
+            ".//tei:teiHeader//tei:sourceDesc//tei:biblStruct/tei:monogr/tei:title",
+            ".//tei:teiHeader//tei:biblStruct/tei:analytic/tei:title",
+            ".//tei:teiHeader//tei:biblStruct/tei:monogr/tei:title",
+            ".//tei:biblStruct/tei:analytic/tei:title",
+            ".//tei:biblStruct/tei:monogr/tei:title",
+        ]
+
+        for xpath in title_xpaths:
+            for title_elem in tei_root.findall(xpath, ns):
+                title_text = " ".join("".join(title_elem.itertext()).split())
+                if title_text:
+                    return title_text
+
+        return ""
+
     def _process_paragraph_element(self, p_elem, ns):
-        """Estrae testo e coordinate da un elemento paragrafo <p>."""
+        """Extract text and sentence coordinates from a <p> element, handling nested sentences.
+        
+        Args:
+            p_elem: XML element representing a paragraph.
+            ns: Namespace dictionary for XML parsing.
+        """
         sentences_with_coords = []
         page_num = 0
         
@@ -312,7 +419,11 @@ class PDFProcessor:
         return paragraph_text, sentences_with_coords, page_num
 
     def _determine_section_type(self, head_text):
-        """Mappa il titolo della sezione a una categoria."""
+        """Determine section type based on head text, using simple keyword mapping.
+        
+        Args:
+            head_text: Text content of the section head, normalized to lowercase.
+        """
         if not head_text:
             return 'body'
 
@@ -326,8 +437,7 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_hash: str, pdf_title: Optional[str] = None,
-            ) -> Tuple[List[Tuple[str, int, int, str, List[Tuple[str, str]]]], str]:
+    def extract_text_chunks(self, pdf_hash: str, pdf_title: Optional[str] = None) -> Tuple[List[ExtractedParagraph], str]:
         """Extract paragraphs from PDF using GROBID.
         
         Args:
@@ -335,7 +445,7 @@ class PDFProcessor:
             pdf_title: Optional display title for logging.
             
         Returns:
-            - List of (paragraph_text, page_number, paragraph_index, section_type, sentences) tuples.
+            - List of ExtractedParagraph objects.
             - Full document text reconstructed from extracted paragraphs.
         """
         if not pdf_hash:
@@ -346,8 +456,11 @@ class PDFProcessor:
         tei_root = self._parse_pdf(pdf_path, pdf_hash=pdf_hash)
         if tei_root is None:
             title_info = f" ({pdf_title})" if pdf_title else ""
-            logger.warning(f"GROBID parsing failed for {pdf_path}{title_info}; no paragraphs extracted")
-            return [], ""
+            message = (
+                f"GROBID parsing failed for {pdf_path}{title_info}; no paragraphs extracted"
+            )
+            logger.warning(message)
+            raise ValueError(message)
 
         paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root)
         return paragraphs, document_text

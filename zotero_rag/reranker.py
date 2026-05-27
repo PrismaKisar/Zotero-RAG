@@ -5,7 +5,7 @@ from typing import List, Tuple
 import numpy as np
 from sentence_transformers import CrossEncoder
 
-from models import Paragraph
+from models import Paragraph, RerankedParagraph
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 class Reranker:
     """Handles reranking of retrieved candidates using a cross-encoder model."""
     
-    def __init__(self, model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2', 
-                 device: str = None,
-                 batch_size: int = None):
+    def __init__(self, 
+                model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2', 
+                device: str = None,
+                batch_size: int = None):
         """Initialize the reranker.
         
         Args:
@@ -69,10 +70,11 @@ class Reranker:
         logger.debug(f"Adaptive threshold: Using base threshold {base_threshold:.3f} (mean={mean_score:.3f}, max={max_score:.3f})")
         return base_threshold
     
-    def _find_safe_batch_size(self, pairs: List[List[str]], 
-                               start_size: int = 2, 
-                               max_size: int = 128,
-                               target_memory_fraction: float = 0.75) -> int:
+    def _find_safe_batch_size(self, 
+                            pairs: List[List[str]], 
+                            start_size: int = 2, 
+                            max_size: int = 128,
+                            target_memory_fraction: float = 0.75) -> int:
         """Find safe batch size targeting specific memory usage.
         
         Args:
@@ -110,11 +112,12 @@ class Reranker:
         # Hit max size without OOM, use target fraction of max
         return max(start_size, int(last_safe_size * target_memory_fraction))
     
-    def rerank(self, query: str, 
-               candidates: List[Tuple[Paragraph, float]], 
-               threshold: float = 0.25,
-               progress_callback=None,
-               query_variations: List[str] = None) -> List[Tuple[Paragraph, float, float]]:
+    def rerank(self,
+            query: str,
+            candidates: List[Tuple[Paragraph, float]],
+            threshold: float = 0.25,
+            progress_callback=None,
+            query_variations: List[str] = None) -> List[RerankedParagraph]:
         """Rerank candidates using cross-encoder scores.
         
         Args:
@@ -196,18 +199,22 @@ class Reranker:
         # Combine probabilities with candidate data
         # Each item: (paragraph, retrieval_score, rerank_score)
         scored_candidates = [
-            (p[0], p[1], float(prob))
+            RerankedParagraph(
+                paragraph=p[0],
+                retrieval_score=p[1],
+                rerank_score=float(prob),
+            )
             for p, prob in zip(candidates, probs)
         ]
         
         # Filter by adjusted threshold
         filtered_candidates = [
-            item for item in scored_candidates 
-            if item[2] >= adjusted_threshold
+            item for item in scored_candidates
+            if item.rerank_score >= adjusted_threshold
         ]
         
         # Sort by rerank score descending
-        filtered_candidates.sort(key=lambda x: x[2], reverse=True)
+        filtered_candidates.sort(key=lambda x: x.rerank_score, reverse=True)
         
         if progress_callback:
             progress_callback(len(candidates), len(candidates), 

@@ -57,19 +57,19 @@ class ZoteroRAG:
     """Main orchestration class for the Zotero RAG pipeline."""
     
     def __init__(self, 
-                 dense_model_name: str = "BAAI/bge-base-en-v1.5", 
-                 qa_model: str = "deepset/roberta-base-squad2",
-                 reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
-                 grobid_url: str = "http://localhost:8070", 
-                 grobid_timeout: int = 180,
-                 qdrant_url: str = "http://localhost:6333",
-                 ollama_url: str = "http://localhost:11434",
-                 model_device: str = None, 
-                 encode_batch_size: int = None,
-                 qa_batch_size: int = None,
-                 rerank_batch_size: int = None,
-                 use_chunk_contextualization: bool = True,
-                 output_base_dir: str = "output"):
+                dense_model_name: str = "BAAI/bge-base-en-v1.5", 
+                qa_model: str = "deepset/roberta-base-squad2",
+                reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                grobid_url: str = "http://localhost:8070", 
+                grobid_timeout: int = 180,
+                qdrant_url: str = "http://localhost:6333",
+                ollama_url: str = "http://localhost:11434",
+                model_device: str = None, 
+                encode_batch_size: int = None,
+                qa_batch_size: int = None,
+                rerank_batch_size: int = None,
+                use_chunk_contextualization: bool = True,
+                output_base_dir: str = "output"):
         """Initialize the RAG system.
         
         Args:
@@ -138,29 +138,6 @@ class ZoteroRAG:
         # For debugging/inspection
         self.last_candidates = []
     
-    @staticmethod
-    def list_collections(zotero_data_dir: str = None) -> List[Dict]:
-        """Load collections from the Zotero database.
-        
-        Args:
-            zotero_data_dir: Path to Zotero data directory. Auto-detect if None.
-            
-        Returns:
-            List of dictionaries with 'id', 'name', and 'parent_id' keys.
-        """
-        db = ZoteroDatabase(zotero_data_dir)
-        return db.list_collections()
-    
-    @property
-    def paragraphs(self):
-        """Access paragraphs from the Qdrant Manager (backward compatibility)."""
-        return self.qdrant_manager.paragraphs
-    
-    @property
-    def client(self):
-        """Access the Qdrant client directly if needed (backward compatibility)."""
-        return self.qdrant_manager.client
-    
     def get_query_color(self, query: str) -> Tuple[float, float, float]:
         """Get a consistent color for a query string.
         
@@ -184,9 +161,12 @@ class ZoteroRAG:
         try:
             self.qdrant_manager.open_connection()
             return self.qdrant_manager.list_indexed_pdfs()
+        except ConnectionError as e:
+            logger.error(f"Error during get_indexed_pdfs: {str(e)}")
+            raise
         except Exception as e:
             logger.error(f"Error during get_indexed_pdfs: {str(e)}")
-            return []
+            raise
         finally:
             self.qdrant_manager.close_connection()
 
@@ -262,13 +242,12 @@ class ZoteroRAG:
         if not uploaded_pdfs:
             raise ValueError("uploaded_pdfs cannot be empty")
         
-        return self._ingest_pdfs(self.pdf_cache.get_items_from_upload(uploaded_pdfs))
+        return self._ingest_pdfs(PDFCacheHandler.get_items_from_upload(uploaded_pdfs))
         
     def ingest_pdfs_from_zotero(self, collection_name: str) -> IngestResult:
         """Ingest PDFs from a specific Zotero collection.
 
         Args:
-            zotero_data_dir: Path to Zotero data directory. Auto-detect if None.
             collection_name: Name of the Zotero collection to ingest from.
 
         Returns:
@@ -283,7 +262,15 @@ class ZoteroRAG:
         return self._ingest_pdfs(uploaded_pdfs)
 
     def _rollback_pdfs(self, created_hashes: set[str], failed_hashes: set[str]) -> bool:
-        """Remove cached PDFs created during ingest that failed processing."""
+        """Rollback cached PDFs that were created during the current upsert if they failed to index.
+
+        Args:
+            created_hashes: Set of PDF hashes that were created during the current upsert.
+            failed_hashes: Set of PDF hashes that failed to index during the current upsert.
+
+        Returns:
+            True if any rollbacks were performed, False otherwise.
+        """
         to_remove = created_hashes & failed_hashes
         if not to_remove:
             return False
@@ -291,6 +278,7 @@ class ZoteroRAG:
         for pdf_hash in to_remove:
             try:
                 self.pdf_cache.remove_pdf(pdf_hash)
+                self.pdf_processor.remove_cache_item(pdf_hash)
                 logger.debug("Rolled back PDF from cache: %s", pdf_hash)
             except Exception as e:
                 logger.error("Error rolling back PDF '%s': %s", pdf_hash, str(e))
@@ -302,8 +290,7 @@ class ZoteroRAG:
         
         Args:
             target_pdfs: List of cached PDFs to process. Must not be empty.
-            progress_callback: Function(stage, current, total, message) for progress updates.
-                             stage is one of: 'pdf', 'contextualization', 'encoding', 'upserting'.
+            progress_callback: Optional function(current_stage, current_idx, total, message) for progress updates.
         Returns:
             UpsertResult with indexing summary and warning/error details.
         """
@@ -386,7 +373,7 @@ class ZoteroRAG:
                             "Qdrant index check failed for '%s': %s", title, str(e),
                         )
 
-                    paragraph_tuples, document_text = self.pdf_processor.extract_text_chunks(
+                    extracted_paragraphs, document_text = self.pdf_processor.extract_text_chunks(
                         pdf_hash,
                         pdf_title=title,
                     )
@@ -398,21 +385,21 @@ class ZoteroRAG:
                             "paragraph_indices": [],
                         }
 
-                    for text, page_num, para_idx, section, sentences in paragraph_tuples:
+                    for extracted in extracted_paragraphs:
                         # Filter by section type if needed
-                        if not self.pdf_processor.CONTENT_SECTIONS.get(section, True):
+                        if not self.pdf_processor.CONTENT_SECTIONS.get(extracted.section, True):
                             continue
 
-                        sentence_count = len(sentences)
+                        sentence_count = len(extracted.sentences)
                         paragraph = Paragraph(
-                            text=text,
-                            page_num=page_num,
-                            para_idx=para_idx,
+                            text=extracted.text,
+                            page_num=extracted.page_num,
+                            para_idx=extracted.para_idx,
                             title=title,
                             pdf_hash=pdf_hash,
-                            section=section,
+                            section=extracted.section,
                             sentence_count=sentence_count,
-                            sentences=sentences
+                            sentences=extracted.sentences
                         )
                         all_paragraphs.append(paragraph)
                         per_pdf_context[pdf_hash]["paragraph_indices"].append(len(all_paragraphs) - 1)
@@ -579,17 +566,17 @@ class ZoteroRAG:
             self.qdrant_manager.close_connection()
 
     def answer_question(self, 
-                       question: str, 
-                       retrieval_threshold: float = 0.7, 
-                       qa_score_threshold: float = 0.0, 
-                       rerank_threshold: float = 0.25, 
-                       progress_callback=None, 
-                       rerank_callback=None,
-                       question_type: str = 'general',
-                       custom_config: dict = None,
-                       num_paraphrases: int = 2,
-                       highlight_color: Tuple[float, float, float] = None,
-                       question_variations: List[str] = None) -> List[Answer]:
+                    question: str, 
+                    retrieval_threshold: float = 0.7, 
+                    qa_score_threshold: float = 0.0, 
+                    rerank_threshold: float = 0.25, 
+                    progress_callback=None, 
+                    rerank_callback=None,
+                    question_type: str = 'general',
+                    custom_config: dict = None,
+                    num_paraphrases: int = 2,
+                    highlight_color: Tuple[float, float, float] = None,
+                    question_variations: List[str] = None) -> List[Answer]:
         """Answer a question using the full RAG pipeline.
         
         Pipeline stages:
@@ -631,15 +618,19 @@ class ZoteroRAG:
             seen_paragraphs = set()
             self.qdrant_manager.open_connection()
             
+            query_embeddings = []
+            for q_var in question_variations:
+                query_embeddings.append(self.embedding_manager.encode_query(q_var))
+
+            batch_results = self.qdrant_manager.search_batch(
+                query_embeddings,
+                retrieval_threshold,
+            )
+
             for i, q_var in enumerate(question_variations):
-                query_embeddings = self.embedding_manager.encode_query(q_var)
-                var_candidates = self.qdrant_manager.search(
-                    query_embeddings["dense"],
-                    query_embeddings["sparse"],
-                    retrieval_threshold,
-                )
+                var_candidates = batch_results[i] if i < len(batch_results) else []
                 logger.debug(f"Variation {i}: '{q_var}' -> {len(var_candidates)} candidates")
-                
+
                 # Add unseen candidates
                 for para, score in var_candidates:
                     para_id = (para.pdf_hash, para.para_idx)  # Unique identifier
@@ -680,7 +671,7 @@ class ZoteroRAG:
         )
         
         # Update debug info with rerank results
-        reranked_texts = {c[0].text for c in reranked}
+        reranked_texts = {c.paragraph.text for c in reranked}
         for c in self.last_candidates:
             c['kept'] = c['paragraph'].text in reranked_texts
         

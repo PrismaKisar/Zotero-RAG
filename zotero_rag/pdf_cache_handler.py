@@ -35,7 +35,16 @@ class PDFCacheHandler:
     def _is_hash_name(name: str) -> bool:
         return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
     
-    def get_items_from_upload(self, uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]: #TODO: dovrebbe essere privato in zoteroRAG
+    @staticmethod
+    def get_items_from_upload(uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]:
+        """Convert list of UploadedFile to list of PDFIngestItem for ingestion.
+        
+        Args:
+            uploaded_files: List of UploadedFile objects from Streamlit file uploader.
+            
+        Returns:
+            List of PDFIngestItem objects ready for ingestion.
+        """
         items: List[PDFIngestItem] = []
         for uploaded_file in uploaded_files:
             if uploaded_file is None:
@@ -48,6 +57,14 @@ class PDFCacheHandler:
         return items
 
     def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> CachedPDF:
+        """Ingest a PDF from an UploadedFile, saving it to the cache folder with a unique hash-based filename.
+
+        Args:
+            uploaded_pdf: PDFIngestItem containing the UploadedFile to ingest.
+
+        Returns:
+            CachedPDF object with details of the ingested PDF.
+        """
         if uploaded_pdf is None:
             raise ValueError("uploaded_pdf cannot be None")
 
@@ -72,12 +89,14 @@ class PDFCacheHandler:
         )
 
     def remove_pdf(self, pdf_hash: str) -> bool:
-        """Remove PDF file from cache by hash.
-        
+        """Remove a cached PDF file by its hash.
+
         Args:
-            pdf_hash: SHA-256 hash of the PDF to remove.
+            pdf_hash: Hash of the PDF to remove.
+
+
         Returns:
-            True if deletion was successful, False otherwise.
+            True if the file was successfully removed, False otherwise.
         """
         if not pdf_hash:
             logger.warning("PDF hash cannot be empty for PDF removal")
@@ -98,8 +117,12 @@ class PDFCacheHandler:
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
         
-    def clear_index_cache(self, deleted_pdfs: Dict[str, str]) -> None:
-        """Remove all PDF files from cache that are listed in deleted_pdfs."""
+    def clear_index_cache(self, deleted_pdfs: Dict[str, str]):
+        """Clear cached PDF files for deleted entries.
+
+        Args:
+            deleted_pdfs: Dictionary mapping PDF hashes to titles for entries that were deleted.
+        """
         if not os.path.isdir(self.folder_path):
             logger.warning(f"Cache folder does not exist for clearing: {self.folder_path}")
             return
@@ -109,13 +132,19 @@ class PDFCacheHandler:
                 logger.warning("Skipping deletion for entry with empty hash")
                 continue
 
-            if self.remove_pdf(pdf_hash):
-                logger.info(f"Cleared cached PDF for deleted entry: {title} (hash: {pdf_hash})")
-            else:
+            ok = self.remove_pdf(pdf_hash)
+            if not ok:
                 raise IOError(f"Failed to clear cached PDF for deleted entry: {title} (hash: {pdf_hash})")
 
     def get_pdf_path(self, pdf_hash: str) -> Union[str, None]:
-        """Get full path of a cached PDF by hash."""
+        """Get the file path of a cached PDF by its hash.
+
+        Args:
+            pdf_hash: Hash of the PDF to retrieve.
+
+        Returns:
+            File path of the cached PDF if it exists, None otherwise.
+        """
         if not pdf_hash:
             logger.warning("PDF hash cannot be empty for getting PDF path")
             return None
@@ -147,11 +176,3 @@ class PDFCacheHandler:
 
         logger.info(f"Found {len(items)} PDF files in {self.folder_path}")
         return list(items)
-    
-    def list_collections(self) -> List[Dict]:
-        """Return empty list for API compatibility with ZoteroDatabase.
-        
-        Returns:
-            Empty list (folders don't have collections).
-        """
-        return []
