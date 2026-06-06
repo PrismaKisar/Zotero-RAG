@@ -100,7 +100,8 @@ class QdrantManager:
                 vectors_config=qmodels.VectorParams(
                     size=self.vector_size,
                     distance=qmodels.Distance.COSINE,
-                    datatype=qmodels.Datatype.FLOAT16 #TODO: valutare la quantizzazione utilizzando uint8
+                    datatype=qmodels.Datatype.FLOAT16, #TODO: valutare la quantizzazione utilizzando uint8
+                    on_disk=True
                 ),
                 sparse_vectors_config={
                     "text-sparse": qmodels.SparseVectorParams(
@@ -115,7 +116,11 @@ class QdrantManager:
             self.client.create_payload_index(
                 collection_name=self.qdrant_collection,
                 field_name="pdf_hash",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                field_schema=qmodels.KeywordIndexParams(
+                    type="keyword",
+                    enable_hnsw=False, # No need for HNSW index because there are no vector search with filter on pdf_hash
+                    on_disk=True
+                ),
             )
 
             logger.info(f"Created Qdrant collection: {self.qdrant_collection}")
@@ -132,13 +137,21 @@ class QdrantManager:
             self.client.create_payload_index(
                 collection_name=self.lookup_collection,
                 field_name="models",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                field_schema=qmodels.KeywordIndexParams(
+                    type="keyword",
+                    enable_hnsw=False,
+                    on_disk=True
+                ),
             )
             # Create an index on title to allow lookups by name
             self.client.create_payload_index(
                 collection_name=self.lookup_collection,
                 field_name="title",
-                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                field_schema=qmodels.KeywordIndexParams(
+                    type="keyword",
+                    enable_hnsw=False,
+                    on_disk=True
+                ),
             )
             logger.info(f"Created Qdrant lookup collection: {self.lookup_collection}")
         else:
@@ -568,7 +581,7 @@ class QdrantManager:
 
     def search_batch(self,
                     query_embeddings: List[Dict[str, List[float]]],
-                    threshold: float = 0.7) -> List[List[Paragraph]]:
+                    threshold: float = 0.45) -> List[List[Paragraph]]:
         """Batch search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
 
         Args:
@@ -584,7 +597,7 @@ class QdrantManager:
         if not query_embeddings:
             return []
 
-        result_limit = 20
+        result_limit = 30
         requests = []
         for query_embedding in query_embeddings:
             dense_query = query_embedding.get("dense")

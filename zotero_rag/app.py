@@ -661,8 +661,8 @@ def show_search_tab():
             'emoji': '📌',
             'description': 'Specific facts or entities',
             'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.7,
-            'rerank_threshold': 0.25,
+            'retrieval_threshold': 0.45,
+            'rerank_threshold': 0.45,
             'max_answer_length': 50,
             'min_answer_words': 2,
             'prefer_entities': True
@@ -671,8 +671,8 @@ def show_search_tab():
             'emoji': '💭',
             'description': 'How/why something works',
             'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.6,
-            'rerank_threshold': 0.20,
+            'retrieval_threshold': 0.35,
+            'rerank_threshold': 0.40,
             'max_answer_length': 200,
             'min_answer_words': 3,
             'prefer_entities': False
@@ -681,8 +681,8 @@ def show_search_tab():
             'emoji': '⚙️',
             'description': 'Processes, methods, algorithms',
             'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.6,
-            'rerank_threshold': 0.20,
+            'retrieval_threshold': 0.35,
+            'rerank_threshold': 0.40,
             'max_answer_length': 250,
             'min_answer_words': 5,
             'prefer_entities': False,
@@ -694,8 +694,8 @@ def show_search_tab():
             'emoji': '⚖️',
             'description': 'Contrasting different concepts',
             'qa_score_threshold': 0.08,
-            'retrieval_threshold': 0.7,
-            'rerank_threshold': 0.25,
+            'retrieval_threshold': 0.45,
+            'rerank_threshold': 0.45,
             'max_answer_length': 150,
             'min_answer_words': 3,
             'prefer_diversity': True
@@ -704,8 +704,8 @@ def show_search_tab():
             'emoji': '📖',
             'description': 'What something is',
             'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.7,
-            'rerank_threshold': 0.25,
+            'retrieval_threshold': 0.45,
+            'rerank_threshold': 0.45,
             'max_answer_length': 100,
             'min_answer_words': 3,
             'prefer_entities': False
@@ -714,8 +714,8 @@ def show_search_tab():
             'emoji': '❓',
             'description': 'General questions',
             'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.7,
-            'rerank_threshold': 0.25,
+            'retrieval_threshold': 0.45,
+            'rerank_threshold': 0.45,
             'max_answer_length': 150,
             'min_answer_words': 3,
             'prefer_entities': False
@@ -724,8 +724,8 @@ def show_search_tab():
             'emoji': '🎛️',
             'description': 'Custom settings (fully configurable)',
             'qa_score_threshold': 0.0,
-            'retrieval_threshold': 0.7,
-            'rerank_threshold': 0.25,
+            'retrieval_threshold': 0.45,
+            'rerank_threshold': 0.45,
             'max_answer_length': 150,
             'min_answer_words': 3,
             'prefer_entities': False
@@ -1016,7 +1016,7 @@ def show_search_tab():
                 rerank_progress_bar.progress(0)
                 time_info = ""
             
-            rerank_status.text(f"🔄 Stage 1 - Reranking: {message} {time_info}")
+            rerank_status.text(f"🔄 Stage 1 - Reranking (merged candidates): {message} {time_info}")
         
         def qa_callback(current, total, message):
             if qa_start_time[0] is None:
@@ -1076,7 +1076,7 @@ def show_search_tab():
             # Mark completion
             rerank_progress_bar.progress(1.0)
             qa_progress_bar.progress(1.0)
-            rerank_status.text("🔄 Stage 1 - Reranking: ✓ Complete!")
+            rerank_status.text("🔄 Stage 1 - Reranking (merged candidates): ✓ Complete!")
             qa_status.text("🤖 Stage 2 - QA Extraction: ✓ Complete!")
             
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])

@@ -3,6 +3,7 @@
 import logging
 from typing import List, Tuple
 import numpy as np
+import torch
 from sentence_transformers import CrossEncoder
 
 from models import Paragraph, RerankedParagraph
@@ -14,7 +15,7 @@ class Reranker:
     """Handles reranking of retrieved candidates using a cross-encoder model."""
     
     def __init__(self, 
-                model_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2', 
+                model_name: str = 'BAAI/bge-reranker-base', 
                 device: str = None,
                 batch_size: int = None):
         """Initialize the reranker.
@@ -115,7 +116,7 @@ class Reranker:
     def rerank(self,
             query: str,
             candidates: List[Tuple[Paragraph, float]],
-            threshold: float = 0.25,
+            threshold: float = 0.45,
             progress_callback=None,
             query_variations: List[str] = None) -> List[RerankedParagraph]:
         """Rerank candidates using cross-encoder scores.
@@ -144,7 +145,7 @@ class Reranker:
         if self.batch_size is None:
             # Auto-detect safe batch size
             if progress_callback:
-                progress_callback(0, len(candidates), "Auto-detecting safe batch size...")
+                progress_callback(0, len(candidates), "Auto-detecting safe batch size for merged candidates...")
             effective_batch_size = self._find_safe_batch_size(pairs, start_size=2, max_size=128)
             logger.info(f"Auto-detected reranker batch size: {effective_batch_size}")
         else:
@@ -167,7 +168,7 @@ class Reranker:
             for batch_idx, i in enumerate(range(0, len(var_pairs), effective_batch_size)):
                 batch_pairs = var_pairs[i:i + effective_batch_size]
                 
-                batch_scores = self.model.predict(batch_pairs, show_progress_bar=False)
+                batch_scores = self.model.predict(batch_pairs, activation_fn=torch.nn.Sigmoid(), show_progress_bar=False)
                 all_scores.extend(batch_scores)
                 
                 # Update progress with current variation info
@@ -175,9 +176,14 @@ class Reranker:
                 completed_operations += processed_in_batch
                 
                 if progress_callback:
-                    variation_info = f"Paraphrase {var_idx + 1}/{len(queries_to_use)}" if len(queries_to_use) > 1 else ""
+                    if len(queries_to_use) > 1:
+                        variation_info = (
+                            f"Scoring merged candidates (variation {var_idx + 1}/{len(queries_to_use)})"
+                        )
+                    else:
+                        variation_info = "Scoring merged candidates"
                     batch_info = f"Batch {batch_idx + 1}/{num_batches}"
-                    message = f"{variation_info} - {batch_info}" if variation_info else batch_info
+                    message = f"{variation_info} - {batch_info}"
                     progress_callback(completed_operations, total_operations, message)
             
             raw_scores = np.array(all_scores)
@@ -217,8 +223,14 @@ class Reranker:
         filtered_candidates.sort(key=lambda x: x.rerank_score, reverse=True)
         
         if progress_callback:
-            progress_callback(len(candidates), len(candidates), 
-                            f"Reranking complete: {len(filtered_candidates)} paragraphs passed threshold.")
+            progress_callback(
+                len(candidates),
+                len(candidates),
+                (
+                    "Reranking complete: "
+                    f"{len(filtered_candidates)} of {len(candidates)} merged candidates passed threshold."
+                ),
+            )
         
         # Log threshold statistics
         if adjusted_threshold != threshold:

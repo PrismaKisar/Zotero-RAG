@@ -4,7 +4,6 @@ import logging
 from typing import Dict, List
 
 import numpy as np
-import math
 from fastembed import SparseTextEmbedding, TextEmbedding
 import ollama
 import torch
@@ -19,7 +18,8 @@ class EmbeddingManager:
                 dense_model_name: str = "BAAI/bge-base-en-v1.5",
                 ollama_url: str = "http://localhost:11434",
                 device: str = None,
-                encode_batch_size: int = 8):
+                encode_batch_size: int = 8,
+                use_chunk_contextualization: bool = False):
         """Initialize embedding models and runtime options.
 
         Args:
@@ -34,10 +34,14 @@ class EmbeddingManager:
 
         self.device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
         self.encode_batch_size = encode_batch_size
+        self.use_chunk_contextualization = use_chunk_contextualization
 
         use_cuda = self.device == "cuda"
         self.dense_model = TextEmbedding(model_name=self.dense_model_name, cuda=use_cuda)
         self.sparse_model = SparseTextEmbedding(model_name=self.sparse_model_name, cuda=use_cuda)
+        
+        if self.use_chunk_contextualization:
+            self.ollama_client = ollama.Client(host=self.ollama_url)
         self._vector_size = self._resolve_vector_size()
 
     @property
@@ -109,8 +113,6 @@ class EmbeddingManager:
         Returns:
             A concise summary string that captures the main themes and content of the document.
         """
-        client = ollama.Client(host=self.ollama_url)
-
         required_ctx = (len(document_text) // 4) + 1024
         optimal_num_ctx = max(2048, min(required_ctx, 16384))
 
@@ -123,7 +125,7 @@ class EmbeddingManager:
         )
 
         try:
-            response = client.generate(
+            response = self.ollama_client.generate(
                 model=self.context_model_name,
                 prompt=prompt,
                 options={
@@ -138,8 +140,6 @@ class EmbeddingManager:
             logger.warning(f"Document summary generation failed: {e}")
             return ""
 
-    # TODO: si può migliorare la stima di ctx_num anche contando il batch_size.
-    #       inoltre si può aumentare la dimensione di llm_batch_size a 6 se si usa summary (prima era 3)
     def generate_contextual_chunks(self, 
                                 document_text:str,
                                 all_texts:List[str],
@@ -149,35 +149,43 @@ class EmbeddingManager:
         Args:
             document_text: The full text of the document.
             all_texts: List of text chunks to contextualize.
-            llm_batch_size: Number of chunks to process in each LLM call. Default is 3 to balance memory and performance.
+            llm_batch_size: Number of chunks to process in each LLM call.
             
         Returns:
             List of contextualized text chunks, where each chunk is prefixed with a succinct context.
         """
         contextualized_results = []
-        client = ollama.Client(host=self.ollama_url)
 
         doc_summary = self._generate_document_summary(document_text)
 
-        #logger.info(f"Document summary generated: {doc_summary}") #FIXME: for debug
+        # Calculate max batch length in characters to size the global context window properly.
+        max_batch_chars = max(
+            (sum(len(c) for c in all_texts[i:i + llm_batch_size]) for i in range(0, len(all_texts), llm_batch_size)),
+            default=0
+        )
 
-        # Dynamic calculation of required context window to avoid memory waste.
-        required_ctx = (len(doc_summary) // 4) + 1024
+        # Dynamic calculation of required context window to avoid memory waste, factoring in max batch size.
+        prompt_tokens = (len(doc_summary) + max_batch_chars) // 4
+        predict_tokens = 100 * llm_batch_size
+        buffer_tokens = 250  # for static prompt text
+        
+        required_ctx = prompt_tokens + predict_tokens + buffer_tokens
         optimal_num_ctx = max(2048, min(required_ctx, 16384))
 
-        # Prompt template for generating contextualized chunks. Using batchs to reduce number of LLM calls and improve efficiency.
+        # Prompt template for generating contextualized chunks. Using batches to reduce number of LLM calls and improve efficiency.
         prompt_template = (
-            f"<document_summary>\n{doc_summary}\n</document_summary>\n\n"
+            "<document_summary>\n{doc_summary}\n</document_summary>\n\n"
             "You are an assistant organizing a vector database. Based on the global summary above, "
-            "provide a short, succinct context to situate each of the following paragraphs. "
+            "provide a short, succinct context to situate each of the following {batch_length} paragraphs. "
             "Format your response strictly using XML tags for the context, like this:\n"
             "<context1>context for paragraph 1</context1>\n"
             "<context2>context for paragraph 2</context2>\n\n"
+            "{chunks_formatted}"
         )
 
         for i in range(0, len(all_texts), llm_batch_size):
             batch_chunks = all_texts[i:i + llm_batch_size]
-            chunks_formatted = "\n".join([f"--- PARAGRAPH {j+1} ---\n{chunk}\n" for j, chunk in enumerate(batch_chunks)])
+            chunks_formatted = "\n".join(f"--- PARAGRAPH {j+1} ---\n{chunk}\n" for j, chunk in enumerate(batch_chunks))
 
             formatted_prompt = prompt_template.format(
                 doc_summary=doc_summary, 
@@ -186,7 +194,7 @@ class EmbeddingManager:
             )
 
             try:
-                response = client.generate(
+                response = self.ollama_client.generate(
                     model=self.context_model_name,
                     prompt=formatted_prompt,
                     options={
@@ -203,8 +211,11 @@ class EmbeddingManager:
                     tag_start = f"<context{j+1}>"
                     tag_end = f"</context{j+1}>"
 
-                    if tag_start in response_text and tag_end in response_text:
-                        context_prefix = response_text.split(tag_start)[1].split(tag_end)[0].strip()
+                    start_idx = response_text.find(tag_start)
+                    end_idx = response_text.find(tag_end, start_idx)
+
+                    if start_idx != -1 and end_idx != -1:
+                        context_prefix = response_text[start_idx + len(tag_start):end_idx].strip()
                     else:
                         context_prefix = ""
 
@@ -221,7 +232,7 @@ class EmbeddingManager:
     def _flush_ollama_cache(self):
         """Flush Ollama's model cache to free up memory."""
         try:
-            ollama.generate(model=self.context_model_name, keep_alive=0)
+            self.ollama_client.generate(model=self.context_model_name, keep_alive=0)
             logger.info("Successfully flushed Ollama cache for model: %s", self.context_model_name)
         except Exception as e:
             logger.warning("Failed to flush Ollama cache: %s", str(e))

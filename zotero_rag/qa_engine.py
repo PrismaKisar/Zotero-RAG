@@ -1,7 +1,7 @@
 """Question answering engine using extractive QA models."""
 
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 import math
 import torch
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline

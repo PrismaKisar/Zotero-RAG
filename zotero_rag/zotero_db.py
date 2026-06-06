@@ -3,7 +3,7 @@
 import os
 import sqlite3
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from models import PDFIngestItem, PathSource
 

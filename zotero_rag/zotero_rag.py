@@ -7,7 +7,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import warnings
 import nltk
 from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -59,7 +59,7 @@ class ZoteroRAG:
     def __init__(self, 
                 dense_model_name: str = "BAAI/bge-base-en-v1.5", 
                 qa_model: str = "deepset/roberta-base-squad2",
-                reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                reranker_model: str = "BAAI/bge-reranker-base",
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,
                 qdrant_url: str = "http://localhost:6333",
@@ -106,6 +106,7 @@ class ZoteroRAG:
             ollama_url=ollama_url,
             device=model_device,
             encode_batch_size=encode_batch_size,
+            use_chunk_contextualization=use_chunk_contextualization
         )
 
         self.qdrant_manager = QdrantManager(
@@ -567,9 +568,9 @@ class ZoteroRAG:
 
     def answer_question(self, 
                     question: str, 
-                    retrieval_threshold: float = 0.7, 
+                    retrieval_threshold: float = 0.45, 
                     qa_score_threshold: float = 0.0, 
-                    rerank_threshold: float = 0.25, 
+                    rerank_threshold: float = 0.45, 
                     progress_callback=None, 
                     rerank_callback=None,
                     question_type: str = 'general',
