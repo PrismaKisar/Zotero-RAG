@@ -58,7 +58,7 @@ class ZoteroRAG:
     
     def __init__(self, 
                 dense_model_name: str = "BAAI/bge-base-en-v1.5", 
-                qa_model: str = "deepset/roberta-base-squad2",
+                qa_model: str = "deepset/deberta-v3-large-squad2",
                 reranker_model: str = "BAAI/bge-reranker-base",
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,

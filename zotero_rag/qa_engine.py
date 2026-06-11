@@ -15,7 +15,7 @@ class QAEngine:
     """Handles extractive question answering over text passages."""
     
     def __init__(self, 
-                model_name: str = "deepset/roberta-base-squad2", 
+                model_name: str = "deepset/deberta-v3-large-squad2", 
                 device: str = None,
                 enable_question_expansion: bool = True,
                 batch_size: int = 128):
