@@ -11,14 +11,9 @@ import sqlite3
 import streamlit as st
 import time
 from zotero_rag import ZoteroRAG
-import re
+from zotero_db import ZoteroDatabase
 
 from pdf_utils import sanitize_filename
-
-def _sanitize_model_name(model_name: str) -> str:
-    """Convert model name to safe filename component."""
-    model_short = model_name.split('/')[-1]
-    return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
 
 def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
@@ -28,7 +23,7 @@ def rgb_to_hex(rgb):
 def _load_zotero_collections():
     try:
         with st.spinner("Loading Zotero collections..."):
-            st.session_state.collections = ZoteroRAG.list_collections()
+            st.session_state.collections = ZoteroDatabase(None).list_collections()
             st.session_state.collections_loaded = True
     except sqlite3.OperationalError as e:
         if "locked" in str(e):
@@ -778,11 +773,11 @@ def show_search_tab():
 
         with col_retrieval:
             retrieval_threshold = st.number_input(
-                "1. Retrieval Distance",
+                "1. Retrieval Threshold",
                 min_value=0.0, max_value=1.0,
                 value=preset['retrieval_threshold'],
                 step=0.05,
-                help="Stage 1 (Cosine Similarity): Lower = more paragraphs retrieved (0.0-1.0)."
+                help="Stage 1 (Cosine Similarity): Lower = more paragraphs retrieved (-1.0, 1.0)."
             )
 
         with col_rerank:
@@ -791,7 +786,7 @@ def show_search_tab():
                 min_value=0.0, max_value=1.0,
                 value=preset['rerank_threshold'],
                 step=0.05,
-                help="Stage 2 (CrossEncoder): Minimum semantic similarity score (0.0-1.0)."
+                help="Stage 2 (CrossEncoder): Minimum semantic similarity score (0.0, 1.0)."
             )
 
         with col_qa:

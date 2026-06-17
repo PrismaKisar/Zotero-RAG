@@ -7,7 +7,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import warnings
 import nltk
 from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -245,18 +245,16 @@ class ZoteroRAG:
         
         return self._ingest_pdfs(PDFCacheHandler.get_items_from_upload(uploaded_pdfs))
         
-    def ingest_pdfs_from_zotero(self, collection_name: str) -> IngestResult:
-        """Ingest PDFs from a specific Zotero collection.
+    def ingest_pdfs_from_zotero(self, collection_name: Optional[str] = None) -> IngestResult:
+        """Ingest PDFs from Zotero.
 
         Args:
             collection_name: Name of the Zotero collection to ingest from.
+                If None, ingest all PDFs from the library.
 
         Returns:
             IngestResult with summary and error details.
         """ 
-        if not collection_name:
-            raise ValueError("collection_name cannot be empty")
-        
         source = ZoteroDatabase(None)
         uploaded_pdfs = source.get_items(collection_name)
         
@@ -373,6 +371,10 @@ class ZoteroRAG:
                         logger.warning(
                             "Qdrant index check failed for '%s': %s", title, str(e),
                         )
+
+                    canonical_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
+                    if canonical_title:
+                        title = canonical_title
 
                     extracted_paragraphs, document_text = self.pdf_processor.extract_text_chunks(
                         pdf_hash,

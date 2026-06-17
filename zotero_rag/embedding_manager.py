@@ -30,7 +30,7 @@ class EmbeddingManager:
         self.dense_model_name = dense_model_name
         self.sparse_model_name = "Qdrant/bm25"
         self.ollama_url = ollama_url
-        self.context_model_name = "qwen2.5:3b"
+        self.context_model_name = "llama3.2:3b"
 
         self.device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
         self.encode_batch_size = encode_batch_size
@@ -118,9 +118,10 @@ class EmbeddingManager:
 
         prompt = (
             "You are an expert AI assistant preparing metadata for a vector database.\n"
-            "Read the following document and write a highly dense, entity-rich summary of its contents in exactly one continuous paragraph.\n"
-            "Do NOT use bullet points, numbered lists, or bold text formatting.\n"
-            "Focus explicitly on naming the specific systems, methodologies, and metrics discussed (e.g., algorithms, datasets, performance multiples).\n\n"
+            "Read the following document and write a dense, entity-rich summary in exactly one paragraph.\n"
+            "Include the main subject and scope, specific systems, methods, algorithms, datasets, metrics,\n"
+            "and key entities such as organizations, authors, products, standards, and technologies.\n"
+            "Do NOT use bullets, numbered lists, or markdown formatting.\n\n"
             f"<document>\n{document_text}\n</document>"
         )
 
@@ -141,16 +142,14 @@ class EmbeddingManager:
             return ""
 
     def generate_contextual_chunks(self, 
-                                document_text:str,
-                                all_texts:List[str],
-                                llm_batch_size: int = 6) -> List[str]:
+                                document_text:str, 
+                                all_texts:List[str]) -> List[str]:
         """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
         
         Args:
             document_text: The full text of the document.
             all_texts: List of text chunks to contextualize.
-            llm_batch_size: Number of chunks to process in each LLM call.
-            
+
         Returns:
             List of contextualized text chunks, where each chunk is prefixed with a succinct context.
         """
@@ -158,39 +157,32 @@ class EmbeddingManager:
 
         doc_summary = self._generate_document_summary(document_text)
 
-        # Calculate max batch length in characters to size the global context window properly.
-        max_batch_chars = max(
-            (sum(len(c) for c in all_texts[i:i + llm_batch_size]) for i in range(0, len(all_texts), llm_batch_size)),
-            default=0
-        )
+        max_chunk_chars = max((len(chunk) for chunk in all_texts), default=0)
+        prompt_tokens = (len(doc_summary) + max_chunk_chars) // 4
+        predict_tokens = 100
+        buffer_tokens = 250
 
-        # Dynamic calculation of required context window to avoid memory waste, factoring in max batch size.
-        prompt_tokens = (len(doc_summary) + max_batch_chars) // 4
-        predict_tokens = 100 * llm_batch_size
-        buffer_tokens = 250  # for static prompt text
-        
         required_ctx = prompt_tokens + predict_tokens + buffer_tokens
         optimal_num_ctx = max(2048, min(required_ctx, 16384))
 
-        # Prompt template for generating contextualized chunks. Using batches to reduce number of LLM calls and improve efficiency.
+        # Prompt template for generating contextualized chunks one paragraph at a time.
         prompt_template = (
             "<document_summary>\n{doc_summary}\n</document_summary>\n\n"
+            "<current_chunk>\n{chunk}\n</current_chunk>\n\n"
             "You are an assistant organizing a vector database. Based on the global summary above, "
-            "provide a short, succinct context to situate each of the following {batch_length} paragraphs. "
-            "Format your response strictly using XML tags for the context, like this:\n"
-            "<context1>context for paragraph 1</context1>\n"
-            "<context2>context for paragraph 2</context2>\n\n"
-            "{chunks_formatted}"
+            "provide a succinct context (max 30 words) that describes what THIS chunk is about, "
+            "so that it can be found via semantic search.\n"
+            "Rules:\n"
+            "- Name the specific topic, entity, method, or metric discussed in this chunk.\n"
+            "- Avoid generic phrases like 'This chunk discusses...' or 'In this section...'.\n"
+            "- Output only the context sentence, without labels, bullets, or quotes.\n\n"
+            "Context sentence:"
         )
 
-        for i in range(0, len(all_texts), llm_batch_size):
-            batch_chunks = all_texts[i:i + llm_batch_size]
-            chunks_formatted = "\n".join(f"--- PARAGRAPH {j+1} ---\n{chunk}\n" for j, chunk in enumerate(batch_chunks))
-
+        for i, chunk in enumerate(all_texts):
             formatted_prompt = prompt_template.format(
                 doc_summary=doc_summary, 
-                batch_length=len(batch_chunks),
-                chunks_formatted=chunks_formatted
+                chunk=chunk.strip()
             )
 
             try:
@@ -199,31 +191,20 @@ class EmbeddingManager:
                     prompt=formatted_prompt,
                     options={
                         "temperature": 0.1, 
-                        "num_predict": 100 * len(batch_chunks),
+                        "num_predict": 100,
                         "num_ctx": optimal_num_ctx
                     },
                     keep_alive=-1
                 )
 
-                response_text = response['response'].strip()
+                context_prefix = response["response"].strip().strip('"').strip("'")
+                context_prefix = context_prefix.replace("```", "").strip()
 
-                for j, chunk in enumerate(batch_chunks):
-                    tag_start = f"<context{j+1}>"
-                    tag_end = f"</context{j+1}>"
-
-                    start_idx = response_text.find(tag_start)
-                    end_idx = response_text.find(tag_end, start_idx)
-
-                    if start_idx != -1 and end_idx != -1:
-                        context_prefix = response_text[start_idx + len(tag_start):end_idx].strip()
-                    else:
-                        context_prefix = ""
-
-                    full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
-                    contextualized_results.append(full_chunk)
+                full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
+                contextualized_results.append(full_chunk)
             except Exception as e:
-                logger.warning(f"Contextual chunk generation failed for batch starting at index {i}: {e}")
-                contextualized_results.extend(batch_chunks)
+                logger.warning(f"Contextual chunk generation failed for chunk index {i}: {e}")
+                contextualized_results.append(chunk)
 
         self._flush_ollama_cache()
 

@@ -97,14 +97,18 @@ class QdrantManager:
         if not self.client.collection_exists(self.qdrant_collection):
             self.client.create_collection(
                 collection_name=self.qdrant_collection,
+                hnsw_config=qmodels.HnswConfigDiff(
+                    ef_construct=100,
+                ),
                 vectors_config=qmodels.VectorParams(
                     size=self.vector_size,
                     distance=qmodels.Distance.COSINE,
-                    datatype=qmodels.Datatype.FLOAT16, #TODO: valutare la quantizzazione utilizzando uint8
+                    datatype=qmodels.Datatype.FLOAT16,
                     on_disk=True
                 ),
                 sparse_vectors_config={
                     "text-sparse": qmodels.SparseVectorParams(
+                        modifier=qmodels.Modifier.IDF,
                         index=qmodels.SparseIndexParams(
                             on_disk=True,
                         )
@@ -140,7 +144,6 @@ class QdrantManager:
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
                     enable_hnsw=False,
-                    on_disk=True
                 ),
             )
             # Create an index on title to allow lookups by name
@@ -150,7 +153,6 @@ class QdrantManager:
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
                     enable_hnsw=False,
-                    on_disk=True
                 ),
             )
             logger.info(f"Created Qdrant lookup collection: {self.lookup_collection}")
