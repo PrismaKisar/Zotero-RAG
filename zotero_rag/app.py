@@ -27,22 +27,22 @@ def _load_zotero_collections():
             st.session_state.collections_loaded = True
     except sqlite3.OperationalError as e:
         if "locked" in str(e):
-            st.error("⚠️ Zotero database is locked")
+            st.error("Zotero database is locked")
             st.warning("""
             **The database is currently locked by Zotero.**
-            
+
             You have two options:
-            
+
             1. **Close Zotero** (Recommended)
             - Close the Zotero application completely
             - Then refresh this page
-            
+
             2. **Keep Zotero open** (Advanced)
             - The app will try to read the database in read-only mode
             - Click the button below to retry
             """)
-            
-            if st.button("🔄 Retry Connection"):
+
+            if st.button("Retry Connection"):
                 st.rerun()
         else:
             st.error(f"Database error: {e}")
@@ -161,7 +161,7 @@ def _run_ingest_and_index(result):
         if indexed_chunks > 0:
             st.session_state.indexed = True
             st.success(
-                f"✅ Indexing complete: {processed_pdfs} new PDFs processed, {indexed_chunks} chunks upserted."
+                f"Indexing complete: {processed_pdfs} new PDFs processed, {indexed_chunks} chunks upserted."
             )
         else:
             st.info("Indexing finished but no new chunks were upserted.")
@@ -183,15 +183,15 @@ def _run_ingest_and_index(result):
 def main():
     st.set_page_config(
         page_title="Zotero RAG Navigator",
-        page_icon="📚",
+        page_icon="",
         layout="wide"
     )
-    
-    st.title("📚 Zotero RAG Navigator")
+
+    st.title("Zotero RAG Navigator")
     st.markdown("Query your local Zotero library with natural language")
 
     # Output directory (first thing asked)
-    st.subheader("🗂️ Output Directory")
+    st.subheader("Output Directory")
     if 'output_dir' not in st.session_state:
         st.session_state.output_dir = "C:/Progetti Git/Tesi/output" #FIXME: default to current folder for easier setup, change as needed
     output_dir = st.text_input(
@@ -200,7 +200,7 @@ def main():
         help="Choose where to store cached TEI files, and highlighted PDFs."
     )
     st.session_state.output_dir = output_dir or "./output"
-    
+
     # Initialize session state
     if 'rag' not in st.session_state:
         st.session_state.rag = None
@@ -224,14 +224,14 @@ def main():
         st.session_state.model_loaded = False
     if 'model_device' not in st.session_state:
         st.session_state.model_device = None  # auto-select
-    
+
     # Main tabs - only show after model is loaded and indexed
     if st.session_state.model_loaded and st.session_state.indexed:
-        tab1, tab2 = st.tabs(["⚙️ Setup", "🔍 Search & Highlight"])
-        
+        tab1, tab2 = st.tabs(["Setup", "Search & Highlight"])
+
         with tab1:
             show_setup_tab()
-        
+
         with tab2:
             show_search_tab()
     else:
@@ -240,35 +240,35 @@ def main():
 
 def show_setup_tab():
     """Setup tab for collection selection, model loading, and indexing."""
-    
-    st.header("⚙️ Setup Configuration")
-    
+
+    st.header("Setup Configuration")
+
     # Services configuration
-    st.subheader("1️⃣ Service Endpoints")
+    st.subheader("1⃣ Service Endpoints")
     st.text("Configure the local services used for PDF parsing and vector search.")
 
 
     col_required_services, col_optional_services = st.columns(2, gap="large")
 
     with col_required_services:
-        st.markdown("##### 🔧 Required Services")
+        st.markdown("##### Required Services")
 
         grobid_url = st.text_input(
-            "📝 GROBID Service URL",
+            "GROBID Service URL",
             value="http://localhost:8070",
             key="grobid_url_input",
             help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid"
         )
 
         qdrant_url = st.text_input(
-            "🧠 Qdrant Service URL",
+            "Qdrant Service URL",
             value="http://localhost:6333",
             key="qdrant_url_input",
             help="URL of Qdrant service. Start with: docker run -p 6333:6333 qdrant/qdrant"
         )
 
     with col_optional_services:
-        st.markdown("##### 💿 Optional Contextualization")
+        st.markdown("##### Optional Contextualization")
         use_chunk_contextualization = st.checkbox(
             "Enable chunk contextualization before upsert",
             value=st.session_state.get("use_chunk_contextualization", True),
@@ -284,17 +284,17 @@ def show_setup_tab():
         )
 
         ollama_url = st.text_input(
-            "💬Ollama Service URL",
+            "Ollama Service URL",
             value="http://localhost:11434",
             key="ollama_url_input",
             disabled=not use_chunk_contextualization,
             help="URL of Ollama service. Start with: docker run -d -v ollama:/root/.ollama -p 11434:11434 ollama/ollama"
         )
-    
+
     st.markdown("---")
-    
+
     # Model Selection
-    st.subheader("2️⃣ Select Embedding Model")
+    st.subheader("2⃣ Select Embedding Model")
 
     st.markdown(
         """
@@ -372,7 +372,7 @@ def show_setup_tab():
         st.write("")
         st.write("")
         load_model_clicked = st.button(
-            "📥 Load Model",
+            "Load Model",
             type="primary",
             width="stretch",
             key="load_model_btn"
@@ -398,10 +398,10 @@ def show_setup_tab():
                         rerank_batch_size=rerank_batch_size,
                         use_chunk_contextualization=st.session_state.use_chunk_contextualization
                     )
-                    
+
                     st.session_state.model_loaded = True
                     st.session_state.indexed = False  # Reset indexed status
-                    
+
                     # Show configuration summary
                     batch_info = []
                     if encode_batch_size is None:
@@ -412,27 +412,27 @@ def show_setup_tab():
                         batch_info.append("Reranking: Auto-detect")
                     else:
                         batch_info.append(f"Reranking: {rerank_batch_size}")
-                    
-                    st.success(f"✅ Model loaded: {model_input}\n\n**Batch sizes:** {' | '.join(batch_info)}")
+
+                    st.success(f"Model loaded: {model_input}\n\n**Batch sizes:** {' | '.join(batch_info)}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error loading model: {e}")
                     st.info("Make sure the model name is correct and supported by FastEmbed")
         else:
             st.error("Please enter a model name")
-    
+
     if st.session_state.model_loaded:
-        st.info(f"✅ Current model: **{st.session_state.dense_model_name}**")
-    
+        st.info(f"Current model: **{st.session_state.dense_model_name}**")
+
     st.markdown("---")
-    
+
     # Indexing Section - only show if model is loaded
     if st.session_state.model_loaded:
-        st.header("📂 Indexed PDFs Manager")
+        st.header("Indexed PDFs Manager")
         col_left, col_right = st.columns([3, 1], gap="large")
 
         with col_left:
-            st.markdown("### 📄 Indexed PDFs")
+            st.markdown("### Indexed PDFs")
 
             try:
                 indexed_titles = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
@@ -451,7 +451,7 @@ def show_setup_tab():
             total_pdfs = len(indexed_titles)
 
             if not st.session_state.rag.consistency_check(indexed_titles):
-                st.warning("⚠️ Consistency check failed: some PDFs in the index may be missing from the cache or have changed. Consider re-indexing to ensure data integrity.")
+                st.warning("Consistency check failed: some PDFs in the index may be missing from the cache or have changed. Consider re-indexing to ensure data integrity.")
 
             filter_text = st.text_input(
                 "Search indexed PDFs",
@@ -492,7 +492,7 @@ def show_setup_tab():
                         step=1,
                         key="indexed_pdf_page"
                     )
-                
+
                 start = (current_page - 1) * items_per_page
                 end = start + items_per_page
                 page_items = filtered_pdfs[start:end]
@@ -528,9 +528,9 @@ def show_setup_tab():
                     st.warning("No PDF matches your search filter.")
 
         with col_right:
-            st.markdown("### ⚡Actions")
+            st.markdown("### Actions")
 
-            with st.expander("➕ Add PDFs", expanded=True):
+            with st.expander("Add PDFs", expanded=True):
                 uploaded_pdfs = st.file_uploader(
                     "Select PDF files to index",
                     type=["pdf"],
@@ -552,24 +552,24 @@ def show_setup_tab():
                         )
                         _run_ingest_and_index(result)
 
-            with st.expander("📚 Add PDFs from Zotero", expanded=False):
+            with st.expander("Add PDFs from Zotero", expanded=False):
                 _load_zotero_collections()
                 if st.session_state.collections_loaded and st.session_state.collections:
                     collection_options = ["All Library"]
                     for coll in st.session_state.collections:
                         name = coll['name']
                         if coll['parent_id']:
-                            parent_name = next((c['name'] for c in st.session_state.collections 
+                            parent_name = next((c['name'] for c in st.session_state.collections
                                             if c['id'] == coll['parent_id']), "Unknown")
                             name = f"{parent_name} > {name}"
                         collection_options.append(name)
-                    
+
                     selected_collection = st.selectbox(
                         "Choose which Zotero collection to search",
                         collection_options,
                         key="collection_selector"
                     )
-                    
+
                     st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
                 else:
                     st.session_state.collection_name = None
@@ -583,7 +583,7 @@ def show_setup_tab():
                             )
                         _run_ingest_and_index(result)
 
-            with st.expander("🗑️ Remove one PDF", expanded=False):
+            with st.expander("Remove one PDF", expanded=False):
                 pdf_name_to_delete = st.text_input(
                     "PDF name to delete, must be in the given PDF source",
                     placeholder="example_paper.pdf",
@@ -603,7 +603,7 @@ def show_setup_tab():
                         else:
                             st.warning(f"No PDF named '{pdf_name_to_delete}' found in index.")
 
-            with st.expander("🔥 Clear full index", expanded=False):
+            with st.expander("Clear full index", expanded=False):
                 st.warning("This operation removes all indexed PDFs and vectors.")
                 if st.button("Clear all PDFs", width="stretch", key="btn_clear_all_pdfs"):
                     if st.session_state.rag is None:
@@ -615,11 +615,11 @@ def show_setup_tab():
                         st.session_state.rag = None
                         st.success("Full index clear requested.")
                         st.rerun()
-    
+
     st.markdown("---")
-    
+
     # Reset button
-    if st.button("🔄 Start Over", width="stretch"):
+    if st.button("Start Over", width="stretch"):
         collections = st.session_state.get('collections', [])
         collections_loaded = st.session_state.get('collections_loaded', False)
         st.session_state.clear()
@@ -647,13 +647,13 @@ def _format_time(seconds: float) -> str:
 
 def show_search_tab():
     """Search and highlight tab."""
-    
-    st.header("🔍 Search Your Library")
-    
+
+    st.header("Search Your Library")
+
     # Question type presets
     QUESTION_TYPE_PRESETS = {
         'factoid': {
-            'emoji': '📌',
+            'emoji': '',
             'description': 'Specific facts or entities',
             'qa_score_threshold': 0.10,
             'retrieval_threshold': 0.45,
@@ -663,7 +663,7 @@ def show_search_tab():
             'prefer_entities': True
         },
         'explanation': {
-            'emoji': '💭',
+            'emoji': '',
             'description': 'How/why something works',
             'qa_score_threshold': 0.05,
             'retrieval_threshold': 0.35,
@@ -673,7 +673,7 @@ def show_search_tab():
             'prefer_entities': False
         },
         'methodology': {
-            'emoji': '⚙️',
+            'emoji': '',
             'description': 'Processes, methods, algorithms',
             'qa_score_threshold': 0.05,
             'retrieval_threshold': 0.35,
@@ -682,11 +682,11 @@ def show_search_tab():
             'min_answer_words': 5,
             'prefer_entities': False,
             'section_diversity': True,
-            'priority_sections': ['abstract', 'introduction', 'methodology', 'methods', 
+            'priority_sections': ['abstract', 'introduction', 'methodology', 'methods',
                                  'approach', 'algorithm', 'implementation']
         },
         'comparison': {
-            'emoji': '⚖️',
+            'emoji': '',
             'description': 'Contrasting different concepts',
             'qa_score_threshold': 0.08,
             'retrieval_threshold': 0.45,
@@ -696,7 +696,7 @@ def show_search_tab():
             'prefer_diversity': True
         },
         'definition': {
-            'emoji': '📖',
+            'emoji': '',
             'description': 'What something is',
             'qa_score_threshold': 0.10,
             'retrieval_threshold': 0.45,
@@ -706,7 +706,7 @@ def show_search_tab():
             'prefer_entities': False
         },
         'general': {
-            'emoji': '❓',
+            'emoji': '',
             'description': 'General questions',
             'qa_score_threshold': 0.10,
             'retrieval_threshold': 0.45,
@@ -716,7 +716,7 @@ def show_search_tab():
             'prefer_entities': False
         },
         'custom': {
-            'emoji': '🎛️',
+            'emoji': '',
             'description': 'Custom settings (fully configurable)',
             'qa_score_threshold': 0.0,
             'retrieval_threshold': 0.45,
@@ -726,18 +726,18 @@ def show_search_tab():
             'prefer_entities': False
         }
     }
-    
+
     # Initialize session state for presets if not exists
     if 'selected_question_type' not in st.session_state:
         st.session_state.selected_question_type = 'general'
-    
+
     # Query input (moved to top)
     query = st.text_input(
         "Enter your question",
         placeholder="What are the main findings about...",
         key="search_input"
     )
-    
+
     st.markdown("---")
 
     col_question_type, col_adjust = st.columns([1, 2], gap="large")
@@ -825,7 +825,7 @@ def show_search_tab():
                 step=1,
                 help="Number of question paraphrases to generate (0 = disabled, uses only original question)."
             )
-    
+
     # Build custom config if user modified any values from preset
     if (qa_score_threshold != preset['qa_score_threshold'] or
         max_answer_length != preset['max_answer_length'] or
@@ -838,7 +838,7 @@ def show_search_tab():
         }
     else:
         custom_config = None
-    
+
     # Predefined color presets (defined here for use in search)
     COLOR_PRESETS = {
         'Yellow': (1.0, 1.0, 0.0),
@@ -849,7 +849,7 @@ def show_search_tab():
         'Purple': (0.7, 0.5, 1.0),
         'Custom': None  # Will be set via RGB picker
     }
-    
+
     # Initialize session state for color
     if 'highlight_color_preset' not in st.session_state:
         st.session_state.highlight_color_preset = 'Yellow'
@@ -861,13 +861,13 @@ def show_search_tab():
         if color_preset == 'Custom':
             return st.session_state.get('highlight_color_custom', (1.0, 1.0, 0.0))
         return COLOR_PRESETS.get(color_preset, (1.0, 1.0, 0.0))
-    
+
     st.markdown("---")
-    
+
     # Paraphrase management UI
     if num_paraphrases > 0 and query:
-        st.subheader("📝 Question Paraphrases")
-        
+        st.subheader("Question Paraphrases")
+
         # Initialize session state for paraphrases
         if 'paraphrase_candidates' not in st.session_state:
             st.session_state.paraphrase_candidates = []
@@ -875,16 +875,16 @@ def show_search_tab():
             st.session_state.paraphrase_selected = set()
         if 'paraphrase_query' not in st.session_state:
             st.session_state.paraphrase_query = None
-        
+
         # Generate paraphrases button
         col_gen, col_more = st.columns([1, 1])
-        
+
         with col_gen:
-            if st.button("🔄 Generate Paraphrases", width="stretch"):
+            if st.button("Generate Paraphrases", width="stretch"):
                 if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
                     with st.spinner("Generating paraphrases..."):
                         variations = st.session_state.rag.qa_engine.expand_question(
-                            query, 
+                            query,
                             num_variations=num_paraphrases * 2  # Generate more for selection
                         )
                         # Store candidates (excluding original)
@@ -895,14 +895,14 @@ def show_search_tab():
                         st.rerun()
                 else:
                     st.error("Paraphraser not available. Question expansion is disabled.")
-        
+
         with col_more:
-            if st.session_state.paraphrase_candidates and st.button("➕ Generate More", width="stretch"):
+            if st.session_state.paraphrase_candidates and st.button("Generate More", width="stretch"):
                 if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
                     with st.spinner("Generating more paraphrases..."):
                         # Generate additional paraphrases
                         more_variations = st.session_state.rag.qa_engine.expand_question(
-                            query, 
+                            query,
                             num_variations=num_paraphrases
                         )
                         # Add new ones to existing (avoid duplicates)
@@ -912,33 +912,33 @@ def show_search_tab():
                                 st.session_state.paraphrase_candidates.append(var)
                                 existing_set.add(var)
                         st.rerun()
-        
+
         # Show original question
         st.markdown("**Original Question (always included):**")
-        st.info(f"✓ {query}")
-        
+        st.info(f"{query}")
+
         # Show and allow selection/editing of paraphrases
         if st.session_state.paraphrase_candidates and st.session_state.paraphrase_query == query:
             st.markdown(f"**Generated Paraphrases** ({len(st.session_state.paraphrase_candidates)} available):")
             st.markdown("*Select which paraphrases to use and edit them if needed:*")
-            
+
             # Track which ones to keep
             selected_indices = set()
             edited_paraphrases = {}
-            
+
             for i, paraphrase in enumerate(st.session_state.paraphrase_candidates):
                 col_check, col_edit = st.columns([0.1, 0.9])
-                
+
                 with col_check:
                     is_selected = st.checkbox(
-                        "✓",
+                        "",
                         value=i in st.session_state.paraphrase_selected,
                         key=f"para_check_{i}",
                         label_visibility="collapsed"
                     )
                     if is_selected:
                         selected_indices.add(i)
-                
+
                 with col_edit:
                     edited = st.text_input(
                         f"Paraphrase {i+1}",
@@ -949,20 +949,20 @@ def show_search_tab():
                     )
                     if is_selected and edited != paraphrase:
                         edited_paraphrases[i] = edited
-            
+
             # Update session state
             st.session_state.paraphrase_selected = selected_indices
-            
+
             # Apply edits
             for i, new_text in edited_paraphrases.items():
                 st.session_state.paraphrase_candidates[i] = new_text
-            
+
             st.markdown(f"**Selected:** {len(selected_indices)} paraphrase(s) + original question")
         elif not st.session_state.paraphrase_candidates:
-            st.info("👆 Click 'Generate Paraphrases' to create question variations")
+            st.info("Click 'Generate Paraphrases' to create question variations")
         elif st.session_state.paraphrase_query != query:
-            st.warning("⚠️ Question changed. Click 'Generate Paraphrases' to update.")
-    
+            st.warning("Question changed. Click 'Generate Paraphrases' to update.")
+
     st.markdown("---")
     col_search, col_clear = st.columns([1, 4])
     with col_search:
@@ -975,80 +975,80 @@ def show_search_tab():
 
     if search_clicked and query:
         import time
-        
+
         # Create separate progress tracking for each stage
         st.markdown("#### Processing Pipeline")
-        
+
         rerank_status = st.empty()
         rerank_progress_bar = st.progress(0)
-        
+
         qa_status = st.empty()
         qa_progress_bar = st.progress(0)
-        
+
         # Track timing for each stage
         rerank_start_time = [None]  # Use list for mutability in nested function
         qa_start_time = [None]
-        
+
         def rerank_callback(current, total, message):
             if rerank_start_time[0] is None:
                 rerank_start_time[0] = time.time()
-            
+
             if total > 0:
                 progress = current / total
                 rerank_progress_bar.progress(progress)
-                
+
                 # Calculate time estimates
                 elapsed = time.time() - rerank_start_time[0]
                 if current > 0 and progress < 1.0:
                     estimated_total = elapsed / progress
                     remaining = estimated_total - elapsed
-                    time_info = f"⏱️ Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
+                    time_info = f"Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
                 elif progress >= 1.0:
-                    time_info = f"⏱️ Completed in {_format_time(elapsed)}"
+                    time_info = f"Completed in {_format_time(elapsed)}"
                 else:
                     time_info = ""
             else:
                 rerank_progress_bar.progress(0)
                 time_info = ""
-            
-            rerank_status.text(f"🔄 Stage 1 - Reranking (merged candidates): {message} {time_info}")
-        
+
+            rerank_status.text(f"Stage 1 - Reranking (merged candidates): {message} {time_info}")
+
         def qa_callback(current, total, message):
             if qa_start_time[0] is None:
                 qa_start_time[0] = time.time()
-            
+
             if total > 0:
                 progress = current / total
                 qa_progress_bar.progress(progress)
-                
+
                 # Calculate time estimates
                 elapsed = time.time() - qa_start_time[0]
                 if current > 0 and progress < 1.0:
                     estimated_total = elapsed / progress
                     remaining = estimated_total - elapsed
-                    time_info = f"⏱️ Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
+                    time_info = f"Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
                 elif progress >= 1.0:
-                    time_info = f"⏱️ Completed in {_format_time(elapsed)}"
+                    time_info = f"Completed in {_format_time(elapsed)}"
                 else:
                     time_info = ""
             else:
                 qa_progress_bar.progress(0)
                 time_info = ""
-            
-            qa_status.text(f"🤖 Stage 2 - QA Extraction: {message} {time_info}")
-        
+
+            qa_status.text(f"Stage 2 - QA Extraction: {message} {time_info}")
+
         try:
             # Prepare selected paraphrases (if any)
             selected_paraphrases = None
-            if (num_paraphrases > 0 and 
-                st.session_state.get('paraphrase_candidates') and 
+            if (num_paraphrases > 0 and
+                st.session_state.get('paraphrase_candidates') and
                 st.session_state.get('paraphrase_query') == query):
                 # Get selected paraphrases
                 selected_paraphrases = [query]  # Always include original
                 for i in sorted(st.session_state.paraphrase_selected):
                     if i < len(st.session_state.paraphrase_candidates):
                         selected_paraphrases.append(st.session_state.paraphrase_candidates[i])
-            
+
             # Pass the selected question type, custom config, color, and paraphrases
             st.session_state.search_results = st.session_state.rag.answer_question(
                 question=query,
@@ -1067,22 +1067,22 @@ def show_search_tab():
             st.session_state.highlight_selected = {
                 i: True for i in range(len(st.session_state.search_results))
             }
-            
+
             # Mark completion
             rerank_progress_bar.progress(1.0)
             qa_progress_bar.progress(1.0)
-            rerank_status.text("🔄 Stage 1 - Reranking (merged candidates): ✓ Complete!")
-            qa_status.text("🤖 Stage 2 - QA Extraction: ✓ Complete!")
-            
+            rerank_status.text("Stage 1 - Reranking (merged candidates): Complete!")
+            qa_status.text("Stage 2 - QA Extraction: Complete!")
+
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
             st.session_state.current_index = 0
             st.session_state.current_query = query
-            
+
             # Store question type for display
             st.session_state.current_question_type = selected_question_type
             st.session_state.qa_score_threshold = qa_score_threshold  # Store threshold
         except Exception as e:
-            st.error(f"❌ Search failed: {e}")
+            st.error(f"Search failed: {e}")
             st.session_state.search_results = []
             with st.expander("Show full error"):
                 st.exception(e)
@@ -1092,7 +1092,7 @@ def show_search_tab():
             rerank_progress_bar.empty()
             qa_status.empty()
             qa_progress_bar.empty()
-    
+
     # Display results
     if st.session_state.search_results:
         if 'search_run_id' not in st.session_state:
@@ -1107,39 +1107,39 @@ def show_search_tab():
         question_type = st.session_state.get('current_question_type', 'general')
         preset = QUESTION_TYPE_PRESETS.get(question_type, QUESTION_TYPE_PRESETS['general'])
         question_type_emoji = preset['emoji']
-        
+
         # Get the configuration for this question type
         qa_threshold_used = st.session_state.get('qa_score_threshold', 0.0)
         config = st.session_state.rag.qa_engine.get_config_for_type(question_type, qa_threshold_used)
-        
-        st.success(f"✅ Found {len(st.session_state.search_results)} answers for: *{st.session_state.current_query}*")
-        
+
+        st.success(f"Found {len(st.session_state.search_results)} answers for: *{st.session_state.current_query}*")
+
         # Navigation and actions
         st.write("")
         st.write("")
         st.write("")
         col1, col2, col3, spaceCol, col4 = st.columns([1, 1, 1, 3, 1], gap="large")
-        
+
         with col1:
-            if st.button("⬅️ Previous"):
+            if st.button("Previous"):
                 # Wrap around: if at first result, go to last
                 st.session_state.current_index = (st.session_state.current_index - 1) % len(st.session_state.search_results)
                 st.rerun()
-        
+
         with col2:
             st.markdown(f"**Answer {st.session_state.current_index + 1} / {len(st.session_state.search_results)}**")
-        
+
         with col3:
-            if st.button("Next ➡️"):
+            if st.button("Next "):
                 # Wrap around: if at last result, go to first
                 st.session_state.current_index = (st.session_state.current_index + 1) % len(st.session_state.search_results)
                 st.rerun()
 
         with spaceCol:
             pass # Empty column for spacing
-        
+
         with col4:
-            if st.button("📖 Open PDF"):
+            if st.button("Open PDF"):
                 answer = st.session_state.search_results[st.session_state.current_index]
                 pdf_path = answer.pdf_path
                 try:
@@ -1149,14 +1149,14 @@ def show_search_tab():
                         os.startfile(pdf_path)
                     else:  # Linux
                         subprocess.run(['xdg-open', pdf_path])
-                    st.success(f"✅ Opened PDF at page {answer.page_num + 1}")
+                    st.success(f"Opened PDF at page {answer.page_num + 1}")
                 except Exception as e:
                     st.error(f"Could not open PDF: {e}")
 
         # Highlight color selection for Highlight Selected
         st.write("")
         st.write("")
-        st.subheader("🎨 Highlight Color")
+        st.subheader("Highlight Color")
 
         col_preset, col_rgb, col_highlight = st.columns([1, 2, 1], gap="large")
 
@@ -1193,7 +1193,7 @@ def show_search_tab():
             )
 
         with col_highlight:
-            if st.button("💾 Highlight Selected Articles", width="stretch"):
+            if st.button("Highlight Selected Articles", width="stretch"):
                 highlight_color_override = _get_selected_highlight_color()
                 selected_indices = [
                     i for i, selected in st.session_state.highlight_selected.items() if selected
@@ -1238,32 +1238,32 @@ def show_search_tab():
                     progress_bar.empty()
 
                     if failed_pdfs:
-                        st.error(f"❌ Failed to highlight {len(failed_pdfs)} PDF(s)")
+                        st.error(f"Failed to highlight {len(failed_pdfs)} PDF(s)")
                         with st.expander("Show failed PDFs"):
                             for pdf_name in failed_pdfs:
-                                st.text(f"📄 {pdf_name}")
+                                st.text(f"{pdf_name}")
 
                     if highlighted_paths:
-                        st.success(f"✅ Successfully highlighted {len(highlighted_paths)} PDF(s)")
+                        st.success(f"Successfully highlighted {len(highlighted_paths)} PDF(s)")
                         with st.expander("Show highlighted files"):
                             for path in highlighted_paths:
-                                st.text(f"📄 {os.path.basename(path)}")
-                            st.text(f"📁 Location: {output_dir}")
-        
+                                st.text(f"{os.path.basename(path)}")
+                            st.text(f"Location: {output_dir}")
+
         # Current result display
         st.markdown("---")
         answer = st.session_state.search_results[st.session_state.current_index]
 
-        st.subheader(f"📄 {answer.title}")
+        st.subheader(f"{answer.title}")
         info_col, select_col = st.columns([5, 1], gap="large")
 
         with info_col:
             st.markdown(
                 f"""**PDF**: {answer.title}<br>
-                **Page**: {answer.page_num + 1} | 
-                **Section**: {answer.section or 'Unknown'} | 
-                **Retrieval Score**: {answer.retrieval_score:.4f} | 
-                **Rerank Score**: {answer.rerank_score:.4f} | 
+                **Page**: {answer.page_num + 1} |
+                **Section**: {answer.section or 'Unknown'} |
+                **Retrieval Score**: {answer.retrieval_score:.4f} |
+                **Rerank Score**: {answer.rerank_score:.4f} |
                 **QA Score**: {answer.score:.4f}""",
                 unsafe_allow_html=True
             )
@@ -1276,13 +1276,13 @@ def show_search_tab():
                 key=selection_key
             )
             st.session_state.highlight_selected[st.session_state.current_index] = highlight_this
-        
+
         # Answer display
-        st.subheader("💡 Answer")
+        st.subheader("Answer")
         st.info(answer.text)
-        
+
         # Context
-        st.subheader("📝 Context (Full Paragraph)")
+        st.subheader("Context (Full Paragraph)")
         st.text_area(
             "Full paragraph containing the answer",
             value=answer.context,
@@ -1291,24 +1291,24 @@ def show_search_tab():
             label_visibility="collapsed",
             key=f"context_{st.session_state.current_index}"
         )
-    
+
     elif query and search_clicked:
-        st.warning("⚠️ No results found")
+        st.warning("No results found")
         st.info("""
         **Possible reasons:**
         - QA score threshold too high (try 0.0)
         - Retrieval threshold too low (try increasing to 3.0-5.0)
         - No semantically similar paragraphs found
         - Question format doesn't match extractive QA style
-        
+
         **Try:**
         - Lower the QA Score Threshold to 0.0
         - Increase Retrieval Threshold to 3.0 or higher
         - Rephrase as a specific question (e.g., "What is X?" instead of "Tell me about X")
         """)
     elif not query and search_clicked:
-        st.info("👆 Enter a question above and click Search to get started")
-    
+        st.info("Enter a question above and click Search to get started")
+
     # Footer
     st.markdown("---")
     st.markdown(
