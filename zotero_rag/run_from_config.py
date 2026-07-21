@@ -277,7 +277,7 @@ def main():
         
         for question, answers in results.items():
             print(f"\n{question}")
-            print(f"  → {len(answers)} answers")
+            print(f"  {len(answers)} answers")
         
         print("\n" + "="*80)
         

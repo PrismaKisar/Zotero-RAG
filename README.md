@@ -1,4 +1,4 @@
-# 📚 Zotero RAG Navigator
+# Zotero RAG Navigator
 
 A question-answering system for your uploaded PDFs or Zotero library featuring a multi-stage RAG pipeline with GROBID parsing, Qdrant hybrid search, contextualization, reranking, and extractive QA. Generate precise answers from your research papers with automatic highlighting and question expansion.
 
@@ -149,12 +149,12 @@ Then navigate to `http://localhost:8501`
    - Click "Load Model"
 
 6. **Add PDFs to Index**
-    
+
     Choose between two ways of selecting PDFs to index:
 
-    - **📤 Upload PDFs**: Add one or more PDF files directly from your device
+    - **Upload PDFs**: Add one or more PDF files directly from your device
 
-    - **📚 Zotero Collection**: Choose a collection or "All Library", all PDFs in the selected Zotero scope will be indexed
+    - **Zotero Collection**: Choose a collection or "All Library", all PDFs in the selected Zotero scope will be indexed
 
 ### Question Answering
 
