@@ -193,7 +193,7 @@ def main():
     # Output directory (first thing asked)
     st.subheader("Output Directory")
     if 'output_dir' not in st.session_state:
-        st.session_state.output_dir = "C:/Progetti Git/Tesi/output" #FIXME: default to current folder for easier setup, change as needed
+        st.session_state.output_dir = os.environ.get("OUTPUT_DIR", "./output")
     output_dir = st.text_input(
         "Base output directory (TEI cache, highlights)",
         value=st.session_state.output_dir,
@@ -255,14 +255,14 @@ def show_setup_tab():
 
         grobid_url = st.text_input(
             "GROBID Service URL",
-            value="http://localhost:8070",
+            value=os.environ.get("GROBID_URL", "http://localhost:8070"),
             key="grobid_url_input",
             help="URL of GROBID service. Start with: docker run -p 8070:8070 grobid/grobid"
         )
 
         qdrant_url = st.text_input(
             "Qdrant Service URL",
-            value="http://localhost:6333",
+            value=os.environ.get("QDRANT_URL", "http://localhost:6333"),
             key="qdrant_url_input",
             help="URL of Qdrant service. Start with: docker run -p 6333:6333 qdrant/qdrant"
         )
@@ -285,7 +285,7 @@ def show_setup_tab():
 
         ollama_url = st.text_input(
             "Ollama Service URL",
-            value="http://localhost:11434",
+            value=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
             key="ollama_url_input",
             disabled=not use_chunk_contextualization,
             help="URL of Ollama service. Start with: docker run -d -v ollama:/root/.ollama -p 11434:11434 ollama/ollama"
