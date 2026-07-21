@@ -34,6 +34,9 @@ class QAEngine:
         self.tokenizer = None
         self.paraphraser = None
         self.batch_size = batch_size if batch_size is not None else 128
+        # ponytail: 128 is a GPU number; on CPU a large QA model OOMs (exit 137). Cap it.
+        if self.device == "cpu":
+            self.batch_size = min(self.batch_size, 8)
         
         self._load_model_direct()
         if enable_question_expansion:
@@ -54,7 +57,10 @@ class QAEngine:
             ).to(self.device)
             
             import sys
-            if sys.platform != 'win32':
+            # ponytail: only compile on CUDA. inductor needs a C++ compiler (g++) and
+            # gives marginal gains on CPU QA — skipping avoids a hard toolchain dependency
+            # and the lazy compile failure that surfaced as "0 spans" in slim containers.
+            if sys.platform != 'win32' and self.device == "cuda":
                 try:
                     self.model = torch.compile(self.model)
                 except Exception:
