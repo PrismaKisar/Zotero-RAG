@@ -106,9 +106,9 @@
     </style>
 </head>
 <body>
-    <h1>🎨 ZoteroRAG Highlighter Colors</h1>
+    <h1>ZoteroRAG Highlighter Colors</h1>
     <p class="subtitle">Click on any color code to select it for copying into your YAML config</p>
-    
+
     <div class="usage-example">
         <h3>How to Use</h3>
         <p>Copy the <code>highlight_color</code> value and paste it into your YAML configuration:</p>
@@ -120,7 +120,7 @@
 
     <!-- Classic Highlighter Colors -->
     <div class="category">
-        <div class="category-title">📝 Classic Highlighter Colors</div>
+        <div class="category-title">Classic Highlighter Colors</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(255, 255, 0);">Yellow</div>
@@ -169,7 +169,7 @@
 
     <!-- Pastel Colors -->
     <div class="category">
-        <div class="category-title">🌸 Soft Pastel Colors</div>
+        <div class="category-title">Soft Pastel Colors</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(255, 255, 153);">Pastel Yellow</div>
@@ -218,7 +218,7 @@
 
     <!-- Vibrant Colors -->
     <div class="category">
-        <div class="category-title">⚡ Vibrant Colors</div>
+        <div class="category-title">Vibrant Colors</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(255, 0, 0);">Red</div>
@@ -267,7 +267,7 @@
 
     <!-- Professional Colors -->
     <div class="category">
-        <div class="category-title">💼 Professional Colors</div>
+        <div class="category-title">Professional Colors</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(135, 206, 250);">Light Blue</div>
@@ -316,7 +316,7 @@
 
     <!-- Warm Tones -->
     <div class="category">
-        <div class="category-title">🔥 Warm Tones</div>
+        <div class="category-title">Warm Tones</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(255, 99, 71);">Tomato</div>
@@ -365,7 +365,7 @@
 
     <!-- Cool Tones -->
     <div class="category">
-        <div class="category-title">❄️ Cool Tones</div>
+        <div class="category-title">Cool Tones</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(64, 224, 208);">Turquoise</div>
@@ -414,7 +414,7 @@
 
     <!-- Nature Colors -->
     <div class="category">
-        <div class="category-title">🌿 Nature Colors</div>
+        <div class="category-title">Nature Colors</div>
         <div class="color-grid">
             <div class="color-card">
                 <div class="color-swatch" style="background-color: rgb(34, 139, 34);">Forest Green</div>
@@ -468,12 +468,12 @@
             range.selectNodeContents(element);
             selection.removeAllRanges();
             selection.addRange(range);
-            
+
             // Try to copy to clipboard
             try {
                 document.execCommand('copy');
                 const originalText = element.textContent;
-                element.textContent = '✓ Copied!';
+                element.textContent = 'Copied!';
                 setTimeout(() => {
                     element.textContent = originalText;
                 }, 1000);
