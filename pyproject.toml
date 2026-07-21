@@ -1,31 +1,34 @@
-[tool.poetry]
-name = "literature"
+[project]
+name = "zotero-rag"
 version = "0.1.0"
-description = ""
-authors = ["eliroc98 <elisabetta.rocchetti0@gmail.com>"]
+description = "RAG pipeline for Q&A and PDF highlighting over a Zotero library"
 readme = "README.md"
-package-mode=false
+requires-python = ">=3.11,<3.15"
+authors = [
+    { name = "Elisabetta Rocchetti", email = "elisabetta.rocchetti0@gmail.com" },
+    { name = "Simone Fornoni", email = "simone.fornoni1@studenti.unimi.it" },
+    { name = "Alessandro Sarchi", email = "alessandro.sarchi02@gmail.com" },
+]
+dependencies = [
+    "sentence-transformers (>=5.2.0,<6)",
+    "pymupdf (>=1.26.7,<2)",
+    "numpy (>=2.4.1,<3)",
+    "streamlit (>=1.53.1,<2)",
+    "nltk (>=3.9.2,<4)",
+    "requests (>=2.32.0,<3)",
+    "grobid-client-python (>=0.1.4,<0.2)",
+    "torch (>=2.10.0,<3)",
+    "pyyaml (>=6.0,<7)",
+    "sentencepiece (>=0.2.1,<0.3)",
+    "protobuf (>=3.20,<6)",
+    "transformers (>=4.44,<5)",
+    "qdrant-client (>=1.17.1,<2)",
+    "fastembed (>=0.8.0,<0.9)",
+    "ollama (>=0.6.1,<0.7)",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.15"
-sentence-transformers = "^5.2.0"
-faiss-cpu = "^1.13.2"
-pymupdf = "^1.26.7"
-numpy = "^2.4.1"
-streamlit = "^1.53.1"
-nltk = "^3.9.2"
-requests = "^2.32.0"
-grobid-client-python = "^0.1.4"
-torch = "^2.10.0"
-pyyaml = "^6.0"
-sentencepiece = "^0.2.1"
-protobuf = ">=3.20,<6"
-transformers = ">=4.44,<5"
-qdrant-client = "^1.17.1"
-fastembed = "^0.8.0"
-ollama = "^0.6.1"
-hf-xet = "^1.4.3"
-
+[tool.poetry]
+package-mode = false
 
 [build-system]
 requires = ["poetry-core"]
