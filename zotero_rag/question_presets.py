@@ -6,9 +6,10 @@ min_answer_words, section_diversity). Per-type tuning lives in each preset's
 literal default value; ``resolve`` applies user overrides on top with no hidden
 per-type transform, so what you see is what runs.
 
-Nothing is wired to this module yet; later slices migrate the UI and eval onto
-it, replacing the duplicated presets in ``app.py`` and
-``qa_engine.get_config_for_type``.
+The QA pipeline (``ZoteroRAG.answer_question``) resolves its config through
+this module. Each live field is read by the pipeline: retrieval_threshold and
+rerank_threshold in stages 1-2, qa_score_threshold / min_answer_words /
+section_diversity in QA extraction.
 """
 
 from copy import deepcopy
