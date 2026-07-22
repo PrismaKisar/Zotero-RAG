@@ -48,7 +48,6 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── example_config.yaml         # Full YAML config with documentation
 │   ├── advanced_config.yaml        # Advanced YAML config with custom paraphrases
 │   ├── folder_example_config.yaml  # Example config for PDF upload workflows
-│   ├── question_type_presets.yaml  # Question type preset documentation
 │   └── highlighter_colors.html     # Color reference for highlighting
 │
 ├── pyproject.toml           # Poetry dependencies
