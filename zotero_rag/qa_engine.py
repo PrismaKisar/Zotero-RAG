@@ -323,24 +323,22 @@ class QAEngine:
     def extract_answers(self,
                     question: str,
                     candidates: List[RerankedParagraph],
-                    qa_score_threshold: float = 0.0,
+                    config: dict,
                     color: Tuple[float, float, float] = (1, 1, 0),
                     progress_callback=None,
-                    question_variations: List[str] = None,
-                    question_type: str = 'general',
-                    custom_config: dict = None) -> List[Answer]:
+                    question_variations: List[str] = None) -> List[Answer]:
         """Extract answers for a given question from candidate paragraphs.
-        
+
         Args:
             question: The question to answer.
             candidates: List of RerankedParagraph objects to extract answers from.
-            qa_score_threshold: Minimum confidence score to keep an answer.
+            config: Resolved question-type config (see ``question_presets.resolve``).
+                Reads ``qa_score_threshold``, ``min_answer_words`` and
+                ``section_diversity``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
             question_variations: Optional list of question variations to use instead of generating them.
-            question_type: Type of question (e.g., 'factoid', 'methodology', 'explanation', etc.) to adjust extraction strategy.
-            custom_config: Optional dictionary to override default config parameters for the question type.
-            
+
         Returns:
             List of Answer objects extracted from the candidates.
         """
@@ -353,11 +351,8 @@ class QAEngine:
         
         # --- 0. INITIALIZE STATS & CONFIG ---
         questions_to_use = question_variations if question_variations else [question]
-        config = self.get_config_for_type(question_type, qa_score_threshold)
-        if custom_config:
-            config.update(custom_config)
-        
-        logger.info(f"QA Configuration -> Type: {question_type} | Threshold: {config['qa_score_threshold']:.3f} | Min Words: {config['min_answer_words']}")
+
+        logger.info(f"QA Configuration -> Threshold: {config['qa_score_threshold']:.3f} | Min Words: {config['min_answer_words']}")
         
         # Initialize tracking dictionaries
         filter_stats = {
@@ -579,7 +574,7 @@ class QAEngine:
 
         # --- 5. FINAL SUMMARY LOG ---
         logger.info("-" * 60)
-        logger.info(f"QA EXTRACTION SUMMARY ({question_type})")
+        logger.info("QA EXTRACTION SUMMARY")
         logger.info(f"Input: {len(candidates)} candidates -> {filter_stats['total_inputs']} sequences (expanded)")
         logger.info(f"Raw Outputs: {filter_stats['successful_raw']} spans found")
         logger.info(f"Filtering:")
