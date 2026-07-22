@@ -61,12 +61,9 @@ defaults:
   # Number of question paraphrases to auto-generate (0 = disabled)
   num_paraphrases: 2
   
-  # L2 distance threshold for initial retrieval (lower = more similar)
+  # Cosine similarity threshold for initial retrieval (higher = more similar)
   retrieval_threshold: 0.7
-  
-  # Minimum QA confidence score to keep answers (0-1)
-  qa_score_threshold: 0.1
-  
+
   # Minimum rerank probability to keep candidates (0-1)
   rerank_threshold: 0.25
   
@@ -107,9 +104,7 @@ questions:
     question_type: factoid
     custom_config:
       qa_score_threshold: 0.3
-      max_answer_length: 50
       min_answer_words: 2
-      prefer_entities: true
 
 # ============================================================================
 # Output Settings
