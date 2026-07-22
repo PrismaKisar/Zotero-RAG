@@ -14,6 +14,7 @@ from zotero_rag import ZoteroRAG
 from zotero_db import ZoteroDatabase
 
 from pdf_utils import sanitize_filename
+from question_presets import PRESETS, resolve
 
 def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
@@ -650,81 +651,16 @@ def show_search_tab():
 
     st.header("Search Your Library")
 
-    # Question type presets
-    QUESTION_TYPE_PRESETS = {
-        'factoid': {
-            'emoji': '',
-            'description': 'Specific facts or entities',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 50,
-            'min_answer_words': 2,
-            'prefer_entities': True
-        },
-        'explanation': {
-            'emoji': '',
-            'description': 'How/why something works',
-            'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.35,
-            'rerank_threshold': 0.40,
-            'max_answer_length': 200,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'methodology': {
-            'emoji': '',
-            'description': 'Processes, methods, algorithms',
-            'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.35,
-            'rerank_threshold': 0.40,
-            'max_answer_length': 250,
-            'min_answer_words': 5,
-            'prefer_entities': False,
-            'section_diversity': True,
-            'priority_sections': ['abstract', 'introduction', 'methodology', 'methods',
-                                 'approach', 'algorithm', 'implementation']
-        },
-        'comparison': {
-            'emoji': '',
-            'description': 'Contrasting different concepts',
-            'qa_score_threshold': 0.08,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_diversity': True
-        },
-        'definition': {
-            'emoji': '',
-            'description': 'What something is',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 100,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'general': {
-            'emoji': '',
-            'description': 'General questions',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'custom': {
-            'emoji': '',
-            'description': 'Custom settings (fully configurable)',
-            'qa_score_threshold': 0.0,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        }
+    # UI-only copy for the type selector. The hyperparameters themselves live in
+    # question_presets, so a preset change is reflected here without editing app.py.
+    QUESTION_TYPE_DESCRIPTIONS = {
+        'factoid': 'Specific facts or entities',
+        'methodology': 'Processes, methods, algorithms',
+        'explanation': 'How/why something works',
+        'comparison': 'Contrasting different concepts',
+        'definition': 'What something is',
+        'general': 'General questions',
+        'custom': 'Custom settings (fully configurable)',
     }
 
     # Initialize session state for presets if not exists
@@ -746,9 +682,9 @@ def show_search_tab():
         # Question type selector
         st.subheader("Question Type")
 
-        question_type_options = list(QUESTION_TYPE_PRESETS.keys())
+        question_type_options = list(PRESETS.keys())
         question_type_labels = [
-            f"{QUESTION_TYPE_PRESETS[qt]['emoji']} {qt.title()} - {QUESTION_TYPE_PRESETS[qt]['description']}"
+            f"{qt.title()} - {QUESTION_TYPE_DESCRIPTIONS[qt]}"
             for qt in question_type_options
         ]
 
@@ -764,7 +700,7 @@ def show_search_tab():
         selected_question_type = question_type_options[question_type_labels.index(selected_label)]
         st.session_state.selected_question_type = selected_question_type
 
-    preset = QUESTION_TYPE_PRESETS[selected_question_type]
+    preset = resolve(selected_question_type)
 
     with col_adjust:
         # Always show configurable parameters (pre-filled with preset values)
