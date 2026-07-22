@@ -30,7 +30,7 @@ create_highlighted_pdfs: true
 # Default settings for all questions (can be overridden per question)
 defaults:
   num_paraphrases: 2
-  retrieval_threshold: 2.0
+  retrieval_threshold: 0.45  # Cosine similarity (higher = more similar)
   rerank_threshold: 0.25
   highlight_color: [1, 1, 0]  # RGB color (yellow)
   question_type: general
