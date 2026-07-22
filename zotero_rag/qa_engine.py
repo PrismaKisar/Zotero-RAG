@@ -102,66 +102,6 @@ class QAEngine:
             logger.warning(f"Could not load paraphraser: {e}")
             self.paraphraser = None
     
-    def get_config_for_type(self, question_type: str, base_threshold: float) -> dict:
-        """Return configuration for a specific question type.
-        
-        Args:
-            question_type: The question type ('factoid', 'methodology', 'explanation', etc.).
-            base_threshold: The base QA score threshold to use/adjust from.
-            
-        Returns:
-            Dictionary with parameters for this question type.
-        """
-        configs = {
-            'factoid': {
-                'qa_score_threshold': max(0.1, base_threshold),  # More lenient
-                'max_answer_length': 50,     # Shorter answers
-                'min_answer_words': 2,       # Allow shorter answers
-                'prefer_entities': True
-            },
-            'methodology': {
-                'qa_score_threshold': max(0.05, base_threshold * 0.5),  # Very lenient
-                'max_answer_length': 250,    # Longer answers for detailed explanations
-                'min_answer_words': 5,       # Ensure substantial answers
-                'prefer_entities': False,
-                'section_diversity': True,   # Want both high-level and detailed answers
-                'priority_sections': ['abstract', 'introduction', 'methodology', 'methods', 
-                                     'approach', 'algorithm', 'implementation']
-            },
-            'explanation': {
-                'qa_score_threshold': max(0.05, base_threshold * 0.5),  # Very lenient
-                'max_answer_length': 200,    # Longer answers allowed
-                'min_answer_words': 3,       # Normal minimum
-                'prefer_entities': False
-            },
-            'comparison': {
-                'qa_score_threshold': max(0.08, base_threshold * 0.8),
-                'max_answer_length': 150,
-                'min_answer_words': 3,
-                'prefer_diversity': True     # Want different perspectives
-            },
-            'definition': {
-                'qa_score_threshold': max(0.1, base_threshold),
-                'max_answer_length': 100,
-                'min_answer_words': 3,
-                'prefer_entities': False
-            },
-            'general': {
-                'qa_score_threshold': base_threshold,
-                'max_answer_length': 150,
-                'min_answer_words': 3,
-                'prefer_entities': False
-            },
-            'custom': {
-                # Custom will be overridden by provided config
-                'qa_score_threshold': base_threshold,
-                'max_answer_length': 150,
-                'min_answer_words': 3,
-                'prefer_entities': False
-            }
-        }
-        return configs.get(question_type, configs['general'])
-    
     def expand_question(self, question: str, num_variations: int = 2) -> List[str]:
         """Generate question variations to improve retrieval coverage.
         
