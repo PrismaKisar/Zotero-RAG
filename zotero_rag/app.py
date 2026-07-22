@@ -798,7 +798,7 @@ def show_search_tab():
                 help="Stage 3 (QA Model): Confidence threshold."
             )
 
-        col_min_words, col_max_length, col_paraphrases = st.columns(3)
+        col_min_words, col_paraphrases = st.columns(2)
         with col_min_words:
             min_answer_words = st.number_input(
                 "Min Answer Words",
@@ -806,15 +806,6 @@ def show_search_tab():
                 value=preset['min_answer_words'],
                 step=1,
                 help="Minimum words in an answer."
-            )
-
-        with col_max_length:
-            max_answer_length = st.number_input(
-                "Max Answer Length",
-                min_value=10, max_value=500,
-                value=preset['max_answer_length'],
-                step=10,
-                help="Maximum words in an answer."
             )
 
         with col_paraphrases:
