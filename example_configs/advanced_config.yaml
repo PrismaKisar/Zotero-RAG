@@ -33,7 +33,6 @@ questions:
     question_type: explanation
     custom_config:
       qa_score_threshold: 0.15
-      max_answer_length: 200
       min_answer_words: 3
   
   # Question 2: Stricter settings for precise answers
@@ -45,9 +44,7 @@ questions:
     question_type: factoid
     custom_config:
       qa_score_threshold: 0.3  # Only high-confidence answers
-      max_answer_length: 50
       min_answer_words: 2
-      prefer_entities: true
   
   # Question 3: Lenient settings for exploratory questions
   - question: "What are the main challenges in training large models?"
@@ -58,7 +55,6 @@ questions:
     question_type: methodology
     custom_config:
       qa_score_threshold: 0.05  # Accept more answers
-      max_answer_length: 250
       min_answer_words: 5
       section_diversity: true
   
@@ -74,8 +70,6 @@ questions:
     question_type: comparison
     custom_config:
       qa_score_threshold: 0.2
-      max_answer_length: 150
-      prefer_diversity: true
   
   # Question 5: Using defaults (no overrides)
   - question: "What datasets were used for evaluation?"

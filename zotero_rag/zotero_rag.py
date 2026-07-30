@@ -20,6 +20,7 @@ from embedding_manager import EmbeddingManager
 from qdrant_manager import QdrantManager
 from reranker import Reranker
 from qa_engine import QAEngine
+from question_presets import resolve
 from highlighter import PDFHighlighter
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
@@ -568,41 +569,39 @@ class ZoteroRAG:
         finally:
             self.qdrant_manager.close_connection()
 
-    def answer_question(self, 
-                    question: str, 
-                    retrieval_threshold: float = 0.45, 
-                    qa_score_threshold: float = 0.0, 
-                    rerank_threshold: float = 0.45, 
-                    progress_callback=None, 
-                    rerank_callback=None,
+    def answer_question(self,
+                    question: str,
                     question_type: str = 'general',
-                    custom_config: dict = None,
+                    overrides: dict = None,
+                    progress_callback=None,
+                    rerank_callback=None,
                     num_paraphrases: int = 2,
                     highlight_color: Tuple[float, float, float] = None,
                     question_variations: List[str] = None) -> List[Answer]:
         """Answer a question using the full RAG pipeline.
-        
+
         Pipeline stages:
         1. Qdrant Retrieval (Cosine Similarity)
         2. CrossEncoder Reranking (Threshold Filtering)
         3. QA Extraction (with Context Overlap/Sliding Window)
-        
+
         Args:
             question: The question to answer.
-            retrieval_threshold: Minimum cosine similarity score to keep retrieved paragraphs.
-            qa_score_threshold: Minimum QA confidence score to keep answers.
-            rerank_threshold: Minimum rerank probability to keep candidates.
+            question_type: Type of question (factoid, explanation, methodology, etc.).
+            overrides: User overrides applied on top of the question-type preset.
+                The merged config drives every stage: retrieval_threshold,
+                rerank_threshold and qa_score_threshold are applied literally.
             progress_callback: Function(current, total, message) for QA progress.
             rerank_callback: Function(current, total, message) for rerank progress.
-            question_type: Type of question (factoid, explanation, methodology, etc.).
-            custom_config: Custom configuration dict to override preset config.
             num_paraphrases: Number of question paraphrases to generate (0 = disabled).
             highlight_color: RGB tuple (0-1) for highlighting. If None, use query-based color.
             question_variations: Pre-generated question variations to use. If None, generate them.
-            
+
         Returns:
             List of Answer objects, deduplicated and sorted by score.
         """
+        config = resolve(question_type, overrides)
+
         # Stage 0: Expand question if enabled and variations not provided
         if question_variations is None:
             question_variations = [question]  # Always include original
@@ -627,7 +626,7 @@ class ZoteroRAG:
 
             batch_results = self.qdrant_manager.search_batch(
                 query_embeddings,
-                retrieval_threshold,
+                config['retrieval_threshold'],
             )
 
             for i, q_var in enumerate(question_variations):
@@ -666,9 +665,9 @@ class ZoteroRAG:
         
         # Stage 2: Rerank and Filter (CrossEncoder)
         reranked = self.reranker.rerank(
-            question, 
-            candidates, 
-            rerank_threshold,
+            question,
+            candidates,
+            config['rerank_threshold'],
             progress_callback=rerank_callback,
             query_variations=question_variations
         )
@@ -691,12 +690,10 @@ class ZoteroRAG:
         answers = self.qa_engine.extract_answers(
             question,
             reranked,
-            qa_score_threshold=qa_score_threshold,
+            config,
             color=color,
             progress_callback=progress_callback,
-            question_variations=question_variations,
-            question_type=question_type,
-            custom_config=custom_config
+            question_variations=question_variations
         )
         
         return self._attach_pdf_paths(answers)

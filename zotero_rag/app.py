@@ -14,6 +14,7 @@ from zotero_rag import ZoteroRAG
 from zotero_db import ZoteroDatabase
 
 from pdf_utils import sanitize_filename
+from question_presets import PRESETS, resolve
 
 def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
@@ -650,81 +651,16 @@ def show_search_tab():
 
     st.header("Search Your Library")
 
-    # Question type presets
-    QUESTION_TYPE_PRESETS = {
-        'factoid': {
-            'emoji': '',
-            'description': 'Specific facts or entities',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 50,
-            'min_answer_words': 2,
-            'prefer_entities': True
-        },
-        'explanation': {
-            'emoji': '',
-            'description': 'How/why something works',
-            'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.35,
-            'rerank_threshold': 0.40,
-            'max_answer_length': 200,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'methodology': {
-            'emoji': '',
-            'description': 'Processes, methods, algorithms',
-            'qa_score_threshold': 0.05,
-            'retrieval_threshold': 0.35,
-            'rerank_threshold': 0.40,
-            'max_answer_length': 250,
-            'min_answer_words': 5,
-            'prefer_entities': False,
-            'section_diversity': True,
-            'priority_sections': ['abstract', 'introduction', 'methodology', 'methods',
-                                 'approach', 'algorithm', 'implementation']
-        },
-        'comparison': {
-            'emoji': '',
-            'description': 'Contrasting different concepts',
-            'qa_score_threshold': 0.08,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_diversity': True
-        },
-        'definition': {
-            'emoji': '',
-            'description': 'What something is',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 100,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'general': {
-            'emoji': '',
-            'description': 'General questions',
-            'qa_score_threshold': 0.10,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        },
-        'custom': {
-            'emoji': '',
-            'description': 'Custom settings (fully configurable)',
-            'qa_score_threshold': 0.0,
-            'retrieval_threshold': 0.45,
-            'rerank_threshold': 0.45,
-            'max_answer_length': 150,
-            'min_answer_words': 3,
-            'prefer_entities': False
-        }
+    # UI-only copy for the type selector. The hyperparameters themselves live in
+    # question_presets, so a preset change is reflected here without editing app.py.
+    QUESTION_TYPE_DESCRIPTIONS = {
+        'factoid': 'Specific facts or entities',
+        'methodology': 'Processes, methods, algorithms',
+        'explanation': 'How/why something works',
+        'comparison': 'Contrasting different concepts',
+        'definition': 'What something is',
+        'general': 'General questions',
+        'custom': 'Custom settings (fully configurable)',
     }
 
     # Initialize session state for presets if not exists
@@ -746,9 +682,9 @@ def show_search_tab():
         # Question type selector
         st.subheader("Question Type")
 
-        question_type_options = list(QUESTION_TYPE_PRESETS.keys())
+        question_type_options = list(PRESETS.keys())
         question_type_labels = [
-            f"{QUESTION_TYPE_PRESETS[qt]['emoji']} {qt.title()} - {QUESTION_TYPE_PRESETS[qt]['description']}"
+            f"{qt.title()} - {QUESTION_TYPE_DESCRIPTIONS[qt]}"
             for qt in question_type_options
         ]
 
@@ -764,7 +700,7 @@ def show_search_tab():
         selected_question_type = question_type_options[question_type_labels.index(selected_label)]
         st.session_state.selected_question_type = selected_question_type
 
-    preset = QUESTION_TYPE_PRESETS[selected_question_type]
+    preset = resolve(selected_question_type)
 
     with col_adjust:
         # Always show configurable parameters (pre-filled with preset values)
@@ -798,7 +734,7 @@ def show_search_tab():
                 help="Stage 3 (QA Model): Confidence threshold."
             )
 
-        col_min_words, col_max_length, col_paraphrases = st.columns(3)
+        col_min_words, col_paraphrases = st.columns(2)
         with col_min_words:
             min_answer_words = st.number_input(
                 "Min Answer Words",
@@ -806,15 +742,6 @@ def show_search_tab():
                 value=preset['min_answer_words'],
                 step=1,
                 help="Minimum words in an answer."
-            )
-
-        with col_max_length:
-            max_answer_length = st.number_input(
-                "Max Answer Length",
-                min_value=10, max_value=500,
-                value=preset['max_answer_length'],
-                step=10,
-                help="Maximum words in an answer."
             )
 
         with col_paraphrases:
@@ -826,18 +753,15 @@ def show_search_tab():
                 help="Number of question paraphrases to generate (0 = disabled, uses only original question)."
             )
 
-    # Build custom config if user modified any values from preset
-    if (qa_score_threshold != preset['qa_score_threshold'] or
-        max_answer_length != preset['max_answer_length'] or
-        min_answer_words != preset['min_answer_words']):
-        custom_config = {
-            'qa_score_threshold': qa_score_threshold,
-            'max_answer_length': max_answer_length,
-            'min_answer_words': min_answer_words,
-            'prefer_entities': False
-        }
-    else:
-        custom_config = None
+    # User overrides applied on top of the question-type preset by the resolver.
+    # The number inputs are pre-filled with preset values, so unchanged fields
+    # resolve back to the preset default.
+    overrides = {
+        'retrieval_threshold': retrieval_threshold,
+        'rerank_threshold': rerank_threshold,
+        'qa_score_threshold': qa_score_threshold,
+        'min_answer_words': min_answer_words,
+    }
 
     # Predefined color presets (defined here for use in search)
     COLOR_PRESETS = {
@@ -1049,16 +973,13 @@ def show_search_tab():
                     if i < len(st.session_state.paraphrase_candidates):
                         selected_paraphrases.append(st.session_state.paraphrase_candidates[i])
 
-            # Pass the selected question type, custom config, color, and paraphrases
+            # Pass the selected question type, overrides, and paraphrases
             st.session_state.search_results = st.session_state.rag.answer_question(
                 question=query,
-                retrieval_threshold=retrieval_threshold,
-                qa_score_threshold=qa_score_threshold,
-                rerank_threshold=rerank_threshold,
+                question_type=selected_question_type,
+                overrides=overrides,
                 progress_callback=qa_callback,
                 rerank_callback=rerank_callback,
-                question_type=selected_question_type,
-                custom_config=custom_config,
                 num_paraphrases=num_paraphrases,
                 question_variations=selected_paraphrases
             )
@@ -1077,10 +998,6 @@ def show_search_tab():
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
             st.session_state.current_index = 0
             st.session_state.current_query = query
-
-            # Store question type for display
-            st.session_state.current_question_type = selected_question_type
-            st.session_state.qa_score_threshold = qa_score_threshold  # Store threshold
         except Exception as e:
             st.error(f"Search failed: {e}")
             st.session_state.search_results = []
@@ -1102,15 +1019,6 @@ def show_search_tab():
             st.session_state.highlight_selected = {
                 i: True for i in range(len(st.session_state.search_results))
             }
-
-        # Get question type info
-        question_type = st.session_state.get('current_question_type', 'general')
-        preset = QUESTION_TYPE_PRESETS.get(question_type, QUESTION_TYPE_PRESETS['general'])
-        question_type_emoji = preset['emoji']
-
-        # Get the configuration for this question type
-        qa_threshold_used = st.session_state.get('qa_score_threshold', 0.0)
-        config = st.session_state.rag.qa_engine.get_config_for_type(question_type, qa_threshold_used)
 
         st.success(f"Found {len(st.session_state.search_results)} answers for: *{st.session_state.current_query}*")
 

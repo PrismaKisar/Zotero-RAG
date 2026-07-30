@@ -173,9 +173,15 @@ def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
         if highlight_color:
             highlight_color = tuple(highlight_color)
         
-        # Get custom_config if provided
+        # Merge per-question thresholds and any custom_config into resolver overrides
+        overrides = {
+            'retrieval_threshold': retrieval_threshold,
+            'rerank_threshold': rerank_threshold,
+        }
         custom_config = question_config.get('custom_config', defaults.get('custom_config'))
-        
+        if custom_config:
+            overrides.update(custom_config)
+
         # Get pre-defined paraphrases if provided
         paraphrases = question_config.get('paraphrases')
         question_variations = None
@@ -186,13 +192,11 @@ def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
         # Answer the question
         answers = rag.answer_question(
             question=question,
-            retrieval_threshold=retrieval_threshold,
-            rerank_threshold=rerank_threshold,
+            question_type=question_type,
+            overrides=overrides,
             num_paraphrases=num_paraphrases,
             highlight_color=highlight_color,
-            question_variations=question_variations,
-            question_type=question_type,
-            custom_config=custom_config
+            question_variations=question_variations
         )
         
         all_results[question] = answers
