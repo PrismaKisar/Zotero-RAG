@@ -27,15 +27,11 @@ dependencies = [
     "ollama (>=0.6.1,<0.7)",
 ]
 
-[tool.poetry]
-package-mode = false
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [

@@ -2,16 +2,16 @@ FROM python:3.11-slim
 
 # ponytail: build deps only for wheels that occasionally need compiling; slim base keeps it small
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    POETRY_VIRTUALENVS_CREATE=false
+    UV_NO_CACHE=1 \
+    UV_PROJECT_ENVIRONMENT=/usr/local
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir poetry
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Deps first for layer caching
-COPY pyproject.toml poetry.lock README.md ./
-RUN poetry install --no-root --no-interaction
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --no-install-project --no-dev
 
 # nltk punkt at build time so no network is needed at runtime
 RUN python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True)"

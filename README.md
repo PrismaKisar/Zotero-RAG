@@ -72,7 +72,7 @@ output/                     # Output directory (indexes, cache, highlighted PDFs
 ```bash
 git clone https://github.com/eliroc98/zoteroRAG.git
 cd zoteroRAG
-poetry install
+uv sync
 ```
 
 ### 2. Start GROBID Service
@@ -113,7 +113,7 @@ docker exec -it ollama ollama list
 ### 5. Run the App
 
 ```bash
-poetry run streamlit run zotero_rag/app.py
+uv run streamlit run zotero_rag/app.py
 ```
 
 Then navigate to `http://localhost:8501`
