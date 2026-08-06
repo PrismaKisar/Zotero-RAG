@@ -1,10 +1,9 @@
 """PDF highlighting utilities using TEI coordinates."""
 
-import os
 import logging
-import tempfile
+import os
 import shutil
-from typing import List
+import tempfile
 
 from models import Answer
 
@@ -25,7 +24,7 @@ class PDFHighlighter:
             self.fitz = None
             self.available = False
     
-    def highlight_pdf(self, answers: List[Answer], output_path: str) -> str:
+    def highlight_pdf(self, answers: list[Answer], output_path: str) -> str:
         """Highlight PDF using TEI sentence coordinates for precise highlighting.
         
         Args:
@@ -116,8 +115,6 @@ class PDFHighlighter:
                                             coord_page = int(parts[0]) - 1
                                             if coord_page == page_num:
                                                 x0, y0 = float(parts[1]), float(parts[2])
-                                                answer_preview = answer.text[:100] + "..." \
-                                                                if len(answer.text) > 100 else answer.text
                                                 annot_text = (
                                                     f"Q: {answer.query}\n\n"
                                                     f"Scores:\n"
@@ -162,7 +159,7 @@ class PDFHighlighter:
                 # Replace the original file with the new one
                 shutil.move(temp_path, output_path)
                 
-            except Exception as e:
+            except Exception:
                 # Clean up temp file if something went wrong
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -171,6 +168,6 @@ class PDFHighlighter:
             logger.info(f"PDF highlighted and saved to {output_path}")
             return output_path
             
-        except Exception as e:
-            logger.error(f"Error highlighting PDF: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Error highlighting PDF")
             return None

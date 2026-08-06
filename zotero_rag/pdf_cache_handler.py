@@ -1,13 +1,11 @@
 """PDF folder source - alternative to Zotero database."""
 
-import os
 import logging
+import os
 import re
-from typing import List, Dict, Union
 
+from models import CachedPDF, PDFIngestItem, UploadSource
 from streamlit.runtime.uploaded_file_manager import UploadedFile
-
-from models import PDFIngestItem, UploadSource, CachedPDF
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +34,7 @@ class PDFCacheHandler:
         return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
     
     @staticmethod
-    def get_items_from_upload(uploaded_files: List[UploadedFile]) -> List[PDFIngestItem]:
+    def get_items_from_upload(uploaded_files: list[UploadedFile]) -> list[PDFIngestItem]:
         """Convert list of UploadedFile to list of PDFIngestItem for ingestion.
         
         Args:
@@ -45,7 +43,7 @@ class PDFCacheHandler:
         Returns:
             List of PDFIngestItem objects ready for ingestion.
         """
-        items: List[PDFIngestItem] = []
+        items: list[PDFIngestItem] = []
         for uploaded_file in uploaded_files:
             if uploaded_file is None:
                 logger.warning("Skipping None uploaded file")
@@ -78,7 +76,7 @@ class PDFCacheHandler:
                 uploaded_pdf.source.write_to(candidate_path)
                 created = True
             except Exception as e:
-                raise IOError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
+                raise OSError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
 
         title = uploaded_pdf.title or "Unknown"
         return CachedPDF(
@@ -117,7 +115,7 @@ class PDFCacheHandler:
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
         
-    def clear_index_cache(self, deleted_pdfs: Dict[str, str]):
+    def clear_index_cache(self, deleted_pdfs: dict[str, str]):
         """Clear cached PDF files for deleted entries.
 
         Args:
@@ -134,9 +132,9 @@ class PDFCacheHandler:
 
             ok = self.remove_pdf(pdf_hash)
             if not ok:
-                raise IOError(f"Failed to clear cached PDF for deleted entry: {title} (hash: {pdf_hash})")
+                raise OSError(f"Failed to clear cached PDF for deleted entry: {title} (hash: {pdf_hash})")
 
-    def get_pdf_path(self, pdf_hash: str) -> Union[str, None]:
+    def get_pdf_path(self, pdf_hash: str) -> str | None:
         """Get the file path of a cached PDF by its hash.
 
         Args:
@@ -156,7 +154,7 @@ class PDFCacheHandler:
         logger.warning(f"PDF file not found for hash '{pdf_hash}': {candidate_path}")
         return None
 
-    def get_cached_items(self) -> List[str]:
+    def get_cached_items(self) -> list[str]:
         """Get PDF items from the folder.
             
         Returns:

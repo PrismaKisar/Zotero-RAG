@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
-from typing import BinaryIO, Optional
+from typing import BinaryIO
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_NAME = "_All_Library"
 
 
-def sanitize_filename(name: Optional[str], max_length: int = 200) -> str:
+def sanitize_filename(name: str | None, max_length: int = 200) -> str:
     """Convert a string into a filesystem-safe filename.
         Replaces spaces and slashes with underscores, removes unsafe characters, and truncates to a maximum length.
 
@@ -63,7 +66,7 @@ def compute_stream_hash(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
         try:
             stream.seek(0)
         except Exception:
-            pass
+            logger.debug("Unable to reset stream position", exc_info=True)
 
     return h.hexdigest()
 

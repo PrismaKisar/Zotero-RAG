@@ -1,12 +1,11 @@
 """Question answering engine using extractive QA models."""
 
 import logging
-from typing import List, Tuple
 import math
-import torch
-from transformers import AutoTokenizer, AutoModelForQuestionAnswering, pipeline
 
-from models import Paragraph, Answer, ExpandedAnswerSpan, RerankedParagraph
+import torch
+from models import Answer, ExpandedAnswerSpan, Paragraph, RerankedParagraph
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ class QAEngine:
     
     def __init__(self, 
                 model_name: str = "deepset/deberta-v3-large-squad2", 
-                device: str = None,
+                device: str | None = None,
                 enable_question_expansion: bool = True,
                 batch_size: int = 128):
         """Initialize the QA engine.
@@ -64,12 +63,12 @@ class QAEngine:
                 try:
                     self.model = torch.compile(self.model)
                 except Exception:
-                    pass
+                    logger.debug("torch.compile failed, using eager model", exc_info=True)
 
             logger.info(f"QA Model loaded on {self.device}")
         except Exception as e:
             logger.error(f"Could not load QA model {self.model_name}: {e}")
-            raise e
+            raise
     
     def _load_pipeline(self):
         """Load the QA pipeline."""
@@ -102,7 +101,7 @@ class QAEngine:
             logger.warning(f"Could not load paraphraser: {e}")
             self.paraphraser = None
     
-    def expand_question(self, question: str, num_variations: int = 2) -> List[str]:
+    def expand_question(self, question: str, num_variations: int = 2) -> list[str]:
         """Generate question variations to improve retrieval coverage.
         
         Args:
@@ -221,7 +220,6 @@ class QAEngine:
         current_pos = 0
         for i, (sent_text, _) in enumerate(paragraph.sentences):
             sent_len = len(sent_text)
-            sent_start = current_pos
             sent_end = current_pos + sent_len
             
             # Check if answer start falls in this sentence
@@ -262,11 +260,11 @@ class QAEngine:
     
     def extract_answers(self,
                     question: str,
-                    candidates: List[RerankedParagraph],
+                    candidates: list[RerankedParagraph],
                     config: dict,
-                    color: Tuple[float, float, float] = (1, 1, 0),
+                    color: tuple[float, float, float] = (1, 1, 0),
                     progress_callback=None,
-                    question_variations: List[str] = None) -> List[Answer]:
+                    question_variations: list[str] | None = None) -> list[Answer]:
         """Extract answers for a given question from candidate paragraphs.
 
         Args:
@@ -517,7 +515,7 @@ class QAEngine:
         logger.info("QA EXTRACTION SUMMARY")
         logger.info(f"Input: {len(candidates)} candidates -> {filter_stats['total_inputs']} sequences (expanded)")
         logger.info(f"Raw Outputs: {filter_stats['successful_raw']} spans found")
-        logger.info(f"Filtering:")
+        logger.info("Filtering:")
         logger.info(f"  - Too Short (<{config['min_answer_words']} words): {filter_stats['too_few_words']}")
         logger.info(f"  - Low Confidence (<{config['qa_score_threshold']:.2f}): {filter_stats['below_threshold']}")
         logger.info(f"  - Duplicates: {filter_stats['duplicates']}")

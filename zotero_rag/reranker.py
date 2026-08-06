@@ -1,12 +1,11 @@
 """Cross-encoder reranking model."""
 
 import logging
-from typing import List, Tuple
+
 import numpy as np
 import torch
-from sentence_transformers import CrossEncoder
-
 from models import Paragraph, RerankedParagraph
+from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +15,8 @@ class Reranker:
     
     def __init__(self, 
                 model_name: str = 'BAAI/bge-reranker-base', 
-                device: str = None,
-                batch_size: int = None):
+                device: str | None = None,
+                batch_size: int | None = None):
         """Initialize the reranker.
         
         Args:
@@ -72,7 +71,7 @@ class Reranker:
         return base_threshold
     
     def _find_safe_batch_size(self, 
-                            pairs: List[List[str]], 
+                            pairs: list[list[str]], 
                             start_size: int = 2, 
                             max_size: int = 128,
                             target_memory_fraction: float = 0.75) -> int:
@@ -115,10 +114,10 @@ class Reranker:
     
     def rerank(self,
             query: str,
-            candidates: List[Tuple[Paragraph, float]],
+            candidates: list[tuple[Paragraph, float]],
             threshold: float = 0.45,
             progress_callback=None,
-            query_variations: List[str] = None) -> List[RerankedParagraph]:
+            query_variations: list[str] | None = None) -> list[RerankedParagraph]:
         """Rerank candidates using cross-encoder scores.
         
         Args:

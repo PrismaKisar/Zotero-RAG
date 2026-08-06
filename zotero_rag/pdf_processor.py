@@ -1,18 +1,18 @@
 """PDF processing using GROBID service."""
 
-import os
 import logging
-import threading
-import tempfile
-import shutil
+import os
 import re
+import shutil
+import tempfile
+import threading
 import xml.etree.ElementTree as ET
-from typing import List, Tuple, Optional, Dict
+from typing import ClassVar
+
 import requests
 from grobid_client.grobid_client import GrobidClient
-
-from pdf_utils import compute_file_hash
 from models import ExtractedParagraph
+from pdf_utils import compute_file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +21,15 @@ class PDFProcessor:
     """Handles PDF parsing and text extraction using GROBID."""
     
     # Reference section patterns to detect bibliography/references
-    REFERENCE_PATTERNS = [
+    REFERENCE_PATTERNS: ClassVar[list[str]] = [
         r'^\s*references\s*$',
         r'^\s*bibliography\s*$',
         r'^\s*works\s+cited\s*$',
         r'^\s*literature\s+cited\s*$',
     ]
-    
+
     # Section types to include in chunking (can be customized)
-    CONTENT_SECTIONS = {
+    CONTENT_SECTIONS: ClassVar[dict[str, bool]] = {
         'body': True,
         'abstract': True,
         'introduction': True,
@@ -48,7 +48,7 @@ class PDFProcessor:
     def __init__(self, 
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180, 
-                output_base_dir: str = None):
+                output_base_dir: str | None = None):
         """Initialize PDF processor.
         
         Args:
@@ -121,7 +121,7 @@ class PDFProcessor:
                 logger.info(f"Removed cached TEI XML file: {cache_path}")
                 removed = True
             except Exception as e:
-                raise IOError(
+                raise OSError(
                     f"Error removing cached TEI XML file '{cache_path}': {e}"
                 ) from e
 
@@ -132,7 +132,7 @@ class PDFProcessor:
 
         return removed
 
-    def clear_index_cache(self, deleted_pdfs: Dict[str, str]):
+    def clear_index_cache(self, deleted_pdfs: dict[str, str]):
         """Clear cached TEI XML files for deleted PDFs.
         
         Args:
@@ -142,14 +142,14 @@ class PDFProcessor:
             logger.warning(f"Cache directory does not exist for clearing: {self.tei_cache_dir}")
             return
         
-        for pdf_hash, _ in deleted_pdfs.items():
+        for pdf_hash in deleted_pdfs:
             if not pdf_hash:
                 logger.warning("Skipping cache clearing for entry with empty hash")
                 continue
             self._remove_cache_item_by_hash(pdf_hash)
 
     
-    def _parse_pdf(self, pdf_path: str, pdf_hash: Optional[str] = None) -> Optional[ET.Element]:
+    def _parse_pdf(self, pdf_path: str, pdf_hash: str | None = None) -> ET.Element | None:
         """Parse a single PDF using GROBID and return TEI XML root.
         
         Args:
@@ -173,7 +173,7 @@ class PDFProcessor:
                     with open(cache_path, "rb") as f:
                         return ET.fromstring(f.read())
                 except Exception:
-                    pass  # fall through to reprocess if cache is unreadable
+                    logger.debug("Cached TEI for %s unreadable, reprocessing", pdf_hash, exc_info=True)
             
             # Only check GROBID availability if we need to parse (cache miss)
             if not self.is_alive():
@@ -224,7 +224,7 @@ class PDFProcessor:
                             with open(cache_path, "wb") as out_f:
                                 out_f.write(content)
                         except Exception:
-                            pass
+                            logger.debug("Unable to write TEI cache %s", cache_path, exc_info=True)
                         return ET.fromstring(content)
                     else:
                         logger.warning(f"GROBID client did not produce TEI for {pdf_path}")
@@ -239,14 +239,14 @@ class PDFProcessor:
             return None
 
     def _collect_paragraphs_from_elements(self,
-                                    p_elements: List[ET.Element],
+                                    p_elements: list[ET.Element],
                                     section_type: str,
-                                    paragraphs: List[ExtractedParagraph],
-                                    full_text_parts: List[str],
+                                    paragraphs: list[ExtractedParagraph],
+                                    full_text_parts: list[str],
                                     para_idx: int,
                                     pending_short_para: str,
-                                    pending_coords: List[Tuple[str, str]],
-                                    ns: Dict[str, str]) -> Tuple[int, str, List[Tuple[str, str]]]:
+                                    pending_coords: list[tuple[str, str]],
+                                    ns: dict[str, str]) -> tuple[int, str, list[tuple[str, str]]]:
         """Process a list of <p> elements to extract paragraphs, handling short paragraphs.
         
         Args:
@@ -293,7 +293,7 @@ class PDFProcessor:
 
         return para_idx, pending_short_para, pending_coords
     
-    def _extract_paragraphs_from_tei(self, tei_root: ET.Element) -> Tuple[List[ExtractedParagraph], str]:
+    def _extract_paragraphs_from_tei(self, tei_root: ET.Element) -> tuple[list[ExtractedParagraph], str]:
         """Extract paragraphs from TEI XML structure.
         
         Args:
@@ -303,7 +303,7 @@ class PDFProcessor:
             - List of ExtractedParagraph objects
             - document_text: Full cleaned text of the PDF for context.
         """
-        paragraphs: List[ExtractedParagraph] = []
+        paragraphs: list[ExtractedParagraph] = []
         full_text_parts = []
         para_idx = 0
         
@@ -363,7 +363,7 @@ class PDFProcessor:
         
         return paragraphs, document_text
 
-    def _extract_title_from_tei(self, tei_root: ET.Element, ns: Dict[str, str]) -> str:
+    def _extract_title_from_tei(self, tei_root: ET.Element, ns: dict[str, str]) -> str:
         """Extract document title from TEI header when available.
         
         Args:
@@ -437,7 +437,7 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_hash: str, pdf_title: Optional[str] = None) -> Tuple[List[ExtractedParagraph], str]:
+    def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> tuple[list[ExtractedParagraph], str]:
         """Extract paragraphs from PDF using GROBID.
         
         Args:

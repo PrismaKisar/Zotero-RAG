@@ -1,13 +1,14 @@
-import os
-import sys
-import yaml
 import json
 import logging
-from typing import Dict, List, Any, Optional
+import os
+import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
+from models import Answer
 
 from zotero_rag import ZoteroRAG
-from models import Answer
 
 # Configure logging
 logging.basicConfig(
@@ -21,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_config(config_path: str) -> Dict[str, Any]:
+def load_config(config_path: str) -> dict[str, Any]:
     """Load and validate YAML configuration file.
     
     Args:
@@ -54,7 +55,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def answer_to_dict(answer: Answer) -> Dict[str, Any]:
+def answer_to_dict(answer: Answer) -> dict[str, Any]:
     """Convert Answer object to dictionary for JSON serialization.
     
     Args:
@@ -80,7 +81,7 @@ def answer_to_dict(answer: Answer) -> Dict[str, Any]:
     }
 
 
-def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
+def run_from_config(config_path: str) -> dict[str, list[Answer]]:
     """Run ZoteroRAG pipeline from a YAML configuration file.
     
     Args:
@@ -235,7 +236,7 @@ def run_from_config(config_path: str) -> Dict[str, List[Answer]]:
             if result_path:
                 logger.info(f"  Saved to: {result_path}")
             else:
-                logger.warning(f"  Failed to create highlighted PDF")
+                logger.warning("  Failed to create highlighted PDF")
     
     # Save results to JSON if requested
     output_file = config.get('output_results_file')
@@ -285,8 +286,8 @@ def main():
         
         print("\n" + "="*80)
         
-    except Exception as e:
-        logger.error(f"Error running from config: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error running from config")
         sys.exit(1)
 
 

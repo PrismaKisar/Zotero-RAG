@@ -5,16 +5,18 @@ Run with: streamlit run app.py
 """
 
 import os
-import sys
-import subprocess
 import sqlite3
-import streamlit as st
+import subprocess
+import sys
 import time
-from zotero_rag import ZoteroRAG
-from zotero_db import ZoteroDatabase
 
+import streamlit as st
 from pdf_utils import sanitize_filename
 from question_presets import PRESETS, resolve
+from zotero_db import ZoteroDatabase
+
+from zotero_rag import ZoteroRAG
+
 
 def rgb_to_hex(rgb):
     """Convert RGB tuple (0-1) to hex color"""
@@ -821,8 +823,8 @@ def show_search_tab():
                     st.error("Paraphraser not available. Question expansion is disabled.")
 
         with col_more:
-            if st.session_state.paraphrase_candidates and st.button("Generate More", width="stretch"):
-                if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
+            if (st.session_state.paraphrase_candidates and st.button("Generate More", width="stretch")
+                    and st.session_state.rag and st.session_state.rag.qa_engine.paraphraser):
                     with st.spinner("Generating more paraphrases..."):
                         # Generate additional paraphrases
                         more_variations = st.session_state.rag.qa_engine.expand_question(
@@ -1052,11 +1054,11 @@ def show_search_tab():
                 pdf_path = answer.pdf_path
                 try:
                     if sys.platform == 'darwin':  # macOS
-                        subprocess.run(['open', pdf_path])
+                        subprocess.run(['open', pdf_path], check=False)
                     elif sys.platform == 'win32':  # Windows
                         os.startfile(pdf_path)
                     else:  # Linux
-                        subprocess.run(['xdg-open', pdf_path])
+                        subprocess.run(['xdg-open', pdf_path], check=False)
                     st.success(f"Opened PDF at page {answer.page_num + 1}")
                 except Exception as e:
                     st.error(f"Could not open PDF: {e}")

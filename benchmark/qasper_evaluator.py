@@ -2,11 +2,11 @@
 Official script for evaluating models built for the Qasper dataset. The script
 outputs Answer F1 and Evidence F1 reported in the paper.
 """
-from collections import Counter
 import argparse
-import string
-import re
 import json
+import re
+import string
+from collections import Counter
 
 
 def normalize_answer(s):
@@ -114,14 +114,14 @@ def evaluate(gold, predicted):
         answer_f1s_and_types = [
             (token_f1_score(predicted[question_id]["answer"], reference["answer"]),
              reference["type"])
-            for reference in gold[question_id]
+            for reference in references
         ]
-        max_answer_f1, answer_type = sorted(answer_f1s_and_types, key=lambda x: x[0], reverse=True)[0]
+        max_answer_f1, answer_type = max(answer_f1s_and_types, key=lambda x: x[0])
         max_answer_f1s.append(max_answer_f1)
         max_answer_f1s_by_type[answer_type].append(max_answer_f1)
         evidence_f1s = [
             paragraph_f1_score(predicted[question_id]["evidence"], reference["evidence"])
-            for reference in gold[question_id]
+            for reference in references
         ]
         max_evidence_f1s.append(max(evidence_f1s))
 
@@ -154,10 +154,13 @@ if __name__ == "__main__":
         help="If set, the evaluator will ignore evidence in figures and tables while reporting evidence f1"
     )
     args = parser.parse_args()
-    gold_data = json.load(open(args.gold))
+    with open(args.gold) as f:
+        gold_data = json.load(f)
     gold_answers_and_evidence = get_answers_and_evidence(gold_data, args.text_evidence_only)
     predicted_answers_and_evidence = {}
-    for line in open(args.predictions):
+    with open(args.predictions) as f:
+        predictions_lines = f.readlines()
+    for line in predictions_lines:
         prediction_data = json.loads(line)
         predicted_answers_and_evidence[prediction_data["question_id"]] = {
             "answer": prediction_data["predicted_answer"],

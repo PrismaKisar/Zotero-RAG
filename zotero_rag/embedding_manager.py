@@ -1,12 +1,11 @@
 """Embedding manager for dense and sparse vector generation."""
 
 import logging
-from typing import Dict, List
 
 import numpy as np
-from fastembed import SparseTextEmbedding, TextEmbedding
 import ollama
 import torch
+from fastembed import SparseTextEmbedding, TextEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +16,7 @@ class EmbeddingManager:
     def __init__(self,
                 dense_model_name: str = "BAAI/bge-base-en-v1.5",
                 ollama_url: str = "http://localhost:11434",
-                device: str = None,
+                device: str | None = None,
                 encode_batch_size: int = 8,
                 use_chunk_contextualization: bool = False):
         """Initialize embedding models and runtime options.
@@ -69,10 +68,10 @@ class EmbeddingManager:
         if sample_vector is None:
             raise ValueError(f"Unable to determine vector size for model '{self.dense_model_name}'")
 
-        return int(len(sample_vector))
+        return len(sample_vector)
 
     def _find_safe_batch_size(self, 
-                            sample_texts: List[str],
+                            sample_texts: list[str],
                             start_size: int = 2,
                             max_size: int = 128,
                             target_memory_fraction: float = 0.75) -> int:
@@ -143,7 +142,7 @@ class EmbeddingManager:
 
     def generate_contextual_chunks(self, 
                                 document_text:str, 
-                                all_texts:List[str]) -> List[str]:
+                                all_texts:list[str]) -> list[str]:
         """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
         
         Args:
@@ -218,7 +217,7 @@ class EmbeddingManager:
         except Exception as e:
             logger.warning("Failed to flush Ollama cache: %s", str(e))
 
-    def encode_paragraphs(self, progress_callback, all_texts: List[str]) -> Dict[str, List[float]]:
+    def encode_paragraphs(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:
         """Encode paragraphs into dense+sparse vectors with progress updates.
         
         Args:
@@ -314,7 +313,7 @@ class EmbeddingManager:
             "sparse": sparse_embeddings_list,
         }
 
-    def encode_query(self, query: str) -> Dict[str, List[float]]:
+    def encode_query(self, query: str) -> dict[str, list[float]]:
         """Encode a single query into dense+sparse vectors.
         
         Args:

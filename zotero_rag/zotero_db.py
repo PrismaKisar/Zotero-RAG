@@ -1,11 +1,10 @@
 """Zotero database interaction utilities."""
 
+import logging
 import os
 import sqlite3
-import logging
-from typing import List, Dict
 
-from models import PDFIngestItem, PathSource
+from models import PathSource, PDFIngestItem
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ class ZoteroDatabase:
     """Handles interaction with the Zotero SQLite database."""
     
     @staticmethod
-    def find_zotero_dir(custom_dir: str = None) -> str:
+    def find_zotero_dir(custom_dir: str | None = None) -> str:
         """Find Zotero data directory."""
         if custom_dir and os.path.exists(custom_dir):
             return custom_dir
@@ -27,7 +26,7 @@ class ZoteroDatabase:
                 return path
         raise ValueError("Zotero directory not found. Please specify zotero_data_dir")
     
-    def __init__(self, zotero_data_dir: str = None):
+    def __init__(self, zotero_data_dir: str | None = None):
         """Initialize Zotero database connection.
         
         Args:
@@ -40,7 +39,7 @@ class ZoteroDatabase:
         if not os.path.exists(self.db_path):
             raise FileNotFoundError(f"Zotero database not found at {self.db_path}")
         
-    def list_collections(self) -> List[Dict]:
+    def list_collections(self) -> list[dict]:
         """Load collections from the Zotero database.
         
         Returns:
@@ -60,7 +59,7 @@ class ZoteroDatabase:
         conn.close()
         return collections
     
-    def get_items(self, collection_name: str = None) -> List[PDFIngestItem]:
+    def get_items(self, collection_name: str | None = None) -> list[PDFIngestItem]:
         """Get PDF items from Zotero library or a specific collection.
         
         Args:
@@ -72,7 +71,7 @@ class ZoteroDatabase:
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.execute("PRAGMA query_only = ON")
         cursor = conn.cursor()
-        items: List[PDFIngestItem] = []
+        items: list[PDFIngestItem] = []
         
         if collection_name:
             # Get items from specific collection

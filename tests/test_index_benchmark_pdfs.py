@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from benchmark.index_benchmark_pdfs import build_ingest_items
 

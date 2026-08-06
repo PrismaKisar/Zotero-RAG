@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from pdf_processor import PDFProcessor  # noqa: E402
+from pdf_processor import PDFProcessor
 
 
 def extract(pdf_dir: Path, out_dir: Path, work_dir: Path, grobid_url: str, timeout: int):

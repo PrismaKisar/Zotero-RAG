@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import PathSource, PDFIngestItem  # noqa: E402
+from models import PathSource, PDFIngestItem
 
 
 def build_ingest_items(pdf_dir: Path) -> list[PDFIngestItem]:
@@ -31,7 +31,9 @@ def build_ingest_items(pdf_dir: Path) -> list[PDFIngestItem]:
 
 def index_pdfs(pdf_dir: Path, work_dir: Path, grobid_url: str, qdrant_url: str) -> dict[str, str]:
     """Ingest and index every PDF in ``pdf_dir``, return {paper_id: pdf_hash}."""
-    from zotero_rag import ZoteroRAG  # heavy import (torch/transformers), kept out of the pure path
+    from zotero_rag import (
+        ZoteroRAG,  # heavy import (torch/transformers), kept out of the pure path
+    )
 
     rag = ZoteroRAG(grobid_url=grobid_url, qdrant_url=qdrant_url, output_base_dir=str(work_dir))
     items = build_ingest_items(pdf_dir)

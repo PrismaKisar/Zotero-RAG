@@ -3,8 +3,14 @@ import os
 
 import pytest
 
-from benchmark.align_evidence import (MIN_TOKENS, align_paragraph, align_records,
-                                      manual_check_report, overlap, tokenize)
+from benchmark.align_evidence import (
+    MIN_TOKENS,
+    align_paragraph,
+    align_records,
+    manual_check_report,
+    overlap,
+    tokenize,
+)
 
 PARAGRAPH = ("The retriever encodes every paragraph of the paper with a dense model "
              "and stores the resulting vectors in the index, where they are searched "
@@ -112,7 +118,8 @@ def test_threshold_does_not_reject_evidence_it_should_accept():
     to recover almost all of them: anything lost here is a false negative of the
     criterion rather than a difference between LaTeX and PDF segmentation.
     """
-    qasper = json.loads(open(os.environ["QASPER_DEV"]).read())
+    with open(os.environ["QASPER_DEV"]) as f:
+        qasper = json.load(f)
     chunks = {pid: [p for section in paper["full_text"] for p in section["paragraphs"] if p.strip()]
               for pid, paper in qasper.items()}
     records = [{"paper_id": pid, "question_id": qa["question_id"], "question": qa["question"],

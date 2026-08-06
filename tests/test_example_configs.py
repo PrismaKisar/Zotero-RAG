@@ -7,10 +7,10 @@ must be a live preset field, and every question type must exist in the shared
 presets.
 """
 
-import yaml
 from pathlib import Path
 
 import pytest
+import yaml
 
 from zotero_rag.question_presets import PRESETS
 

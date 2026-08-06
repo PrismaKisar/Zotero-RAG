@@ -31,7 +31,7 @@ def test_question_id_is_namespaced_by_paper():
 
 def test_multi_evidence_is_deduplicated_and_labelled():
     records, stats = build(QASA, papers=None, seed=0)
-    multi = [r for r in records if r["question_id"] == "paper_1#3"][0]
+    multi = next(r for r in records if r["question_id"] == "paper_1#3")
     assert multi["multi_evidence"] is True
     assert multi["evidence"] == ["ctx a", "ctx b"]
     assert stats["golden_multi_evidence"] == 1
