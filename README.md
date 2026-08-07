@@ -1,6 +1,6 @@
 # Zotero RAG Navigator
 
-A question-answering system for your uploaded PDFs or Zotero library featuring a multi-stage RAG pipeline with GROBID parsing, Qdrant hybrid search, contextualization, reranking, and extractive QA. Generate precise answers from your research papers with automatic highlighting.
+A question-answering system for your uploaded PDFs or Zotero library featuring a multi-stage RAG pipeline with GROBID parsing, Qdrant hybrid search, reranking, and extractive QA. Generate precise answers from your research papers with automatic highlighting.
 
 ## Features
 
@@ -9,7 +9,6 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - **Flexible PDF sources**: PDF upload or Zotero library selection
 - GROBID sentence-level parsing with coordinates for precise PDF highlighting
 - Dense + Sparse retrieval with Qdrant hybrid search
-- Chunk contextualization via Ollama before embedding (optional)
 - Fixed pipeline settings, measured on benchmarks rather than tuned per question
 - Sliding window QA for answers spanning chunk boundaries
 - Multi-color highlighting for multiple queries
@@ -20,8 +19,8 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - Python 3.11+
 - Zotero (with local PDF storage) **OR** PDF files on your device
 - GROBID server (Docker)
-- Qdrant server (Docker)
-- Ollama server (Docker), only for the optional chunk contextualization
+- Qdrant server (Docker), only for the benchmarks: the app embeds its index
+- Ollama server (Docker), only for the benchmarks' generative reader
 - PyTorch with MPS/CUDA support (optional, CPU works too)
 
 ## Project Structure
@@ -29,7 +28,6 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 ```
 .
 ├── zotero_rag/                 # Main package
-│   ├── contextualizer.py       # Ollama context line per chunk, before embedding
 │   ├── embedding_manager.py    # Dense and sparse embeddings
 │   ├── generative_reader.py    # Benchmark reader: answer + cited passages (Ollama)
 │   ├── highlighter.py          # PDF annotation using coordinates
@@ -59,17 +57,13 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 ├── README.md                # This file
 └── LICENSE                  # GPL v3.0 license
 
-output/                     # App run artefacts (benchmarks: data/ and runs/, see benchmark/README.md)
-├── highlighted_results
-│   └──{title}.pdf          #Highlighted PDFs
-|
-├── pdf_cache
-│   └──{hash}.pdf           #Indexed PDFs cache
-|
-└── tei_cache/
-    └── {hash}.tei.xml      #GROBID output cache
-
-logs/                       # app.log, zotero_rag.log, run_from_config.log
+<data folder>/              # the user's data folder, see Configuration (benchmarks: data/ and runs/)
+├── highlighted_results/    # highlighted PDFs
+├── pdf_cache/              # {hash}.pdf, the indexed PDFs
+├── tei_cache/              # {hash}.tei.xml, GROBID's output
+├── qdrant/                 # the index (embedded Qdrant)
+├── logs/                   # app.log, rotated at 10 MB, one previous generation kept
+└── zotero_rag.db           # chats and the answers they highlight from (SQLite)
 ```
 
 ## Installation
@@ -93,31 +87,7 @@ Verify it's running:
 curl http://localhost:8070/api/isalive
 ```
 
-### 3. Start Qdrant Service
-
-```bash
-docker run -d -p 6333:6333 qdrant/qdrant
-```
-
-Verify it's running:
-```bash
-curl http://localhost:6333/
-```
-
-### 4. Start Ollama Service (Optional)
-
-```bash
-docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
-
-docker exec -it ollama ollama pull llama3.2:3b
-```
-
-Verify it's running and contains the model:
-```bash
-docker exec -it ollama ollama list
-```
-
-### 5. Run the App
+### 3. Run the App
 
 ```bash
 uv run uvicorn server:app --app-dir zotero_rag --port 8501
@@ -127,14 +97,21 @@ Then navigate to `http://localhost:8501`
 
 ## Usage
 
-### Settings
+### Configuration
 
-Settings, at the bottom of the sidebar, opens the services: GROBID, Qdrant and Ollama URLs, the output
-directory (PDF cache, TEI cache, highlighted PDFs), the device (auto picks CUDA,
-then MPS, then CPU) and the optional chunk contextualization (off by default:
-unmeasured, and indexing fails if Ollama does not answer). The models are fixed
-(`google/embeddinggemma-300m` for embeddings): the settings are calibrated on them.
-The defaults come from `GROBID_URL`, `QDRANT_URL`, `OLLAMA_URL` and `OUTPUT_DIR`.
+The page has no settings: the pipeline's values are fixed, measured on the
+benchmarks (`zotero_rag/settings.py`), and so are the models they are calibrated
+on. GROBID is found at `GROBID_URL`. The index is embedded Qdrant storage in
+the data folder, so there is no Qdrant to run; `QDRANT_URL` points the app at a
+Qdrant server instead, as the benchmarks do. The device is picked
+automatically (CUDA, then MPS, then CPU).
+
+The app keeps its data in the user's data folder: `~/Library/Application
+Support/Zotero RAG` on macOS, `~/.local/share/Zotero RAG` on Linux,
+`%LOCALAPPDATA%\Zotero RAG` on Windows. That holds the PDF and TEI caches, the
+highlighted PDFs, the index (`qdrant/`) and `zotero_rag.db`, a SQLite file with
+the chats. `OUTPUT_DIR`
+moves it elsewhere (the Docker image sets it to a mounted volume).
 
 ### Library
 
@@ -151,7 +128,8 @@ The defaults come from `GROBID_URL`, `QDRANT_URL`, `OLLAMA_URL` and `OUTPUT_DIR`
 3. Select answers, pick a colour and click "Highlight in PDF": the annotated PDFs
    appear in the chat for download. Highlights accumulate in the same file across
    questions, so different colours can mark different aspects of a paper
-4. Chats are kept in the browser and listed in the sidebar
+4. Chats are listed in the sidebar and saved in `zotero_rag.db`, with the answers
+   they highlight from, so they survive a restart
 
 ## Architecture
 
@@ -165,8 +143,6 @@ GROBID Processing (sentence segmentation + coordinates)
 TEI Cache (mtime-keyed, persistent)
     ↓
 Paragraph Extraction (section classification)
-    ↓
-Chunk Contextualization (Ollama, optional)
     ↓
 Dense + Sparse Encoding (auto batch-size)
     ↓

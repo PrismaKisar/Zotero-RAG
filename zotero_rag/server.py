@@ -8,20 +8,27 @@ index) stream newline-delimited JSON: progress events, then one ``done`` or
 Run with: uv run uvicorn server:app --app-dir zotero_rag
 """
 
+import functools
 import io
 import json
+import logging
 import os
 import queue
 import threading
 import uuid
 from collections import defaultdict
-from dataclasses import replace
+from contextlib import asynccontextmanager
+from dataclasses import asdict, replace
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import platformdirs
+from chat_store import ChatStore
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from highlighter import highlight_pdf
+from models import Answer, Reference, from_stored
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
 from pydantic import BaseModel, Field
@@ -32,13 +39,25 @@ ZOTERO_DIR = os.environ.get("ZOTERO_DATA_DIR")  # None: look in the usual places
 WEB = Path(__file__).resolve().parent / "web"
 
 
+def data_dir() -> str:
+    """OUTPUT_DIR if set, else this user's data folder on macOS, Linux or Windows.
+
+    Chats, the PDF and TEI caches and the highlighted PDFs live there, outside
+    any checkout, as an installed app keeps them.
+    """
+    return os.environ.get("OUTPUT_DIR") or platformdirs.user_data_dir("Zotero RAG", appauthor=False)
+
+
 class Config(BaseModel):
+    """Where the services are, from the environment: the page has no settings."""
     grobid_url: str = os.environ.get("GROBID_URL", "http://localhost:8070")
-    qdrant_url: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
-    ollama_url: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-    output_base_dir: str = os.environ.get("OUTPUT_DIR", "./output")
-    model_device: str | None = Field(None, pattern="^(cpu|cuda|mps)$")
-    use_chunk_contextualization: bool = False
+    qdrant_url: str | None = os.environ.get("QDRANT_URL")  # None: embedded, in the data folder
+    output_base_dir: str = data_dir()
+
+
+class Chat(BaseModel):
+    title: str
+    items: list[dict]  # the page's own records: under test is that they come back as sent
 
 
 class Question(BaseModel):
@@ -61,10 +80,7 @@ class Highlight(BaseModel):
 
 # ponytail: one user, one pipeline, one lock; the pipeline is not thread-safe.
 LOCK = threading.Lock()
-# ponytail: every run kept in memory, so old chat messages can still open and
-# highlight; a restart forgets them (the page says "ask again"). Cap it if a
-# session ever grows large.
-state = {"config": Config(), "rag": None, "runs": {}}
+state = {"config": Config(), "rag": None}
 
 
 def rag() -> ZoteroRAG:
@@ -72,6 +88,24 @@ def rag() -> ZoteroRAG:
     if state["rag"] is None:
         state["rag"] = ZoteroRAG(**state["config"].model_dump())
     return state["rag"]
+
+
+def store() -> ChatStore:
+    return _store(Path(state["config"].output_base_dir) / "zotero_rag.db")
+
+
+@functools.cache
+def _store(path: Path) -> ChatStore:
+    """One store per database file, its schema checked once."""
+    return ChatStore(path)
+
+
+def save_run(run: str, answers: list[Answer]) -> None:
+    store().save_run(run, [asdict(a) for a in answers])
+
+
+def load_run(run: str) -> list[Answer]:
+    return [from_stored(Answer, {**a, "color": tuple(a["color"])}) for a in store().run(run) or []]
 
 
 def highlighted_dir() -> Path:
@@ -90,11 +124,14 @@ def collection_labels(collections: list[dict]) -> dict[str, str | None]:
     return {WHOLE_LIBRARY: None, **dict(sorted(labels.items()))}
 
 
-def answer_json(index: int, answer) -> dict:
+def answer_json(index: int, answer, reference: Reference) -> dict:
+    page = answer.page_number + 1
     return {
         "id": index, "text": answer.text, "context": answer.context,
         "start": answer.start_char, "end": answer.end_char,
-        "title": answer.title, "page": answer.page_number + 1,
+        "title": answer.title, "page": page,
+        "cite": reference.cite(),
+        "zotero": reference.zotero_link(page),
         "section": answer.section or "body", "has_pdf": bool(answer.pdf_path),
         "scores": {"retrieval": answer.retrieval_score,
                    "rerank": answer.rerank_score, "qa": answer.score},
@@ -163,25 +200,46 @@ def index(ingest):
     return stream(work)
 
 
-app = FastAPI(title="Zotero RAG", docs_url="/api/docs", openapi_url="/api/openapi.json")
+LOG_HANDLERS = ("zotero-rag-file", "zotero-rag-console")
+
+
+def configure_logging(folder: Path) -> None:
+    """The app's log in its data folder (up to 10 MB, then one previous
+    generation) and in the terminal. Replaces its own handlers, so a second
+    start in one process does not write every line twice."""
+    folder.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    for old in [h for h in root.handlers if h.get_name() in LOG_HANDLERS]:
+        root.removeHandler(old)
+        old.close()
+    file = RotatingFileHandler(folder / "app.log", maxBytes=10_000_000, backupCount=1,
+                               encoding="utf-8")
+    console = logging.StreamHandler()
+    for name, handler in zip(LOG_HANDLERS, (file, console), strict=True):
+        handler.set_name(name)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # At startup, not at import: importing the module (the tests do) writes no log.
+    configure_logging(Path(state["config"].output_base_dir) / "logs")
+    yield
+    if state["rag"] is not None:  # releases the embedded index's lock
+        state["rag"].qdrant_manager.close()
+
+
+app = FastAPI(title="Zotero RAG", docs_url="/api/docs", openapi_url="/api/openapi.json",
+              lifespan=lifespan)
 
 
 @app.exception_handler(Exception)
 async def unavailable(request, error):
-    """Services down or the pipeline failing: a message the page can show."""
+    """Services down or the pipeline failing: a message the page can show, the traceback in the log."""
+    logging.getLogger(__name__).error("%s %s failed", request.method, request.url.path, exc_info=error)
     return JSONResponse({"detail": str(error)}, status_code=503)
-
-
-@app.get("/api/config")
-def get_config() -> Config:
-    return state["config"]
-
-
-@app.put("/api/config")
-def put_config(config: Config) -> Config:
-    with LOCK:
-        state.update(config=config, rag=None, runs={})
-    return config
 
 
 @app.get("/api/library")
@@ -239,16 +297,18 @@ def ask(body: Question):
             rerank_callback=lambda *a: progress("rerank", *a),
             progress_callback=lambda *a: progress("read", *a))
         run = uuid.uuid4().hex
-        state["runs"][run] = answers
-        return {"run": run, "answers": [answer_json(i, a) for i, a in enumerate(answers)]}
+        save_run(run, answers)
+        references = {h: rag().reference(h) for h in {a.pdf_hash for a in answers}}
+        return {"run": run, "answers": [answer_json(i, a, references[a.pdf_hash])
+                                        for i, a in enumerate(answers)]}
     return stream(work)
 
 
 def run_answers(run: str, indices: list[int]) -> list:
     """The answers of ``run`` at ``indices``; 404 if the server no longer has them."""
-    answers = state["runs"].get(run, [])
+    answers = load_run(run)
     if not all(0 <= i < len(answers) for i in indices):
-        raise HTTPException(404, "This answer is from an earlier session: ask again.")
+        raise HTTPException(404, "This answer is no longer available: ask again.")
     return [answers[i] for i in indices]
 
 
@@ -287,6 +347,21 @@ def highlighted(name: str):
     if name != Path(name).name or not path.is_file():
         raise HTTPException(404, "No such file")
     return FileResponse(path, media_type="application/pdf", filename=name)
+
+
+@app.get("/api/chats")
+def chats() -> list[dict]:
+    return store().chats()
+
+
+@app.put("/api/chats/{chat_id}")
+def save_chat(chat_id: str, chat: Chat):
+    store().save_chat(chat_id, chat.title, chat.items)
+
+
+@app.delete("/api/chats/{chat_id}")
+def delete_chat(chat_id: str):
+    store().delete_chat(chat_id)
 
 
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

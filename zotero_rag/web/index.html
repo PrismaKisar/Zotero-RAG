@@ -85,7 +85,6 @@ button { cursor: pointer; }
 .history li:hover .remove, .history li.active .remove { display: grid; }
 .history .remove:hover { color: var(--text); background: var(--line); }
 .history .remove svg { width: 15px; height: 15px; }
-.side-foot { border-top: 1px solid var(--line); padding-top: 6px; }
 
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .topbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; height: 52px; flex: none; }
@@ -122,7 +121,6 @@ button { cursor: pointer; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); font-size: 13px; max-width: 280px; }
 .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip svg { color: var(--danger); }
-.msg.bot .logo { margin-top: 2px; }
 .msg.bot .body { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .lead { margin: 2px 0 0; }
 .status { display: grid; gap: 8px; padding-top: 4px; }
@@ -138,6 +136,8 @@ button { cursor: pointer; }
 .notes li { display: flex; gap: 10px; }
 .notes li::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; margin-top: 8px; background: var(--muted); }
 .notes .success::before { background: var(--success); } .notes .warning::before { background: var(--warning); } .notes .error::before { background: var(--danger); }
+.ready { margin: 0; justify-self: start; padding: 8px 14px; border-radius: 999px; font-size: 14px; font-weight: 550; background: var(--accent-soft); color: var(--text); }
+.ready::before { content: "✓"; margin-right: 8px; color: var(--success); }
 
 /* Answers */
 .answers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; counter-reset: answer; }
@@ -153,6 +153,7 @@ button { cursor: pointer; }
 .source b { color: var(--text); font-weight: 500; }
 a.source:hover span { text-decoration: underline; text-underline-offset: 3px; }
 .source svg { width: 13px; height: 13px; }
+.zotero { margin-left: 10px; font-size: 13px; color: var(--accent); text-underline-offset: 3px; }
 details { margin-top: 6px; }
 summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 2px; user-select: none; }
 summary::-webkit-details-marker { display: none; }
@@ -204,12 +205,10 @@ dialog[open] { animation: rise .2s ease both; }
 .modal form { display: grid; gap: 14px; padding: 22px; }
 .modal h3, .sheet h3 { margin: 0; font-size: 17px; font-weight: 600; }
 .hint { font-size: 13px; color: var(--muted); margin: 2px 0 0; }
-.field { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }
-.field input, select, input[type=search] {
+select, input[type=search] {
   height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); font-size: 14px; font-weight: 400; min-width: 0;
 }
-.field input:focus, select:focus, input[type=search]:focus { outline: none; border-color: var(--faint); }
-.toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
+select:focus, input[type=search]:focus { outline: none; border-color: var(--faint); }
 footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .sheet {
   margin: 0 0 0 auto; height: 100%; max-height: 100%; width: min(460px, 100vw); border-width: 0 0 0 1px;
@@ -258,7 +257,6 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   .welcome h1 { font-size: 26px; }
   .bubble, .chips { max-width: 90%; }
   .msg { gap: 10px; }
-  .msg.bot > .logo { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 </style>
@@ -268,7 +266,6 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
   <symbol id="i-books" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h14v15H6.5A2.5 2.5 0 0 0 4 20.5 2.5 2.5 0 0 0 6.5 23H20M8 7h8"/></symbol>
-  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
   <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
   <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21 11-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></symbol>
@@ -289,9 +286,6 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
     <button class="nav-item" data-library><svg><use href="#i-books"/></svg>Library<span class="count" id="count"></span></button>
     <div class="history-label" id="history-label">Chats</div>
     <ul class="history" id="history"></ul>
-    <div class="side-foot">
-      <button class="nav-item" data-settings><svg><use href="#i-gear"/></svg>Settings</button>
-    </div>
   </aside>
   <div class="scrim" data-toggle-sidebar></div>
 
@@ -340,21 +334,6 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   </footer>
 </dialog>
 
-<dialog class="modal" id="settings">
-  <form method="dialog" id="settings-form">
-    <div><h3>Settings</h3><p class="hint">Where the pipeline finds its services and keeps its files.</p></div>
-    <label class="field">GROBID<input name="grobid_url" required></label>
-    <label class="field">Qdrant<input name="qdrant_url" required></label>
-    <label class="field">Output directory<input name="output_base_dir" required></label>
-    <label class="field">Device
-      <select name="model_device"><option value="">Auto</option><option>cpu</option><option>cuda</option><option>mps</option></select>
-    </label>
-    <label class="toggle"><span>Contextualize chunks with Ollama<br><span class="hint">Unmeasured and slow; indexing fails if Ollama does not answer.</span></span><input type="checkbox" name="use_chunk_contextualization" class="check"></label>
-    <label class="field">Ollama<input name="ollama_url" required></label>
-    <footer class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="save">Save</button></footer>
-  </form>
-</dialog>
-
 <dialog class="modal" id="confirm">
   <form method="dialog">
     <div><h3></h3><p class="hint"></p></div>
@@ -369,7 +348,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   <article class="answer">
     <input type="checkbox" class="check" aria-label="Select for highlighting">
     <p class="text"></p>
-    <a class="source" target="_blank" rel="noopener"><span></span><svg><use href="#i-open"/></svg></a>
+    <a class="source" target="_blank" rel="noopener"><span></span><svg><use href="#i-open"/></svg></a><a class="zotero" hidden>Open in Zotero</a>
     <details><summary><svg><use href="#i-chevron"/></svg>Passage</summary><blockquote></blockquote><div class="scores"></div></details>
   </article>
 </template>
@@ -400,13 +379,12 @@ const icon = (name) => {
 };
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const STAGES = { rerank: "Ranking passages", read: "Reading", pdf: "Parsing PDFs",
-                 contextualization: "Contextualizing", encoding: "Embedding", upserting: "Saving" };
+                 encoding: "Embedding", upserting: "Saving" };
 
-// ---- State: chats live in this browser, the library on the server ------
-const STORE = "zotero-rag.chats";
+// ---- State: chats and the library both live on the server ----------
 let chats = [], current = null, titles = null, busy = false;  // titles: null until the library answers
-try { chats = JSON.parse(localStorage.getItem(STORE)) || []; } catch { chats = []; }
-const save = () => { try { localStorage.setItem(STORE, JSON.stringify(chats.slice(0, 100))); } catch {} };
+const save = (chat) => api(`/api/chats/${chat.id}`, { method: "PUT", json: { title: chat.title, items: chat.items } })
+  .catch((error) => toast(`Could not save the chat: ${error.message}`, "error"));
 
 // ---- HTTP -------------------------------------------------------------
 async function failure(response) {
@@ -486,7 +464,7 @@ function userMessage(content) {
 
 function botMessage() {
   const body = el("div", { className: "body" });
-  return { node: el("div", { className: "msg bot" }, el("img", { className: "logo", src: "brand/logo.svg", alt: "" }), body), body };
+  return { node: el("div", { className: "msg bot" }, body), body };
 }
 
 function status(body, text) {
@@ -519,7 +497,9 @@ function answerCard(item, answer, onPick) {
   const card = $("#t-answer").content.firstElementChild.cloneNode(true);
   $(".text", card).textContent = answer.text;
   const source = $(".source", card);
-  $("span", source).append(el("b", { textContent: answer.title }), ` · p. ${answer.page} · ${answer.section}`);
+  $("span", source).append(el("b", { textContent: answer.title }),
+    `${answer.cite ? ` · ${answer.cite}` : ""} · p. ${answer.page} · ${answer.section}`);
+  if (answer.zotero) Object.assign($(".zotero", card), { href: answer.zotero, hidden: false });
   if (answer.has_pdf) source.href = `/api/answers/${item.run}/${answer.id}/pdf#page=${answer.page}`;
   else { source.removeAttribute("href"); $("svg", source).remove(); }
   const { context, start, end } = answer;
@@ -576,7 +556,7 @@ function answersView(item, body) {
       if (result.failed.length) toast(`Could not highlight: ${result.failed.join(", ")}`, "error");
       item.files = [...new Set([...(item.files || []), ...result.files])];
       files.replaceChildren(highlightedFiles(item.files));
-      save();
+      save(current);
     } catch (error) {
       toast(`Highlighting failed: ${error.message}`, "error");
     } finally {
@@ -615,7 +595,7 @@ function record(item, title) {
     chats.unshift(current);
   }
   current.items.push(item);
-  save();
+  save(current);
   $("#chat-title").textContent = current.title;
   renderHistory();
 }
@@ -624,9 +604,13 @@ function renderHistory() {
   $("#history-label").hidden = !chats.length;
   $("#history").replaceChildren(...chats.map((chat) => {
     const open = el("button", { className: "nav-item open", onclick: () => openChat(chat) }, el("span", { textContent: chat.title }));
-    const remove = el("button", { className: "remove", ariaLabel: "Delete chat", title: "Delete chat", onclick: () => {
+    const remove = el("button", { className: "remove", ariaLabel: "Delete chat", title: "Delete chat", onclick: async () => {
+      try {
+        await api(`/api/chats/${chat.id}`, { method: "DELETE" });
+      } catch (error) {
+        return toast(`Could not delete the chat: ${error.message}`, "error");
+      }
       chats = chats.filter((c) => c !== chat);
-      save();
       if (chat === current) newChat(); else renderHistory();
     } }, icon("x"));
     return el("li", { className: chat === current ? "active" : "" }, open, remove);
@@ -711,6 +695,10 @@ function index(sources, url, payload) {
     record({ kind: "index", sources, report }, `Added ${sources.length === 1 ? sources[0] : plural(sources.length, "PDF")}`);
     body.append(notes(report));
     await loadLibrary();
+    if (titles.length && !report.some((r) => r.level === "error")) {
+      body.append(el("p", { className: "ready", textContent: `Ready: ask anything about your ${plural(titles.length, "PDF")}.` }));
+      question.focus();
+    }
   });
 }
 
@@ -763,7 +751,7 @@ function showBanner(error) {
   if (!error) return;
   thread.before(el("div", { className: "thread", id: "banner" }, el("div", { className: "banner" },
     el("span", { textContent: `Cannot reach the services: ${error.message}` }),
-    el("button", { className: "btn small", textContent: "Settings", onclick: openSettings }))));
+    el("button", { className: "btn small", textContent: "Retry", onclick: loadLibrary }))));
 }
 
 function renderLibrary() {
@@ -838,47 +826,25 @@ $("#clear").onclick = async () => {
   await loadLibrary();
 };
 
-// ---- Settings ---------------------------------------------------------
-async function openSettings() {
-  const form = $("#settings-form");
-  try {
-    for (const [name, value] of Object.entries(await api("/api/config"))) {
-      const field = form.elements[name];
-      if (field.type === "checkbox") field.checked = value; else field.value = value ?? "";
-    }
-  } catch (error) {
-    return toast(`Could not read the settings: ${error.message}`, "error");
-  }
-  $("#settings").showModal();
-}
-
-$("#settings").onclose = async () => {
-  if ($("#settings").returnValue !== "save") return;
-  const form = $("#settings-form");
-  const config = Object.fromEntries(["grobid_url", "qdrant_url", "ollama_url", "output_base_dir"]
-    .map((name) => [name, form.elements[name].value.trim()]));
-  config.model_device = form.elements.model_device.value || null;
-  config.use_chunk_contextualization = form.elements.use_chunk_contextualization.checked;
-  try {
-    await api("/api/config", { method: "PUT", json: config });
-    toast("Settings saved. Earlier answers can no longer open or highlight their PDFs.", "success");
-  } catch (error) {
-    toast(`Settings not saved: ${error.message}`, "error");
-  }
-  collections = null;
-  await loadLibrary();
-};
-
 // ---- Wiring -----------------------------------------------------------
-document.querySelectorAll("[data-settings]").forEach((button) => (button.onclick = openSettings));
 document.querySelectorAll("[data-library]").forEach((button) => (button.onclick = openLibrary));
 document.querySelectorAll("[data-new-chat]").forEach((button) => (button.onclick = newChat));
 document.querySelectorAll("[data-toggle-sidebar]").forEach((button) =>
   (button.onclick = () => $("#app").classList.toggle("collapsed")));
 if (matchMedia("(max-width: 760px)").matches) $("#app").classList.add("collapsed");
 
+async function loadChats() {
+  try {
+    chats = await api("/api/chats");
+  } catch (error) {
+    toast(`Could not load the chats: ${error.message}`, "error");
+  }
+  renderHistory();
+}
+
 renderThread();
 loadLibrary();
+loadChats();
 question.focus();
 </script>
 </body>

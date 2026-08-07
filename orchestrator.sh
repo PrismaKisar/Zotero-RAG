@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hybrid orchestrator: Docker services (GROBID/Qdrant/Ollama) + native Streamlit app.
+# Hybrid orchestrator: GROBID in Docker + native web app (its index is embedded).
 # Native app => uses MPS/unified memory on Apple Silicon (Docker can't reach the GPU).
 #
 # Usage: ./orchestrator.sh [run|stop|build]
@@ -26,12 +26,10 @@ case "$cmd" in
       exit 0
     fi
 
-    echo "▶ Starting services (GROBID, Qdrant, Ollama)…"
-    docker compose up -d grobid qdrant ollama
+    echo "▶ Starting GROBID…"
+    docker compose up -d grobid
 
     # GROBID boot is slow (emulated on ARM); indexing before it's up would fail. Wait.
-    printf "  waiting for Qdrant"
-    until curl -sf http://localhost:6333/ >/dev/null 2>&1; do printf .; sleep 2; done; echo " ok"
     printf "  waiting for GROBID"
     until curl -sf http://localhost:8070/api/isalive >/dev/null 2>&1; do printf .; sleep 2; done; echo " ok"
 
