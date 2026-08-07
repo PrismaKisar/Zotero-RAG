@@ -64,13 +64,7 @@ def _write_config(tmp_path, **overrides):
 def test_load_config_fills_in_the_documented_defaults(tmp_path):
     config = load_config(str(_write_config(tmp_path)))
     assert "dense_model_name" not in config
-    assert config["use_chunk_contextualization"] is False
     assert config["rebuild_index"] is False
-
-
-def test_load_config_reads_the_ollama_url_from_the_environment(tmp_path, monkeypatch):
-    monkeypatch.setenv("OLLAMA_URL", "http://ollama:11434")
-    assert load_config(str(_write_config(tmp_path)))["ollama_url"] == "http://ollama:11434"
 
 
 def test_zotero_source_forwards_collection_and_data_dir(tmp_path):

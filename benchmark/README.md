@@ -136,8 +136,9 @@ retrieval è su tutta la libreria e una libreria contiene paper di entrambi, qui
 sviluppo e held-out si interrogano allo stesso modo. Due split non devono mai
 condividere una collection.
 
-La contestualizzazione dei chunk è disattivata salvo `--contextualize`: non è
-misurata, e con un indice a parte (`_dev_ctx`) si confronta con quello grezzo.
+La contestualizzazione dei chunk è stata misurata sul dev con un indice a parte
+(`_dev_ctx`, `runs/dev/contextualization/`), non ha mosso nessuna metrica e ora
+non c'è più: il codice che l'ha prodotta sta nella history.
 
 ## Campagne
 

@@ -9,9 +9,27 @@ import xml.etree.ElementTree as ET
 
 import requests
 from grobid_client.grobid_client import GrobidClient
-from models import ExtractedChunk
+from models import ExtractedChunk, Reference
 
 logger = logging.getLogger(__name__)
+
+TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
+
+
+def reference_from_tei(tei_root: ET.Element) -> Reference:
+    """Authors and year of the paper itself, from the TEI header.
+
+    The header's own biblStruct only: the bibliography at the back holds the
+    same elements for every paper the text cites.
+    """
+    paper = tei_root.find(".//tei:teiHeader//tei:sourceDesc/tei:biblStruct", TEI_NS)
+    if paper is None:
+        return Reference([], None)
+    surnames = [s.text.strip() for s in paper.findall("tei:analytic/tei:author/tei:persName/tei:surname", TEI_NS)
+                if s.text and s.text.strip()]
+    date = paper.find(".//tei:date[@when]", TEI_NS)
+    year = date.get("when")[:4] if date is not None else None
+    return Reference(surnames, year)
 
 
 class PDFProcessor:
@@ -194,7 +212,6 @@ class PDFProcessor:
                                     p_elements: list[ET.Element],
                                     section_type: str,
                                     chunks: list[ExtractedChunk],
-                                    full_text_parts: list[str],
                                     chunk_index: int,
                                     pending_short_para: str,
                                     pending_coords: list[tuple[str, str]],
@@ -205,7 +222,6 @@ class PDFProcessor:
             p_elements: List of <p> elements to process.
             section_type: Section type for categorization.
             chunks: List to append ExtractedChunk objects to.
-            full_text_parts: List to append full text parts for context reconstruction.
             chunk_index: Current chunk index for ordering.
             pending_short_para: Buffer for short paragraph text that may need to be merged.
             pending_coords: Buffer for coordinates of sentences in the pending short paragraph.
@@ -240,27 +256,23 @@ class PDFProcessor:
                     sentences=sentences_coords,
                 )
             )
-            full_text_parts.append(p_text)
             chunk_index += 1
 
         return chunk_index, pending_short_para, pending_coords
     
-    def _extract_chunks_from_tei(self, tei_root: ET.Element) -> tuple[list[ExtractedChunk], str]:
+    def _extract_chunks_from_tei(self, tei_root: ET.Element) -> list[ExtractedChunk]:
         """Extract chunks from TEI XML structure.
         
         Args:
             tei_root: Root element of TEI XML.
             
         Returns:
-            - List of ExtractedChunk objects
-            - document_text: Full cleaned text of the PDF for context.
+            List of ExtractedChunk objects
         """
         chunks: list[ExtractedChunk] = []
-        full_text_parts = []
         chunk_index = 0
         
-        # Define TEI namespace
-        ns = {'tei': 'http://www.tei-c.org/ns/1.0'}
+        ns = TEI_NS
 
         # Buffer to merge paragraphs too short to stand alone as a chunk
         pending_short_para = ""
@@ -273,7 +285,6 @@ class PDFProcessor:
                 abstract.findall('.//tei:p', ns),
                 "abstract",
                 chunks,
-                full_text_parts,
                 chunk_index,
                 pending_short_para,
                 pending_coords,
@@ -294,7 +305,6 @@ class PDFProcessor:
                     section_div.findall('.//tei:p', ns),
                     section_type,
                     chunks,
-                    full_text_parts,
                     chunk_index,
                     pending_short_para,
                     pending_coords,
@@ -305,43 +315,8 @@ class PDFProcessor:
             last_chunk = chunks[-1]
             last_chunk.text = f"{last_chunk.text} {pending_short_para}"
             last_chunk.sentences.extend(pending_coords)
-            full_text_parts.append(pending_short_para)
 
-        document_text = "\n\n".join(full_text_parts)
-        title_text = self._extract_title_from_tei(tei_root, ns)
-        if title_text:
-            title_block = f"Title: {title_text}"
-            document_text = f"{title_block}\n\n{document_text}" if document_text else title_block
-        
-        return chunks, document_text
-
-    def _extract_title_from_tei(self, tei_root: ET.Element, ns: dict[str, str]) -> str:
-        """Extract document title from TEI header when available.
-        
-        Args:
-            tei_root: Root element of TEI XML.
-            ns: Namespace dictionary for XML parsing.
-            
-        Returns:
-            Extracted title text or empty string if not found.
-        """
-        # Most specific first; the header before any biblStruct in the body.
-        title_xpaths = [
-            ".//tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:title[@type='main']",
-            ".//tei:teiHeader//tei:titleStmt/tei:title",
-            ".//tei:teiHeader//tei:biblStruct/tei:analytic/tei:title",
-            ".//tei:teiHeader//tei:biblStruct/tei:monogr/tei:title",
-            ".//tei:biblStruct/tei:analytic/tei:title",
-            ".//tei:biblStruct/tei:monogr/tei:title",
-        ]
-
-        for xpath in title_xpaths:
-            for title_elem in tei_root.findall(xpath, ns):
-                title_text = " ".join("".join(title_elem.itertext()).split())
-                if title_text:
-                    return title_text
-
-        return ""
+        return chunks
 
     def _process_paragraph_element(self, p_elem, ns):
         """Extract text and sentence coordinates from a <p> element, handling nested sentences.
@@ -387,7 +362,7 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> tuple[list[ExtractedChunk], str]:
+    def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> list[ExtractedChunk]:
         """Extract chunks from PDF using GROBID.
         
         Args:
@@ -395,9 +370,16 @@ class PDFProcessor:
             pdf_title: Optional display title for logging.
             
         Returns:
-            - List of ExtractedChunk objects.
-            - Full document text reconstructed from extracted chunks.
+            List of ExtractedChunk objects.
         """
+        return self._extract_chunks_from_tei(self._tei(pdf_hash, pdf_title))
+
+    def extract_reference(self, pdf_hash: str) -> Reference:
+        """Authors and year from the PDF's header; the TEI is cached, so no new GROBID call."""
+        return reference_from_tei(self._tei(pdf_hash))
+
+    def _tei(self, pdf_hash: str, pdf_title: str | None = None) -> ET.Element:
+        """The cached PDF's TEI, parsed by GROBID on first use; ValueError if it cannot be."""
         if not pdf_hash:
             raise ValueError("pdf_hash cannot be empty")
 
@@ -411,6 +393,4 @@ class PDFProcessor:
             )
             logger.warning(message)
             raise ValueError(message)
-
-        chunks, document_text = self._extract_chunks_from_tei(tei_root)
-        return chunks, document_text
+        return tei_root

@@ -35,7 +35,7 @@ def extract(pdf_dir: Path, out_dir: Path, work_dir: Path, grobid_url: str, timeo
         # PDFProcessor reads from its own cache, keyed by file name.
         shutil.copyfile(pdf, cache_dir / f"{pdf.stem}.pdf")
         try:
-            chunks, _ = processor.extract_text_chunks(pdf.stem)
+            chunks = processor.extract_text_chunks(pdf.stem)
         except (ValueError, OSError) as error:
             failed.append((pdf.stem, str(error)))
             continue

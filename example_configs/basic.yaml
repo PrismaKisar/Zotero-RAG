@@ -39,15 +39,6 @@ grobid_url: http://localhost:8070
 grobid_timeout: 180
 
 # ============================================================================
-# Chunk Contextualization (Ollama)
-# ============================================================================
-
-# Prefix each chunk with an LLM-written context line before embedding. Off by
-# default: no benchmark measured it. Indexing fails if Ollama does not answer.
-use_chunk_contextualization: false
-ollama_url: http://localhost:11434  # default: $OLLAMA_URL, else this
-
-# ============================================================================
 # Index Settings
 # ============================================================================
 

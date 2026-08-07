@@ -113,7 +113,6 @@ def test_each_model_default_is_named_in_one_module_only():
     pkg = Path(__file__).resolve().parent.parent / "zotero_rag"
     for name, owner in (("google/embeddinggemma-300m", "embedding_manager.py"),
                         ("deepset/deberta-v3-large-squad2", "qa_engine.py"),
-                        ("Alibaba-NLP/gte-reranker-modernbert-base", "reranker.py"),
-                        ("llama3.2:3b", "contextualizer.py")):
+                        ("Alibaba-NLP/gte-reranker-modernbert-base", "reranker.py")):
         holders = [p.name for p in pkg.glob("*.py") if name in p.read_text()]
         assert holders == [owner], (name, holders)

@@ -13,7 +13,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import Answer, Chunk, RerankedChunk
+from models import Answer, Chunk, Reference, RerankedChunk
 
 from zotero_rag.pipeline import ZoteroRAG
 
@@ -236,6 +236,7 @@ class _IndexQdrant:
         self.titles = dict(titles or {})
         self.indexed = set(indexed)
         self.upserted = None
+        self.references = {}
 
     def ping(self):
         pass
@@ -249,6 +250,9 @@ class _IndexQdrant:
     def register_pdf_title(self, pdf_hash, title):
         return title
 
+    def set_reference(self, pdf_hash, reference):
+        self.references[pdf_hash] = reference
+
     def upsert_chunks(self, chunks, dense_embeddings, sparse_embeddings,
                       progress_callback=None):
         self.upserted = chunks
@@ -257,23 +261,21 @@ class _IndexQdrant:
 
 class _Processor:
     def __init__(self, documents):
-        # pdf_hash -> (document_text, [(section, text), ...]); a missing hash fails
+        # pdf_hash -> [(section, text), ...]; a missing hash fails
         self.documents = documents
         self.tei_removed = []
 
     def extract_text_chunks(self, pdf_hash, pdf_title=None):
-        document_text, sections = self.documents[pdf_hash]
+        sections = self.documents[pdf_hash]
         return [types.SimpleNamespace(text=text, page_number=1, chunk_index=i,
                                       section=section, sentences=[])
-                for i, (section, text) in enumerate(sections)], document_text
+                for i, (section, text) in enumerate(sections)]
+
+    def extract_reference(self, pdf_hash):
+        return Reference(["FromPdf"], "2020")
 
     def remove_tei_cache(self, pdf_hash):
         self.tei_removed.append(pdf_hash)
-
-
-class _Contextualizer:
-    def contextualize(self, document_text, all_texts):
-        return [f"ctx|{t}" for t in all_texts]
 
 
 class _Embedder:
@@ -294,19 +296,19 @@ class _Cache:
         return True
 
 
-def _indexing_rag(qdrant, processor, contextualizer=None):
+def _indexing_rag(qdrant, processor):
     return ZoteroRAG.from_components(qdrant_manager=qdrant, pdf_processor=processor,
-                                     embedding_manager=_Embedder(), pdf_cache=_Cache(),
-                                     contextualizer=contextualizer)
+                                     embedding_manager=_Embedder(), pdf_cache=_Cache())
 
 
-def _pdf(pdf_hash, title, newly_cached=True):
-    return types.SimpleNamespace(pdf_hash=pdf_hash, title=title, newly_cached=newly_cached)
+def _pdf(pdf_hash, title, newly_cached=True, reference=None):
+    return types.SimpleNamespace(pdf_hash=pdf_hash, title=title, newly_cached=newly_cached,
+                                 reference=reference)
 
 
 def test_upsert_skips_duplicates_and_indexed_pdfs_and_rolls_back_failures():
     qdrant = _IndexQdrant(titles={"Taken": "other"}, indexed={"old"})
-    processor = _Processor({"new": ("doc", [("intro", "a")])})
+    processor = _Processor({"new": [("intro", "a")]})
     rag = _indexing_rag(qdrant, processor)
 
     result = rag.upsert_pdfs([_pdf("dup", "Taken"), _pdf("old", "Old"),
@@ -323,50 +325,15 @@ def test_upsert_skips_duplicates_and_indexed_pdfs_and_rolls_back_failures():
 
 
 def test_upsert_raises_when_nothing_could_be_extracted():
-    rag = _indexing_rag(_IndexQdrant(), _Processor({"e": ("doc", [])}))
+    rag = _indexing_rag(_IndexQdrant(), _Processor({"e": []}))
     with pytest.raises(ValueError, match="No text could be extracted"):
         rag.upsert_pdfs([_pdf("e", "Empty")])
 
 
-def test_contextualization_embeds_the_contextualized_texts_but_indexes_the_originals():
-    processor = _Processor({
-        "ok": ("doc ok", [("intro", "a"), ("intro", "b")]),
-        "blank": ("   ", [("intro", "c")]),
-    })
-    qdrant = _IndexQdrant()
-    rag = _indexing_rag(qdrant, processor, _Contextualizer())
-
-    rag.upsert_pdfs([_pdf("ok", "Ok"), _pdf("blank", "Blank")])
-
-    # a PDF without document text keeps its original chunks
-    assert rag.embedding_manager.encoded == ["ctx|a", "ctx|b", "c"]
-    assert [c.text for c in qdrant.upserted] == ["a", "b", "c"]
-
-
-def test_a_failed_contextualization_upserts_nothing():
-    """Raw chunks under a contextualized configuration would be a silent mismatch."""
-    class _Down:
-        def contextualize(self, document_text, all_texts):
-            raise ConnectionError("Ollama down")
-
-    qdrant = _IndexQdrant()
-    rag = _indexing_rag(qdrant, _Processor({"ok": ("doc", [("intro", "a")])}), _Down())
-    with pytest.raises(ConnectionError):
-        rag.upsert_pdfs([_pdf("ok", "Ok")])
-    assert not qdrant.upserted
-
-
-def test_contextualization_is_off_by_default():
-    """No benchmark measured it, so it does not ship switched on."""
-    import inspect
-    default = inspect.signature(ZoteroRAG.__init__).parameters["use_chunk_contextualization"]
-    assert default.default is False
-
-
-def test_contextualization_is_skipped_when_disabled():
-    rag = _indexing_rag(_IndexQdrant(), _Processor({"ok": ("doc", [("intro", "a")])}))
+def test_upsert_embeds_the_extracted_texts():
+    rag = _indexing_rag(_IndexQdrant(), _Processor({"ok": [("intro", "a"), ("intro", "b")]}))
     rag.upsert_pdfs([_pdf("ok", "Ok")])
-    assert rag.embedding_manager.encoded == ["a"]
+    assert rag.embedding_manager.encoded == ["a", "b"]
 
 
 class _ReversedFetch(_Qdrant):
@@ -399,3 +366,19 @@ def test_the_reranker_sees_neighbours_in_fetch_order():
     """Rerank ties keep their input order, so this order reaches the results."""
     _, seen = _scattered_neighbours_rag()
     assert [c.chunk_index for c, _ in seen] == [5, 9, 10, 8, 6, 4]
+
+
+def test_zotero_metadata_wins_over_the_pdf_header_and_both_are_kept():
+    qdrant = _IndexQdrant()
+    rag = _indexing_rag(qdrant, _Processor({"z": [("intro", "a")], "u": [("intro", "b")]}))
+    zotero = Reference(["FromZotero"], "2019", zotero_key="KEY")
+    rag.upsert_pdfs([_pdf("z", "Zotero paper", reference=zotero), _pdf("u", "Uploaded")])
+    assert qdrant.references == {"z": zotero, "u": Reference(["FromPdf"], "2020")}
+
+
+def test_a_paper_indexed_before_references_were_kept_gets_one_from_its_tei():
+    qdrant = _IndexQdrant()
+    qdrant.reference = qdrant.references.get
+    rag = _indexing_rag(qdrant, _Processor({}))
+    assert rag.reference("old") == Reference(["FromPdf"], "2020")
+    assert qdrant.references == {"old": Reference(["FromPdf"], "2020")}

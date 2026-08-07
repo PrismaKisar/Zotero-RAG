@@ -12,7 +12,6 @@ import time
 import warnings
 from typing import BinaryIO
 
-from contextualizer import ChunkContextualizer
 from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
 from models import (
     Answer,
@@ -22,6 +21,7 @@ from models import (
     PDFIngestItem,
     QuestionTrace,
     Reader,
+    Reference,
     RerankedChunk,
     RetrievedChunk,
     UpsertResult,
@@ -37,30 +37,9 @@ from zotero_db import ZoteroDatabase
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
 
-# Logs live in one directory instead of scattering across the working directory
-LOG_DIR = 'logs'
-
+# Handlers and levels are the entry point's to set (server.py, run_from_config.py):
+# a library module that adds its own writes a second copy of every line.
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-# Create formatters
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# File handler
-os.makedirs(LOG_DIR, exist_ok=True)
-file_handler = logging.FileHandler(os.path.join(LOG_DIR, 'zotero_rag.log'), mode='a')
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(formatter)
-
-# Console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
-
-# Add handlers only if they haven't been added yet
-if not logger.handlers:
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
 
 
 class ZoteroRAG:
@@ -71,13 +50,11 @@ class ZoteroRAG:
                 reranker_model: str = DEFAULT_RERANKER_MODEL,
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,
-                qdrant_url: str = "http://localhost:6333",
-                ollama_url: str = "http://localhost:11434",
+                qdrant_url: str | None = "http://localhost:6333",
                 model_device: str | None = None, 
                 encode_batch_size: int | None = None,
                 qa_batch_size: int | None = None,
                 rerank_batch_size: int | None = None,
-                use_chunk_contextualization: bool = False,
                 output_base_dir: str = "output",
                 qdrant_collection_suffix: str = "",
                 reader: Reader | None = None):
@@ -88,15 +65,12 @@ class ZoteroRAG:
             reranker_model: Name of the cross-encoder model for reranking.
             grobid_url: URL of the GROBID service.
             grobid_timeout: Timeout in seconds for GROBID requests.
-            qdrant_url: URL of the Qdrant service.
-            ollama_url: URL of the Ollama service.
+            qdrant_url: URL of a Qdrant server, or None for the embedded storage
+                in ``output_base_dir``/qdrant, which needs no server.
             model_device: Device to use for models ('cpu', 'cuda', 'mps'). Auto-detect if None.
             encode_batch_size: Batch size for encoding. Module default if None.
             qa_batch_size: Batch size for QA extraction. Module default if None.
             rerank_batch_size: Batch size for reranking. Module default if None.
-            use_chunk_contextualization: Whether to contextualize chunks with Ollama
-                before embedding. Off by default: no benchmark measured it, so it
-                does not ship as the default.
             output_base_dir: Base directory for storing outputs.
             qdrant_collection_suffix: Appended to the Qdrant collection names, to keep
                 separate corpora out of each other's retrieval pool.
@@ -117,17 +91,15 @@ class ZoteroRAG:
             device=model_device,
             encode_batch_size=encode_batch_size,
         )
-        contextualizer = (ChunkContextualizer(ollama_url=ollama_url)
-                          if use_chunk_contextualization else None)
 
         self._assemble(
             pdf_cache=pdf_cache,
             pdf_processor=pdf_processor,
             embedding_manager=embedding_manager,
-            contextualizer=contextualizer,
             qdrant_manager=QdrantManager(
                 dense_model_name=dense_model_name,
                 qdrant_url=qdrant_url,
+                qdrant_path=os.path.join(output_base_dir, "qdrant"),
                 vector_size=embedding_manager.vector_size,
                 collection_suffix=qdrant_collection_suffix,
             ),
@@ -142,7 +114,7 @@ class ZoteroRAG:
     @classmethod
     def from_components(cls, *, qdrant_manager=None, embedding_manager=None,
                         reranker=None, reader: Reader | None = None, pdf_cache=None,
-                        pdf_processor=None, contextualizer=None) -> "ZoteroRAG":
+                        pdf_processor=None) -> "ZoteroRAG":
         """A pipeline over components built elsewhere, loading no model itself.
 
         The seam for the tests, which pass stand-ins for only the components the
@@ -151,22 +123,20 @@ class ZoteroRAG:
         """
         rag = cls.__new__(cls)
         rag._assemble(pdf_cache=pdf_cache, pdf_processor=pdf_processor,
-                      embedding_manager=embedding_manager, contextualizer=contextualizer,
+                      embedding_manager=embedding_manager,
                       qdrant_manager=qdrant_manager, reranker=reranker, reader=reader)
         return rag
 
-    def _assemble(self, *, pdf_cache, pdf_processor, embedding_manager, contextualizer,
+    def _assemble(self, *, pdf_cache, pdf_processor, embedding_manager,
                   qdrant_manager, reranker, reader) -> None:
         """Wire the components and the per-instance state every constructor needs.
 
         ``reader`` is public: the benchmarks point it at the reader a config asks
-        for (see ``models.Reader``). ``contextualizer`` is None when chunks are
-        embedded as extracted.
+        for (see ``models.Reader``).
         """
         self.pdf_cache = pdf_cache
         self.pdf_processor = pdf_processor
         self.embedding_manager = embedding_manager
-        self.contextualizer = contextualizer
         self.qdrant_manager = qdrant_manager
         self.reranker = reranker
         self.reader = reader
@@ -175,6 +145,22 @@ class ZoteroRAG:
         # benchmarks: see QuestionTrace.
         self.last_trace = QuestionTrace()
     
+    def reference(self, pdf_hash: str | None) -> Reference:
+        """How to cite the paper an answer came from; an empty one if nothing is known.
+
+        A paper indexed before references were kept gets one now, from its cached
+        TEI, and keeps it.
+        """
+        stored = self.qdrant_manager.reference(pdf_hash) if pdf_hash else None
+        if stored is not None or not pdf_hash:
+            return stored or Reference([], None)
+        try:
+            stored = self.pdf_processor.extract_reference(pdf_hash)
+        except ValueError:  # neither TEI nor GROBID: no citation rather than no answer
+            return Reference([], None)
+        self.qdrant_manager.set_reference(pdf_hash, stored)
+        return stored
+
     def get_indexed_pdfs(self) -> list[dict[str, str]]:
         """Get list of indexed PDFs.
         
@@ -342,18 +328,17 @@ class ZoteroRAG:
 
     def _extract_chunks(self, target_pdfs: list[CachedPDF], result: UpsertResult,
                         newly_cached_hashes: set[str],
-                        progress_callback=None) -> tuple[list[Chunk], dict]:
+                        progress_callback=None) -> tuple[list[Chunk], set[str]]:
         """Stage 1: the chunks of every PDF that needs indexing.
 
         A PDF that fails is recorded in ``result`` and the others go on.
 
         Returns:
-            ``(all_chunks, per_pdf_context)``: the latter maps each processed
-            pdf_hash to its title, full document text, and the positions of its
-            chunks in ``all_chunks``.
+            ``(all_chunks, processed)``: the latter the pdf_hash of every PDF
+            whose chunks were extracted.
         """
         all_chunks = []
-        per_pdf_context = {}
+        processed = set()
         for idx, item in enumerate(target_pdfs):
             title = item.title
             pdf_hash = item.pdf_hash
@@ -376,18 +361,16 @@ class ZoteroRAG:
                 if canonical_title:
                     title = canonical_title
 
-                extracted_chunks, document_text = self.pdf_processor.extract_text_chunks(
+                extracted_chunks = self.pdf_processor.extract_text_chunks(
                     pdf_hash,
                     pdf_title=title,
                 )
+                # Zotero's metadata is curated by the user; the PDF's header is
+                # GROBID's reading of it, the best there is for an upload.
+                self.qdrant_manager.set_reference(
+                    pdf_hash, item.reference or self.pdf_processor.extract_reference(pdf_hash))
 
-                if pdf_hash not in per_pdf_context:
-                    per_pdf_context[pdf_hash] = {
-                        "title": title,
-                        "document_text": document_text,
-                        "chunk_indices": [],
-                    }
-
+                processed.add(pdf_hash)
                 for extracted in extracted_chunks:
                     chunk = Chunk(
                         text=extracted.text,
@@ -399,7 +382,6 @@ class ZoteroRAG:
                         sentences=extracted.sentences
                     )
                     all_chunks.append(chunk)
-                    per_pdf_context[pdf_hash]["chunk_indices"].append(len(all_chunks) - 1)
             except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
                 logger.error("Failed to process PDF '%s': %s", title, str(e))
                 result.failed_pdfs.append({"title": title, "error": str(e), "pdf_hash": pdf_hash})
@@ -411,53 +393,7 @@ class ZoteroRAG:
                     len(target_pdfs),
                     f"Analysed PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
                 )
-        return all_chunks, per_pdf_context
-
-    def _contextualize(self, all_texts: list[str], per_pdf_context: dict,
-                       progress_callback=None) -> None:
-        """Stage 2: replace each PDF's texts in ``all_texts`` with contextualized ones.
-
-        A PDF with no document text keeps its original texts. A failed
-        generation propagates and nothing is upserted, rather than indexing
-        raw chunks under a configuration that says they were contextualized.
-        """
-        pdf_hashes_with_chunks = [
-            pdf_hash
-            for pdf_hash, context_info in per_pdf_context.items()
-            if context_info.get("chunk_indices")
-        ]
-
-        for pdf_idx, pdf_hash in enumerate(pdf_hashes_with_chunks):
-            context_info = per_pdf_context[pdf_hash]
-            pdf_title = context_info.get("title", pdf_hash)
-            if progress_callback:
-                progress_callback(
-                    "contextualization",
-                    pdf_idx,
-                    len(pdf_hashes_with_chunks),
-                    f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                )
-            chunk_indices = context_info.get("chunk_indices", [])
-
-            document_text = context_info.get("document_text", "")
-            if not document_text.strip():
-                logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
-                continue
-
-            contextualized_chunks = self.contextualizer.contextualize(
-                document_text=document_text,
-                all_texts=[all_texts[i] for i in chunk_indices],
-            )
-            for chunk_abs_idx, text in zip(chunk_indices, contextualized_chunks, strict=True):
-                all_texts[chunk_abs_idx] = text
-
-            if progress_callback:
-                progress_callback(
-                    "contextualization",
-                    pdf_idx + 1,
-                    len(pdf_hashes_with_chunks),
-                    f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                )
+        return all_chunks, processed
 
     def upsert_pdfs(self, target_pdfs: list[CachedPDF], progress_callback=None) -> UpsertResult:
         """Process PDFs, extract chunks, and upsert into Qdrant index.
@@ -481,9 +417,9 @@ class ZoteroRAG:
                 for item in target_pdfs
                 if item.newly_cached
             }
-            all_chunks, per_pdf_context = self._extract_chunks(
+            all_chunks, processed = self._extract_chunks(
                 target_pdfs, result, newly_cached_hashes, progress_callback)
-            result.processed_pdfs = len(per_pdf_context)
+            result.processed_pdfs = len(processed)
 
             if not all_chunks:
                 if (not result.failed_pdfs
@@ -492,14 +428,9 @@ class ZoteroRAG:
                     raise ValueError("No text could be extracted from the selected PDFs.")
                 return result
 
-            all_texts = [p.text for p in all_chunks]
-            if self.contextualizer is not None:
-                self._contextualize(all_texts, per_pdf_context, progress_callback)
-            else:
-                logger.info("Chunk contextualization disabled: using original chunks for embedding.")
-
-            # Stage 3: embed and index
-            hybrid_embeddings = self.embedding_manager.encode_chunks(progress_callback, all_texts)
+            # Stage 2: embed and index
+            hybrid_embeddings = self.embedding_manager.encode_chunks(
+                progress_callback, [c.text for c in all_chunks])
 
             indexed_chunks, title_overrides = self.qdrant_manager.upsert_chunks(
                 all_chunks,

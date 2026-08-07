@@ -14,10 +14,6 @@ papers from both, so dev and held-out are searched the same way. A split must
 never share a collection with another, or held-out papers would sit among the
 distractors of the development questions.
 
-Chunk contextualization is off unless --contextualize is passed. It is an
-unmeasured Phase 2 intervention, and its failure path is a silent fallback to raw
-chunks, so leaving it on by default would make the baseline index unreproducible.
-
 Usage:
   python -m benchmark.index_pdfs --pdf-dir data/dev/qasper/pdfs \
       --out-file data/dev/qasper/pdf_hash_map.json --work-dir data/dev/grobid \
@@ -34,22 +30,21 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 def index_pdfs(pdf_dir: Path, work_dir: Path, grobid_url: str, qdrant_url: str,
-               qdrant_collection_suffix: str = "", contextualize: bool = False) -> dict[str, str]:
+               qdrant_collection_suffix: str = "") -> dict[str, str]:
     """Ingest and index every PDF in ``pdf_dir``, return {paper_id: pdf_hash}."""
     from zotero_rag.pipeline import (
         ZoteroRAG,  # heavy import (torch/transformers), kept out of the pure path
     )
 
     rag = ZoteroRAG(grobid_url=grobid_url, qdrant_url=qdrant_url, output_base_dir=str(work_dir),
-                    qdrant_collection_suffix=qdrant_collection_suffix,
-                    use_chunk_contextualization=contextualize)
+                    qdrant_collection_suffix=qdrant_collection_suffix)
     ingest_result = rag.ingest_pdfs_from_folder(str(pdf_dir))
     for failure in ingest_result.failed_pdfs:
         print(f"  ingest failed: {failure['title']}: {failure['error']}")
 
-    # One PDF per upsert: a contextualized index takes hours and a failed
-    # generation aborts its upsert, so batching every PDF would lose all of
-    # them to one error. Indexed PDFs are skipped, so a rerun resumes.
+    # One PDF per upsert: a failure aborts its upsert, so batching every PDF
+    # would lose all of them to one error. Indexed PDFs are skipped, so a rerun
+    # resumes.
     chunks, started = 0, time.perf_counter()
     for cached in ingest_result.ingested_pdfs:
         chunks += rag.upsert_pdfs([cached]).indexed_chunks
@@ -69,14 +64,10 @@ def main():
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
     parser.add_argument("--qdrant-collection-suffix", default="",
                         help="isolate this corpus in its own Qdrant collection, e.g. _dev")
-    parser.add_argument("--contextualize", action="store_true",
-                        help="prefix each chunk with an LLM-generated context before embedding "
-                             "(needs Ollama); off by default so the baseline index is reproducible")
     args = parser.parse_args()
 
     hash_map = index_pdfs(Path(args.pdf_dir), Path(args.work_dir), args.grobid_url, args.qdrant_url,
-                          qdrant_collection_suffix=args.qdrant_collection_suffix,
-                          contextualize=args.contextualize)
+                          qdrant_collection_suffix=args.qdrant_collection_suffix)
     Path(args.out_file).write_text(json.dumps(hash_map, indent=2))
     print(f"indexed {len(hash_map)} papers -> {args.out_file}")
 

@@ -12,18 +12,6 @@ from highlighter import highlight_pdf
 from models import Answer
 from pipeline import ZoteroRAG
 
-# Logs live in one directory instead of scattering across the working directory
-LOG_DIR = 'logs'
-
-os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, 'run_from_config.log')),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -47,8 +35,6 @@ def load_config(config_path: str) -> dict[str, Any]:
     # No model here: the thresholds in settings.py are calibrated on the
     # pipeline's own models, and the dense one was chosen by the same campaign.
     config.setdefault('grobid_url', 'http://localhost:8070')
-    config.setdefault('ollama_url', os.environ.get('OLLAMA_URL', 'http://localhost:11434'))
-    config.setdefault('use_chunk_contextualization', False)
     config.setdefault('grobid_timeout', 180)
     config.setdefault('create_highlighted_pdfs', True)
     config.setdefault('rebuild_index', False)
@@ -81,8 +67,6 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
     rag = ZoteroRAG(
         grobid_url=config['grobid_url'],
         grobid_timeout=config['grobid_timeout'],
-        ollama_url=config['ollama_url'],
-        use_chunk_contextualization=config['use_chunk_contextualization'],
         model_device=config.get('model_device'),
         encode_batch_size=config.get('encode_batch_size'),
         rerank_batch_size=config.get('rerank_batch_size'),
@@ -197,7 +181,8 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
 
 
 def main():
-    """Main entry point for CLI usage."""
+    """Main entry point for CLI usage: logs go to the terminal, as a command's do."""
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     if len(sys.argv) < 2:
         print("Usage: python -m zotero_rag.run_from_config <config.yaml>")
         sys.exit(1)

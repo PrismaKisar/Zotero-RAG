@@ -11,8 +11,8 @@ def test_collection_suffix_isolates_chunk_and_registry_collections():
     assert qasa.chunk_collection != default.chunk_collection
 
 
-def test_index_pdfs_defaults_contextualization_off(monkeypatch, tmp_path):
-    """The baseline index must be reproducible: no silent LLM enrichment."""
+def test_index_pdfs_passes_the_collection_suffix(monkeypatch, tmp_path):
+    """Each split indexes into its own collection."""
     import sys
     import types
 
@@ -35,12 +35,10 @@ def test_index_pdfs_defaults_contextualization_off(monkeypatch, tmp_path):
     from benchmark.index_pdfs import index_pdfs
 
     index_pdfs(tmp_path, tmp_path, "http://grobid", "http://qdrant")
-    assert captured["use_chunk_contextualization"] is False
     assert captured["qdrant_collection_suffix"] == ""
 
     index_pdfs(tmp_path, tmp_path, "http://grobid", "http://qdrant",
-               qdrant_collection_suffix="_qasa", contextualize=True)
-    assert captured["use_chunk_contextualization"] is True
+               qdrant_collection_suffix="_qasa")
     assert captured["qdrant_collection_suffix"] == "_qasa"
 
 
@@ -62,7 +60,7 @@ def test_zotero_rag_name_resolves_to_the_package():
 
 
 def test_each_pdf_is_upserted_on_its_own(monkeypatch, tmp_path):
-    """One failed contextualization must not cost every other PDF its index."""
+    """One failed PDF must not cost every other PDF its index."""
     import sys
     import types
 
