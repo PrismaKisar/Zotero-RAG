@@ -14,7 +14,7 @@ from qdrant_client import models as qmodels
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import Chunk
+from models import Chunk, Reference
 
 from zotero_rag.qdrant_manager import QdrantManager
 
@@ -238,3 +238,67 @@ def test_non_transport_failures_are_not_reported_as_unreachable(fake_client):
     fake_client.instances[0].fail = ResponseHandlingException(ValueError("bad payload"))
     with pytest.raises(ResponseHandlingException):
         manager.list_indexed_pdfs()
+
+
+# ---- Embedded storage: the whole round trip, no server ----------------------
+DIM = 4
+
+
+def _chunk(pdf_hash, index, text):
+    return Chunk(text=text, page_number=0, chunk_index=index, title=pdf_hash, pdf_hash=pdf_hash)
+
+
+@pytest.fixture
+def open_manager(tmp_path):
+    """Managers on one storage folder, all closed at teardown even if the test fails."""
+    opened = []
+
+    def open_one():
+        manager = QdrantManager("m", qdrant_url=None, qdrant_path=str(tmp_path / "qdrant"),
+                                vector_size=DIM)
+        opened.append(manager)
+        return manager
+    yield open_one
+    for manager in opened:
+        manager.close()
+
+
+def test_embedded_storage_indexes_searches_and_persists(open_manager):
+    manager = open_manager()
+    manager.register_pdf_title("p1", "Paper one")
+    chunks = [_chunk("p1", 0, "graphs"), _chunk("p1", 1, "tables")]
+    manager.upsert_chunks(chunks,
+                          dense_embeddings=[[1, 0, 0, 0], [0, 1, 0, 0]],
+                          sparse_embeddings=[{"indices": [1], "values": [1.0]},
+                                             {"indices": [2], "values": [1.0]}])
+
+    hits = manager.search({"dense": [1, 0, 0, 0], "sparse": {"indices": [1], "values": [1.0]}},
+                          result_limit=2)
+    assert hits[0][0].text == "graphs"
+    assert manager.is_pdf_indexed("p1")
+    manager.close()
+
+    assert [p["pdf_hash"] for p in open_manager().list_indexed_pdfs()] == ["p1"]
+
+
+def test_a_second_process_on_the_same_storage_is_told_why(open_manager):
+    open_manager().ping()
+    with pytest.raises(ConnectionError, match="in use"):
+        open_manager().ping()
+
+
+def test_a_papers_reference_is_kept_in_the_registry(open_manager):
+    manager = open_manager()
+    manager.register_pdf_title("p1", "Paper one")
+    reference = Reference(["Dasigi", "Lo"], "2021", zotero_key="KEY")
+    manager.set_reference("p1", reference)
+    assert manager.reference("p1") == reference
+    assert manager.register_pdf_title("p1", "Paper one") == "Paper one"  # a later registration keeps it
+    assert manager.reference("p1") == reference
+    assert manager.reference("unknown") is None
+
+
+def test_a_reference_for_a_paper_with_no_registry_entry_is_skipped(open_manager):
+    manager = open_manager()
+    manager.set_reference("never-registered", Reference(["X"], "2020"))
+    assert manager.reference("never-registered") is None

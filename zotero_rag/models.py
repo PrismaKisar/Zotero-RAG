@@ -1,7 +1,7 @@
 """Data models for the Zotero RAG system."""
 
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -204,6 +204,34 @@ class ExpandedAnswerSpan:
     sentence_coords: list[str] = field(default_factory=list)
 
 
+def from_stored(cls, data: dict):
+    """A dataclass from a dict saved by an earlier version: fields it no longer has are dropped."""
+    return cls(**{f.name: data[f.name] for f in fields(cls) if f.name in data})
+
+
+@dataclass
+class Reference:
+    """Who wrote a paper and when, and its Zotero attachment if it came from Zotero."""
+    authors: list[str]  # surnames, in the paper's order
+    year: str | None
+    zotero_key: str | None = None
+    zotero_library: str = "library"  # or "groups/<id>" for a group library
+
+    def cite(self) -> str:
+        """Author-year, as a reader expects it: "Dasigi et al., 2021"."""
+        if len(self.authors) > 2:
+            who = f"{self.authors[0]} et al."
+        else:
+            who = " and ".join(self.authors)
+        return ", ".join(part for part in (who, self.year) if part)
+
+    def zotero_link(self, page: int) -> str | None:
+        """Opens the PDF in Zotero's own reader at ``page`` (1-based)."""
+        if not self.zotero_key:
+            return None
+        return f"zotero://open-pdf/{self.zotero_library}/items/{self.zotero_key}?page={page}"
+
+
 @dataclass
 class CachedPDF:
     """Represents a cached PDF stored by content hash."""
@@ -211,6 +239,7 @@ class CachedPDF:
     title: str
     cache_path: str
     newly_cached: bool = False
+    reference: Reference | None = None
 
 
 @dataclass
@@ -273,6 +302,7 @@ class PDFIngestItem:
     """Represents a PDF ingestion source."""
     title: str
     source: PDFSource
+    reference: Reference | None = None  # from Zotero; None: read off the PDF when parsed
 
 
 def ingest_items_from_folder(folder_path: str) -> list[PDFIngestItem]:

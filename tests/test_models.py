@@ -1,4 +1,4 @@
-"""Unit tests for zotero_rag/models.py: PDF sources and dataclass pickling."""
+"""Unit tests for zotero_rag/models.py: PDF sources, dataclass pickling, references."""
 
 import io
 import pickle
@@ -9,7 +9,14 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import Answer, Chunk, PathSource, UploadSource, ingest_items_from_folder
+from models import (
+    Answer,
+    Chunk,
+    PathSource,
+    Reference,
+    UploadSource,
+    ingest_items_from_folder,
+)
 from pdf_utils import compute_file_hash, compute_stream_hash
 
 
@@ -137,3 +144,20 @@ def test_ingest_items_from_folder_rejects_a_non_directory(tmp_path):
     missing = tmp_path / "nope"
     with pytest.raises(ValueError, match="Not a directory"):
         ingest_items_from_folder(str(missing))
+
+
+def test_the_citation_follows_author_year_style():
+    assert Reference(["Dasigi"], "2021").cite() == "Dasigi, 2021"
+    assert Reference(["Dasigi", "Lo"], "2021").cite() == "Dasigi and Lo, 2021"
+    assert Reference(["Dasigi", "Lo", "Beltagy"], "2021").cite() == "Dasigi et al., 2021"
+    assert Reference(["Dasigi", "Lo", "Beltagy"], None).cite() == "Dasigi et al."
+    assert Reference([], "2021").cite() == "2021"
+    assert Reference([], None).cite() == ""
+
+
+def test_only_a_zotero_attachment_opens_in_zotero_at_the_page():
+    assert Reference([], None, zotero_key="ABCD1234").zotero_link(page=3) == \
+        "zotero://open-pdf/library/items/ABCD1234?page=3"
+    assert Reference([], None).zotero_link(page=3) is None
+    assert Reference([], None, zotero_key="K", zotero_library="groups/7").zotero_link(page=1) == \
+        "zotero://open-pdf/groups/7/items/K?page=1"

@@ -4,9 +4,43 @@ import logging
 import os
 import sqlite3
 
-from models import PathSource, PDFIngestItem
+from models import PathSource, PDFIngestItem, Reference
 
 logger = logging.getLogger(__name__)
+
+
+def _field(cursor: sqlite3.Cursor, item_id: int, name: str) -> str | None:
+    """One field of a Zotero item (title, date, ...), or None if it has none."""
+    cursor.execute(
+        "SELECT v.value FROM itemData d "
+        "JOIN itemDataValues v ON d.valueID = v.valueID "
+        "JOIN fields f ON d.fieldID = f.fieldID "
+        "WHERE d.itemID = ? AND f.fieldName = ?",
+        (item_id, name))
+    row = cursor.fetchone()
+    return str(row[0]).strip() if row and row[0] else None
+
+
+def _reference(cursor: sqlite3.Cursor, item_id: int, attachment_key: str,
+               library_id: int) -> Reference:
+    """The item's authors and year as Zotero holds them, curated by the user.
+
+    Zotero stores a date as "2020-05-00 May 2020": the year leads, when known. An
+    attachment in a group library is linked through its group, not "library".
+    """
+    cursor.execute("SELECT groupID FROM groups WHERE libraryID = ?", (library_id,))
+    group = cursor.fetchone()
+    cursor.execute(
+        "SELECT c.lastName FROM itemCreators ic "
+        "JOIN creators c ON ic.creatorID = c.creatorID "
+        "JOIN creatorTypes t ON ic.creatorTypeID = t.creatorTypeID "
+        "WHERE ic.itemID = ? AND t.creatorType = 'author' ORDER BY ic.orderIndex",
+        (item_id,))
+    authors = [name for (name,) in cursor.fetchall() if name]
+    date = _field(cursor, item_id, "date") or ""
+    year = date[:4] if date[:4].isdigit() else None
+    return Reference(authors, year, zotero_key=attachment_key,
+                     zotero_library=f"groups/{group[0]}" if group else "library")
 
 
 class ZoteroDatabase:
@@ -86,7 +120,7 @@ class ZoteroDatabase:
             collection_id = result[0]
             
             query = """
-            SELECT a_items.key, ia.path, ia.parentItemID as sourceItemID 
+            SELECT a_items.key, ia.path, ia.parentItemID as sourceItemID, a_items.libraryID 
             FROM collectionItems ci
             JOIN itemAttachments ia ON ci.itemID = ia.parentItemID 
             JOIN items a_items ON ia.itemID = a_items.itemID
@@ -98,7 +132,7 @@ class ZoteroDatabase:
         else:
             # Get all PDF items from library
             query = """
-            SELECT i.key, ia.path, COALESCE(ia.parentItemID, i.itemID) as sourceItemID
+            SELECT i.key, ia.path, COALESCE(ia.parentItemID, i.itemID) as sourceItemID, i.libraryID
             FROM items i 
             JOIN itemAttachments ia ON i.itemID = ia.itemID
             WHERE ia.contentType = 'application/pdf' 
@@ -107,17 +141,8 @@ class ZoteroDatabase:
             cursor.execute(query)
         
         rows = cursor.fetchall()
-        for key, path, src_id in rows:
-            # Get title from parent item
-            cursor.execute(
-                "SELECT v.value FROM itemData d "
-                "JOIN itemDataValues v ON d.valueID = v.valueID "
-                "JOIN fields f ON d.fieldID = f.fieldID "
-                "WHERE d.itemID = ? AND f.fieldName = 'title'", 
-                (src_id,)
-            )
-            raw_title = r[0] if (r := cursor.fetchone()) else "Unknown"
-            title = str(raw_title).strip() if raw_title else "Unknown"
+        for key, path, src_id, library_id in rows:
+            title = _field(cursor, src_id, "title") or "Unknown"
             
             # Resolve storage path
             if path and path.startswith('storage:'):
@@ -131,7 +156,8 @@ class ZoteroDatabase:
             
             # Only include if file exists
             if pdf_path and os.path.exists(pdf_path):
-                items.append(PDFIngestItem(title=title, source=PathSource(pdf_path)))
+                items.append(PDFIngestItem(title=title, source=PathSource(pdf_path),
+                                           reference=_reference(cursor, src_id, key, library_id)))
         
         conn.close()
         return items

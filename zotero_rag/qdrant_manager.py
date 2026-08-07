@@ -4,10 +4,11 @@ import functools
 import logging
 import re
 import uuid
+from dataclasses import asdict
 
 import httpx
 import qdrant_client as qc
-from models import Chunk
+from models import Chunk, Reference, from_stored
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.exceptions import ResponseHandlingException
 
@@ -37,20 +38,26 @@ class QdrantManager:
     
     def __init__(self, 
                 dense_model_name: str,
-                qdrant_url: str = "http://localhost:6333",
+                qdrant_url: str | None = "http://localhost:6333",
                 vector_size: int = 768,
-                collection_suffix: str = ""):
+                collection_suffix: str = "",
+                qdrant_path: str | None = None):
         """Initialize the Qdrant manager.
 
         Args:
             dense_model_name: Name used to derive a deterministic collection name.
-            qdrant_url: URL of the Qdrant service.
+            qdrant_url: URL of a Qdrant server, or None for embedded storage.
             vector_size: Dimensionality of the dense vectors stored in Qdrant.
             collection_suffix: Appended to both collection names, to keep separate
                 corpora (e.g. two benchmark datasets) from sharing a retrieval pool.
+            qdrant_path: Folder of the embedded storage, read when ``qdrant_url`` is
+                None. The app's way: nothing to install or start. The benchmarks keep
+                a server, which several processes can share and the embedded storage
+                cannot - it is locked by whichever process opens it first.
         """
         self.dense_model_name = dense_model_name
         self.qdrant_url = qdrant_url
+        self.qdrant_path = qdrant_path
         self.collection_suffix = collection_suffix
         self.chunk_collection = (
             "zotero_rag_" + self._sanitize_model_name(dense_model_name) + collection_suffix)
@@ -91,15 +98,21 @@ class QdrantManager:
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
 
     def _unreachable(self) -> ConnectionError:
-        message = (
-            f"Qdrant service not reachable at {self.qdrant_url}. "
-            "Start Qdrant and retry."
-        )
+        if self.qdrant_url is None:
+            message = (f"The index at {self.qdrant_path} is in use by another process: "
+                       "close any other copy of the app and retry.")
+        else:
+            message = f"Qdrant service not reachable at {self.qdrant_url}. Start Qdrant and retry."
         logger.error(message)
         return ConnectionError(message)
 
     def _connect(self) -> qc.QdrantClient:
         """A client that has completed one round-trip, or ConnectionError."""
+        if self.qdrant_url is None:
+            try:
+                return qc.QdrantClient(path=self.qdrant_path)
+            except RuntimeError as exc:  # the storage's lock, held by another process
+                raise self._unreachable() from exc
         client = qc.QdrantClient(url=self.qdrant_url)
         try:
             # Force a round-trip to verify the service is reachable.
@@ -126,6 +139,12 @@ class QdrantManager:
         if not self._collections_ready:
             self._ensure_collections()
         return self._client
+
+    def close(self) -> None:
+        """Release the connection; for embedded storage, also its lock."""
+        if self._client is not None:
+            self._client.close()
+        self._client, self._collections_ready = None, False
 
     @_reports_unreachable
     def ping(self):
@@ -429,6 +448,34 @@ class QdrantManager:
             ],
         )
         return normalized_title or None
+
+    @_reports_unreachable
+    def set_reference(self, pdf_hash: str, reference: Reference) -> None:
+        """Keep the paper's authors, year and Zotero key with its registry entry.
+
+        The entry is ``register_pdf_title``'s: a paper it declined to register
+        (its title belongs to another) has none, and keeps no reference either.
+        """
+        point = QdrantManager._generate_point_id(pdf_hash, None)
+        if not self.client.retrieve(collection_name=self.registry_collection, ids=[point]):
+            logger.warning("No registry entry for %s: its reference is not kept", pdf_hash)
+            return
+        self.client.set_payload(
+            collection_name=self.registry_collection,
+            payload={"reference": asdict(reference)},
+            points=[point],
+        )
+
+    @_reports_unreachable
+    def reference(self, pdf_hash: str) -> Reference | None:
+        """The paper's reference, or None for a paper indexed before references were kept."""
+        points = self.client.retrieve(
+            collection_name=self.registry_collection,
+            ids=[QdrantManager._generate_point_id(pdf_hash, None)],
+            with_payload=True,
+        )
+        stored = (points[0].payload or {}).get("reference") if points else None
+        return from_stored(Reference, stored) if stored else None
 
     @_reports_unreachable
     def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> str | None:

@@ -80,6 +80,7 @@ class PDFCacheManager:
             title=title,
             cache_path=candidate_path,
             newly_cached=newly_cached,
+            reference=uploaded_pdf.reference,
         )
 
     def remove_pdf(self, pdf_hash: str) -> bool:
