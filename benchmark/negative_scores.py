@@ -16,15 +16,23 @@ Two sources, kept apart in the output:
   about the papers in this corpus. On topic and sensible, but the paper they
   were asked of does not answer them, which makes them the hard case. Another
   paper in the library might, so silence on them is a lower bound of what is right.
+- ``foreign``: real questions from the same benchmark about papers that neither
+  split holds. Same style, domain and vocabulary as the questions the library
+  must answer, and not written by us; the off-topic list is easy to stay silent
+  on, these are not. A generic one ("which datasets do they use?") may still be
+  answered by a paper in the library, so silence is again a lower bound.
 
 Usage:
   python -m benchmark.negative_scores --golden-dir data/dev/qasper \
-      --qasper-release qasper-dev-v0.3.json
-  python -m benchmark.negative_scores --golden-dir data/dev/qasa
+      --qasper-release data/raw/qasper-dev-v0.3.json \
+      --foreign-release data/raw/qasper-train-v0.3.json data/raw/qasper-dev-v0.3.json
+  python -m benchmark.negative_scores --golden-dir data/dev/qasa \
+      --foreign-release data/raw/testset_answerable_1554_v1.1.json
 """
 
 import argparse
 import json
+import random
 import sys
 from collections import Counter
 from pathlib import Path
@@ -54,12 +62,45 @@ def unanswerable_questions(qasper: dict, papers: set[str]) -> list[dict]:
             if qa["answers"] and all(a["answer"].get("unanswerable") for a in qa["answers"])]
 
 
+def release_questions(release: dict) -> list[dict]:
+    """Every question of a QASPER or QASA release, with its paper.
+
+    QASPER is keyed by paper and keeps only questions some annotator answered, so
+    a foreign question is one its own paper does answer; QASA ships answerable
+    questions only, keyed by record, and ids are made unique the way its golden
+    set makes them.
+    """
+    if all("qas" in paper for paper in release.values()):
+        return [{"paper_id": paper_id, "question_id": qa["question_id"], "question": qa["question"]}
+                for paper_id, paper in release.items() for qa in paper["qas"]
+                if any(not a["answer"].get("unanswerable") for a in qa["answers"])]
+    return [{"paper_id": r["paper_id"], "question_id": f"{r['paper_id']}#{r['question_id']}",
+             "question": r["question"]} for r in release.values()]
+
+
+def foreign_questions(questions: list[dict], used: set[str], n: int, seed: int) -> list[dict]:
+    """At most ``n`` questions about papers outside ``used``, drawn reproducibly."""
+    pool = sorted((q for q in questions if q["paper_id"] not in used),
+                  key=lambda q: q["question_id"])
+    picked = random.Random(seed).sample(pool, min(n, len(pool)))
+    return [{"question_id": q["question_id"], "question": q["question"], "source": "foreign"}
+            for q in picked]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--golden-dir", default="data/dev/qasper", help="holds chunks/")
     parser.add_argument("--qasper-release", default=None,
                         help="QASPER JSON release, for its unanswerable questions")
     parser.add_argument("--offtopic", type=Path, default=OFFTOPIC)
+    parser.add_argument("--foreign-release", nargs="*", default=[],
+                        help="releases of the same benchmark to draw foreign questions from")
+    parser.add_argument("--used-sets", nargs="*",
+                        default=[f"data/{split}/{corpus}/golden_set.jsonl"
+                                 for split in ("dev", "heldout") for corpus in ("qasper", "qasa")],
+                        help="golden_set.jsonl files whose papers no foreign question may be about")
+    parser.add_argument("--foreign", type=int, default=100, help="how many foreign questions")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     from qa_engine import QAEngine  # heavy imports (the reader, the cross-encoder)
@@ -71,6 +112,13 @@ def main():
     if args.qasper_release:
         release = json.loads(Path(args.qasper_release).read_text())
         questions += unanswerable_questions(release, {paper for paper, _ in search.ids})
+    if args.foreign_release:
+        pool = [q for path in args.foreign_release
+                for q in release_questions(json.loads(Path(path).read_text()))]
+        used = {json.loads(line)["paper_id"] for path in args.used_sets
+                for line in Path(path).read_text().splitlines() if line.strip()}
+        questions += foreign_questions(list({q["question_id"]: q for q in pool}.values()),
+                                       used, args.foreign, args.seed)
     reranker, engine = Reranker(), QAEngine()
 
     rows = []
