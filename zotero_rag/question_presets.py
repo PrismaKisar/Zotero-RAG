@@ -2,14 +2,22 @@
 
 Each preset carries only the "live" hyperparameters actually consumed by the
 pipeline (retrieval_threshold, rerank_threshold, qa_score_threshold,
-min_answer_words, section_diversity). Per-type tuning lives in each preset's
-literal default value; ``resolve`` applies user overrides on top with no hidden
-per-type transform, so what you see is what runs.
+min_answer_words, section_diversity, retrieval_mode, result_limit,
+rerank_enabled). Per-type tuning lives in each preset's literal default value;
+``resolve`` applies user overrides on top with no hidden per-type transform, so
+what you see is what runs.
 
 The QA pipeline (``ZoteroRAG.answer_question``) resolves its config through
-this module. Each live field is read by the pipeline: retrieval_threshold and
-rerank_threshold in stages 1-2, qa_score_threshold / min_answer_words /
+this module. Each live field is read by the pipeline: retrieval_mode,
+result_limit and retrieval_threshold in stage 1, rerank_enabled and
+rerank_threshold in stage 2, qa_score_threshold / min_answer_words /
 section_diversity in QA extraction.
+
+retrieval_mode / result_limit / rerank_enabled exist because the thresholds
+alone cannot change the *ranking* the retrieval metrics score - they only
+filter an already-fixed order. An ablation restricted to thresholds is
+therefore unfalsifiable by construction; these three knobs are the ones that
+actually move recall@k and MRR without re-indexing.
 """
 
 from copy import deepcopy
@@ -22,6 +30,9 @@ PRESETS = {
         "qa_score_threshold": 0.10,
         "min_answer_words": 2,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "methodology": {
         "retrieval_threshold": 0.35,
@@ -29,6 +40,9 @@ PRESETS = {
         "qa_score_threshold": 0.05,
         "min_answer_words": 5,
         "section_diversity": True,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "explanation": {
         "retrieval_threshold": 0.35,
@@ -36,6 +50,9 @@ PRESETS = {
         "qa_score_threshold": 0.05,
         "min_answer_words": 3,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "comparison": {
         "retrieval_threshold": 0.45,
@@ -43,6 +60,9 @@ PRESETS = {
         "qa_score_threshold": 0.08,
         "min_answer_words": 3,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "definition": {
         "retrieval_threshold": 0.45,
@@ -50,6 +70,9 @@ PRESETS = {
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "general": {
         "retrieval_threshold": 0.45,
@@ -57,6 +80,9 @@ PRESETS = {
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
     "custom": {
         "retrieval_threshold": 0.45,
@@ -64,6 +90,9 @@ PRESETS = {
         "qa_score_threshold": 0.0,
         "min_answer_words": 3,
         "section_diversity": False,
+        "retrieval_mode": "hybrid",
+        "result_limit": 30,
+        "rerank_enabled": True,
     },
 }
 

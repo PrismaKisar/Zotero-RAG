@@ -1,27 +1,35 @@
 """Main orchestration class for Zotero RAG system."""
 
 import os
+
 # Suppress noisy progress bars that can trigger BrokenPipe in Streamlit
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
-from typing import List, Dict, Tuple, Optional
 import warnings
-import nltk
-from streamlit.runtime.uploaded_file_manager import UploadedFile
 
-from models import Paragraph, Answer, PDFIngestItem, IngestResult, UpsertResult, CachedPDF
-from zotero_db import ZoteroDatabase
+import nltk
+from embedding_manager import EmbeddingManager
+from highlighter import PDFHighlighter
+from models import (
+    Answer,
+    CachedPDF,
+    IngestResult,
+    Paragraph,
+    PDFIngestItem,
+    RerankedParagraph,
+    UpsertResult,
+)
 from pdf_cache_handler import PDFCacheHandler
 from pdf_processor import PDFProcessor
-from embedding_manager import EmbeddingManager
-from qdrant_manager import QdrantManager
-from reranker import Reranker
 from qa_engine import QAEngine
+from qdrant_manager import QdrantManager
 from question_presets import resolve
-from highlighter import PDFHighlighter
+from reranker import Reranker
+from streamlit.runtime.uploaded_file_manager import UploadedFile
+from zotero_db import ZoteroDatabase
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
 
@@ -65,10 +73,10 @@ class ZoteroRAG:
                 grobid_timeout: int = 180,
                 qdrant_url: str = "http://localhost:6333",
                 ollama_url: str = "http://localhost:11434",
-                model_device: str = None, 
-                encode_batch_size: int = None,
-                qa_batch_size: int = None,
-                rerank_batch_size: int = None,
+                model_device: str | None = None, 
+                encode_batch_size: int | None = None,
+                qa_batch_size: int | None = None,
+                rerank_batch_size: int | None = None,
                 use_chunk_contextualization: bool = True,
                 output_base_dir: str = "output"):
         """Initialize the RAG system.
@@ -139,8 +147,9 @@ class ZoteroRAG:
         
         # For debugging/inspection
         self.last_candidates = []
+        self.last_reranked = []
     
-    def get_query_color(self, query: str) -> Tuple[float, float, float]:
+    def get_query_color(self, query: str) -> tuple[float, float, float]:
         """Get a consistent color for a query string.
         
         Args:
@@ -154,7 +163,7 @@ class ZoteroRAG:
             self.query_color_map[query] = self.query_colors[color_idx]
         return self.query_color_map[query]
     
-    def get_indexed_pdfs(self) -> List[Dict[str, str]]:
+    def get_indexed_pdfs(self) -> list[dict[str, str]]:
         """Get list of indexed PDFs.
         
         Returns:
@@ -164,15 +173,15 @@ class ZoteroRAG:
             self.qdrant_manager.open_connection()
             return self.qdrant_manager.list_indexed_pdfs()
         except ConnectionError as e:
-            logger.error(f"Error during get_indexed_pdfs: {str(e)}")
+            logger.error(f"Error during get_indexed_pdfs: {e!s}")
             raise
         except Exception as e:
-            logger.error(f"Error during get_indexed_pdfs: {str(e)}")
+            logger.error(f"Error during get_indexed_pdfs: {e!s}")
             raise
         finally:
             self.qdrant_manager.close_connection()
 
-    def consistency_check(self, indexed_pdfs: List[Dict[str, str]]) -> bool:
+    def consistency_check(self, indexed_pdfs: list[dict[str, str]]) -> bool:
         """Check consistency between indexed PDFs and cached PDFs.
         
         Args:
@@ -202,7 +211,7 @@ class ZoteroRAG:
         
         return True
 
-    def _ingest_pdfs(self, uploaded_pdfs: List[PDFIngestItem]) -> IngestResult:
+    def _ingest_pdfs(self, uploaded_pdfs: list[PDFIngestItem]) -> IngestResult:
         """Ingest PDFs into cache and prepare for indexing.
 
         Args:
@@ -215,7 +224,7 @@ class ZoteroRAG:
             raise ValueError("uploaded_pdfs cannot be empty")
 
         result = IngestResult()
-        by_hash: Dict[str, CachedPDF] = {}
+        by_hash: dict[str, CachedPDF] = {}
 
         for uploaded_pdf in uploaded_pdfs:
             try:
@@ -224,7 +233,7 @@ class ZoteroRAG:
                     continue
                 by_hash[cached_pdf.pdf_hash] = cached_pdf
             except Exception as e:
-                logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {str(e)}")
+                logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {e!s}")
                 result.failed_uploads.append(
                     {"title": str(uploaded_pdf.title), "error": str(e)}
                 )
@@ -232,7 +241,7 @@ class ZoteroRAG:
         result.ingested_pdfs = list(by_hash.values())
         return result
 
-    def ingest_pdfs_from_upload(self, uploaded_pdfs: List[UploadedFile]) -> IngestResult:
+    def ingest_pdfs_from_upload(self, uploaded_pdfs: list[UploadedFile]) -> IngestResult:
         """Ingest PDFs from user uploads.
 
         Args:
@@ -246,7 +255,7 @@ class ZoteroRAG:
         
         return self._ingest_pdfs(PDFCacheHandler.get_items_from_upload(uploaded_pdfs))
         
-    def ingest_pdfs_from_zotero(self, collection_name: Optional[str] = None) -> IngestResult:
+    def ingest_pdfs_from_zotero(self, collection_name: str | None = None) -> IngestResult:
         """Ingest PDFs from Zotero.
 
         Args:
@@ -285,7 +294,7 @@ class ZoteroRAG:
 
         return True
 
-    def upsert_pdfs(self, target_pdfs: List[CachedPDF], progress_callback=None) -> UpsertResult:
+    def upsert_pdfs(self, target_pdfs: list[CachedPDF], progress_callback=None) -> UpsertResult:
         """Process PDFs, extract paragraphs, and upsert into Qdrant index.
         
         Args:
@@ -500,7 +509,7 @@ class ZoteroRAG:
             result.indexed_chunks = indexed_chunks
             result.title_overrides = title_overrides
         except Exception as e:
-            logger.error(f"Error during upsert_paragraphs: {str(e)}")
+            logger.error(f"Error during upsert_paragraphs: {e!s}")
             raise
         finally:
             failed_hashes = {
@@ -545,7 +554,7 @@ class ZoteroRAG:
             logger.warning("No paragraphs found to delete for PDF: %s", pdf_title)
             return False
         except Exception as e:
-            logger.error(f"Error during delete_pdf_from_index: {str(e)}")
+            logger.error(f"Error during delete_pdf_from_index: {e!s}")
             return False
         finally:
             self.qdrant_manager.close_connection()
@@ -564,7 +573,7 @@ class ZoteroRAG:
             logger.info("Successfully cleared the Qdrant collection.")
             return True
         except Exception as e:
-            logger.error(f"Error during clear_collection: {str(e)}")
+            logger.error(f"Error during clear_collection: {e!s}")
             return False
         finally:
             self.qdrant_manager.close_connection()
@@ -572,12 +581,12 @@ class ZoteroRAG:
     def answer_question(self,
                     question: str,
                     question_type: str = 'general',
-                    overrides: dict = None,
+                    overrides: dict | None = None,
                     progress_callback=None,
                     rerank_callback=None,
                     num_paraphrases: int = 2,
-                    highlight_color: Tuple[float, float, float] = None,
-                    question_variations: List[str] = None) -> List[Answer]:
+                    highlight_color: tuple[float, float, float] | None = None,
+                    question_variations: list[str] | None = None) -> list[Answer]:
         """Answer a question using the full RAG pipeline.
 
         Pipeline stages:
@@ -627,6 +636,8 @@ class ZoteroRAG:
             batch_results = self.qdrant_manager.search_batch(
                 query_embeddings,
                 config['retrieval_threshold'],
+                result_limit=config['result_limit'],
+                mode=config['retrieval_mode'],
             )
 
             for i, q_var in enumerate(question_variations):
@@ -649,6 +660,7 @@ class ZoteroRAG:
             
             if not candidates:
                 self.last_candidates = []
+                self.last_reranked = []
                 return []
             
             # Store for debugging
@@ -664,19 +676,28 @@ class ZoteroRAG:
             self.qdrant_manager.close_connection()
         
         # Stage 2: Rerank and Filter (CrossEncoder)
-        reranked = self.reranker.rerank(
-            question,
-            candidates,
-            config['rerank_threshold'],
-            progress_callback=rerank_callback,
-            query_variations=question_variations
-        )
+        if config['rerank_enabled']:
+            reranked = self.reranker.rerank(
+                question,
+                candidates,
+                config['rerank_threshold'],
+                progress_callback=rerank_callback,
+                query_variations=question_variations
+            )
+        else:
+            # ponytail: bypass keeps the retrieval order (best first) so the
+            # ablation can attribute the reranker's contribution; rerank_score
+            # mirrors retrieval_score because nothing rescored the candidates.
+            reranked = [RerankedParagraph(paragraph=para, retrieval_score=score,
+                                          rerank_score=score)
+                        for para, score in sorted(candidates, key=lambda c: c[1], reverse=True)]
         
         # Update debug info with rerank results
         reranked_texts = {c.paragraph.text for c in reranked}
         for c in self.last_candidates:
             c['kept'] = c['paragraph'].text in reranked_texts
-        
+        self.last_reranked = reranked  # already sorted by rerank_score desc
+
         if not reranked:
             return []
         
@@ -698,7 +719,7 @@ class ZoteroRAG:
         
         return self._attach_pdf_paths(answers)
     
-    def _attach_pdf_paths(self, answers: List[Answer]) -> List[Answer]:
+    def _attach_pdf_paths(self, answers: list[Answer]) -> list[Answer]:
         """Resolve cached PDF paths for extracted answers.
         
         Args:
@@ -716,7 +737,7 @@ class ZoteroRAG:
 
         return answers
     
-    def highlight_pdf(self, answers_for_pdf: List[Answer], output_path: str) -> str:
+    def highlight_pdf(self, answers_for_pdf: list[Answer], output_path: str) -> str:
         """Highlight PDF using TEI sentence coordinates.
         
         Args:

@@ -8,6 +8,9 @@ LIVE_FIELDS = {
     "qa_score_threshold",
     "min_answer_words",
     "section_diversity",
+    "retrieval_mode",
+    "result_limit",
+    "rerank_enabled",
 }
 
 

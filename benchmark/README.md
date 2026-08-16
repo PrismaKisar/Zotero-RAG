@@ -130,3 +130,38 @@ Formato delle predizioni, una riga per domanda:
 
 Recall@k e MRR non sono coperti dallo script ufficiale e vanno calcolati a parte,
 sui risultati intermedi del retrieval.
+
+### Metriche proprie (`retrieval_metrics.py`)
+
+| Metrica | Cosa risponde | Perché non basta lo script ufficiale |
+|---|---|---|
+| `recall@k` | il retrieval trova i chunk gold? | assente dallo scorer QASPER |
+| `precision@k` | quanto rumore restituisce insieme? | recall@k valuta la lista *prima* del taglio: nessuna soglia può muoverla |
+| `mrr` | quanto in alto li mette? | assente |
+| `evidence_precision/recall/f1` | l'attribuzione (highlighting) è corretta? | l'Evidence F1 ufficiale confronta stringhe esatte contro testo LaTeX che i paragrafi GROBID non eguagliano mai: vale 0.0 per qualsiasi configurazione |
+| `bootstrap_ci` | la differenza tra due run è reale? | su 120 domande allineate un punto di differenza è rumore |
+
+`evidence_*` valuta gli id `(pdf_hash, chunk_index)` che il sistema ha
+effettivamente attribuito alla risposta, non le stringhe: è la controparte
+misurabile dell'Evidence F1 ufficiale, resa possibile dall'allineamento fuzzy
+di `align_evidence.py`.
+
+### Stratificazione (`stratify.py`)
+
+I due golden set differiscono sistematicamente (vedi `compare_datasets.py`):
+una media aggregata non può dire *perché* un dataset va peggio. Ogni metrica è
+quindi riportata anche per forma della domanda, numero di evidenze e
+dispersione delle evidenze nel documento. Gli strati sotto le 20 domande sono
+marcati come non interpretabili anziché essere taciuti.
+
+### Confronto tra i due dataset (`compare_datasets.py`)
+
+```
+python -m benchmark.compare_datasets \
+    --dataset QASPER=benchmark_out --dataset QASA=benchmark_out_qasa \
+    --out benchmark_out/dataset_comparison.md
+```
+
+Nota: QASA non ha risposte brevi annotate, quindi l'Answer F1 non è calcolabile
+su quel dataset. QASPER copre retrieval + answer + evidence, QASA solo
+retrieval + evidence.

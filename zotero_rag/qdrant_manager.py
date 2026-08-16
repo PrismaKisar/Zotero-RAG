@@ -1,13 +1,12 @@
 """QdrantManager class for managing Qdrant vector database operations."""
 
+import logging
 import re
 import uuid
-import logging
-from typing import List, Optional, Dict
-import qdrant_client as qc
-from qdrant_client.http import models as qmodels
 
+import qdrant_client as qc
 from models import Paragraph
+from qdrant_client.http import models as qmodels
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +30,8 @@ class QdrantManager:
         self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(dense_model_name)
         self.lookup_collection = "zoteroRAG_registry"
         self.vector_size = vector_size
-        self.paragraphs: List[Paragraph] = []
-        self.client: Optional[qc.QdrantClient] = None
+        self.paragraphs: list[Paragraph] = []
+        self.client: qc.QdrantClient | None = None
         self.conn_initialized = False
     
     @staticmethod
@@ -79,7 +78,7 @@ class QdrantManager:
                 try:
                     self.client.close()
                 except Exception:
-                    pass
+                    logger.debug("Error closing unreachable Qdrant client", exc_info=True)
             self.client = None
             message = (
                 f"Qdrant service not reachable at {self.qdrant_url}. "
@@ -217,7 +216,7 @@ class QdrantManager:
 
         return False
     
-    def list_indexed_pdfs(self) -> List[Dict[str, str]]:
+    def list_indexed_pdfs(self) -> list[dict[str, str]]:
         """List PDFs that have been indexed in Qdrant.
         
         Returns:
@@ -259,11 +258,11 @@ class QdrantManager:
         return indexed
     
     def upsert_paragraphs(self,
-                        paragraphs: List[Paragraph],
-                        dense_embeddings: List[List[float]],
-                        sparse_embeddings: List[Dict[str, List[float]]],
-                        contextual_texts: Optional[List[str]] = None, #:FIXME: debug
-                        progress_callback=None) -> tuple[int, List[Dict[str, str]]]:
+                        paragraphs: list[Paragraph],
+                        dense_embeddings: list[list[float]],
+                        sparse_embeddings: list[dict[str, list[float]]],
+                        contextual_texts: list[str] | None = None, #:FIXME: debug
+                        progress_callback=None) -> tuple[int, list[dict[str, str]]]:
         """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
 
         Args:
@@ -295,7 +294,7 @@ class QdrantManager:
         self.paragraphs = paragraphs
 
         points = []
-        pdf_indexed_titles: Dict[str, str] = {}
+        pdf_indexed_titles: dict[str, str] = {}
         for i, para in enumerate(self.paragraphs):
             point_id = QdrantManager._generate_point_id(para.pdf_hash, para.para_idx)
             if para.pdf_hash not in pdf_indexed_titles:
@@ -337,7 +336,7 @@ class QdrantManager:
         logger.info(f"Upserted {len(points)} paragraphs into Qdrant collection: {self.qdrant_collection}")
 
         # Update lookup collection with indexed PDFs
-        title_overrides: List[Dict[str, str]] = []
+        title_overrides: list[dict[str, str]] = []
         for pdf_hash, pdf_title in pdf_indexed_titles.items():
             canonical_title = self.register_pdf_title(pdf_hash, pdf_title)
             if canonical_title and canonical_title != pdf_title:
@@ -349,7 +348,7 @@ class QdrantManager:
 
         return len(points), title_overrides
 
-    def register_pdf_title(self, pdf_hash: str, title: str) -> Optional[str]:
+    def register_pdf_title(self, pdf_hash: str, title: str) -> str | None:
         """Register or update the title for a given PDF hash in the lookup collection.
 
         Args:
@@ -437,7 +436,7 @@ class QdrantManager:
         match = self.find_pdf_hash_by_title(title, filter_by_model=False)
         return bool(match and match != pdf_hash)
 
-    def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> Optional[str]:
+    def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> str | None:
         """Return the pdf_hash for a given title.
 
         Args:
@@ -483,7 +482,7 @@ class QdrantManager:
         payload = points[0].payload or {}
         return payload.get("pdf_hash")
 
-    def delete_pdf_from_index(self, pdf_hash: str) -> Dict[str, bool]:
+    def delete_pdf_from_index(self, pdf_hash: str) -> dict[str, bool]:
         """Delete all paragraphs associated with a specific PDF hash from the Qdrant collection.
         
         Args:
@@ -515,7 +514,7 @@ class QdrantManager:
                 return res
         raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
     
-    def delete_registry_entry(self, pdf_hash: str) -> Dict[str, bool]:
+    def delete_registry_entry(self, pdf_hash: str) -> dict[str, bool]:
         """Delete the registry entry for a specific PDF hash from the lookup collection.
         
         Args:
@@ -558,7 +557,7 @@ class QdrantManager:
             return {"deleted": True, "had_other_models": True}
         return {"deleted": False, "had_other_models": False}
 
-    def clear_collection(self) -> Dict[str, str]:
+    def clear_collection(self) -> dict[str, str]:
         """Clear all data from the Qdrant collection.
         
         Returns:
@@ -568,7 +567,7 @@ class QdrantManager:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
         
         indexed_pdfs = self.list_indexed_pdfs()
-        deleted_entries: Dict[str, str] = {}
+        deleted_entries: dict[str, str] = {}
         for item in indexed_pdfs:
             pdf_hash = item.get("pdf_hash")
             if pdf_hash:
@@ -581,14 +580,84 @@ class QdrantManager:
         logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
         return deleted_entries
 
+    @staticmethod
+    def _build_query_request(dense_query, sparse_query, threshold: float,
+                            result_limit: int, mode: str) -> qmodels.QueryRequest:
+        """One Qdrant query request for ``mode`` ('hybrid', 'dense' or 'sparse').
+
+        'hybrid' RRF-fuses both prefetches; the single-vector modes query that
+        vector directly, which is what makes retrieval_mode an ablation knob
+        that genuinely reorders results rather than just filtering them.
+        """
+        if mode == "dense":
+            return qmodels.QueryRequest(
+                query=dense_query, using="", score_threshold=threshold,
+                limit=result_limit, with_payload=True)
+        if mode == "sparse":
+            return qmodels.QueryRequest(
+                query=sparse_query, using="text-sparse",
+                limit=result_limit, with_payload=True)
+        if mode != "hybrid":
+            raise ValueError(f"unknown retrieval_mode: {mode!r}")
+        return qmodels.QueryRequest(
+            prefetch=[
+                qmodels.Prefetch(
+                    query=dense_query,
+                    using="",
+                    score_threshold=threshold,
+                    limit=result_limit,
+                ),
+                qmodels.Prefetch(
+                    query=sparse_query,
+                    using="text-sparse",
+                    limit=result_limit
+                ),
+            ],
+            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+            limit=result_limit,
+            with_payload=True,
+        )
+
+    @staticmethod
+    def _paragraph_from_payload(payload: dict) -> Paragraph:
+        return Paragraph(
+            text=payload.get('text', ''),
+            page_num=payload.get('page_num', -1),
+            para_idx=payload.get('para_idx', -1),
+            title=payload.get('title', ''),
+            pdf_hash=payload.get('pdf_hash', ''),
+            section=payload.get('section', ''),
+            sentence_count=payload.get('sentence_count', 0),
+            sentences=payload.get('sentences', [])
+        )
+
+    def fetch_paragraphs(self, ids: list[tuple[str, int]]) -> list[Paragraph]:
+        """Retrieve indexed paragraphs by (pdf_hash, para_idx), skipping misses.
+
+        Used by the oracle-context evaluation, which needs the gold paragraphs
+        exactly as the reader would have received them from retrieval.
+        """
+        if not self.client:
+            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
+        if not ids:
+            return []
+        point_ids = [QdrantManager._generate_point_id(pdf_hash, idx) for pdf_hash, idx in ids]
+        points = self.client.retrieve(
+            collection_name=self.qdrant_collection, ids=point_ids, with_payload=True)
+        return [QdrantManager._paragraph_from_payload(p.payload or {}) for p in points]
+
     def search_batch(self,
-                    query_embeddings: List[Dict[str, List[float]]],
-                    threshold: float = 0.45) -> List[List[Paragraph]]:
+                    query_embeddings: list[dict[str, list[float]]],
+                    threshold: float = 0.45,
+                    result_limit: int = 30,
+                    mode: str = "hybrid") -> list[list[Paragraph]]:
         """Batch search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
 
         Args:
             query_embeddings: List of query embedding dicts with 'dense' and 'sparse' keys.
             threshold: Score threshold for dense prefetch filtering.
+            result_limit: Max results per query (the ``result_limit`` preset field).
+            mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
 
         Returns:
             List of lists of (Paragraph, score) tuples, aligned to query order.
@@ -599,33 +668,14 @@ class QdrantManager:
         if not query_embeddings:
             return []
 
-        result_limit = 30
         requests = []
         for query_embedding in query_embeddings:
             dense_query = query_embedding.get("dense")
             sparse_query = query_embedding.get("sparse")
             if dense_query is None or sparse_query is None:
                 raise ValueError("Each query embedding must include 'dense' and 'sparse' keys.")
-            requests.append(
-                qmodels.QueryRequest(
-                    prefetch=[
-                        qmodels.Prefetch(
-                            query=dense_query,
-                            using="",
-                            score_threshold=threshold,
-                            limit=result_limit,
-                        ),
-                        qmodels.Prefetch(
-                            query=sparse_query,
-                            using="text-sparse",
-                            limit=result_limit
-                        ),
-                    ],
-                    query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-                    limit=result_limit,
-                    with_payload=True,
-                )
-            )
+            requests.append(QdrantManager._build_query_request(
+                dense_query, sparse_query, threshold, result_limit, mode))
 
         search_results = self.client.query_batch_points(
             collection_name=self.qdrant_collection,
@@ -642,17 +692,7 @@ class QdrantManager:
         for response in search_results:
             relevant_paragraphs = []
             for result in response.points:
-                payload = result.payload or {}
-                para = Paragraph(
-                    text=payload.get('text', ''),
-                    page_num=payload.get('page_num', -1),
-                    para_idx=payload.get('para_idx', -1),
-                    title=payload.get('title', ''),
-                    pdf_hash=payload.get('pdf_hash', ''),
-                    section=payload.get('section', ''),
-                    sentence_count=payload.get('sentence_count', 0),
-                    sentences=payload.get('sentences', [])
-                )
+                para = QdrantManager._paragraph_from_payload(result.payload or {})
                 relevant_paragraphs.append((para, result.score))
             relevant_batches.append(relevant_paragraphs)
 
