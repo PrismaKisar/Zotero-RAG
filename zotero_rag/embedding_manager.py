@@ -61,7 +61,7 @@ class EmbeddingManager:
                     dimension = metadata.get("dim") or metadata.get("dimensions") or metadata.get("size")
                     if isinstance(dimension, (int, float)):
                         return int(dimension)
-        except Exception as exc:
+        except (AttributeError, TypeError, ValueError) as exc:
             logger.debug("Unable to read FastEmbed model metadata for '%s': %s", self.dense_model_name, exc)
 
         sample_vector = next(iter(self.dense_model.embed(["dimension probe"])), None)
@@ -98,7 +98,7 @@ class EmbeddingManager:
                 ):
                     return max(start_size, int(last_safe_size * target_memory_fraction))
                 return last_safe_size
-            except Exception:
+            except Exception:  # noqa: BLE001 - probe failure: fall back to last safe batch size
                 return last_safe_size
 
         return max(start_size, int(last_safe_size * target_memory_fraction))
@@ -136,7 +136,7 @@ class EmbeddingManager:
                 keep_alive=-1
             )
             return response['response'].strip()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Ollama optional: degrade to no summary
             logger.warning(f"Document summary generation failed: {e}")
             return ""
 
@@ -201,7 +201,7 @@ class EmbeddingManager:
 
                 full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
                 contextualized_results.append(full_chunk)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Ollama optional: keep the raw chunk
                 logger.warning(f"Contextual chunk generation failed for chunk index {i}: {e}")
                 contextualized_results.append(chunk)
 
@@ -214,7 +214,7 @@ class EmbeddingManager:
         try:
             self.ollama_client.generate(model=self.context_model_name, keep_alive=0)
             logger.info("Successfully flushed Ollama cache for model: %s", self.context_model_name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - cache flush is best-effort
             logger.warning("Failed to flush Ollama cache: %s", str(e))
 
     def encode_paragraphs(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:

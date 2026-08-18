@@ -54,7 +54,7 @@ def compute_stream_hash(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
     if can_seek:
         try:
             stream.seek(0)
-        except Exception:
+        except (OSError, ValueError):
             can_seek = False
 
     for chunk in iter(lambda: stream.read(chunk_size), b""):

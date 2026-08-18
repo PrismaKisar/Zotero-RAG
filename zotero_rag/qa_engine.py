@@ -81,7 +81,7 @@ class QAEngine:
                 device=device_id
             )
             logger.info(f"QA pipeline loaded: {self.model_name} on device {self.device}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional model: continue without the pipeline
             logger.warning(f"Could not load QA model {self.model_name}: {e}")
             self.pipeline = None
     
@@ -97,7 +97,7 @@ class QAEngine:
                 device=device_id
             )
             logger.info(f"Question paraphraser loaded on {self.device}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional model: continue without the paraphraser
             logger.warning(f"Could not load paraphraser: {e}")
             self.paraphraser = None
     
@@ -186,7 +186,7 @@ class QAEngine:
             for i, var in enumerate(variations):
                 logger.debug(f"  Q{i}: {var}")
                 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - expansion optional: keep the original question
             logger.warning(f"Question expansion failed: {e}")
         
         return variations
@@ -392,7 +392,7 @@ class QAEngine:
                     })
                     filter_stats['successful_raw'] += 1
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - per-batch: skip it and keep the others
                 logger.error(f"Batch {b} failed: {e}")
                 continue
 

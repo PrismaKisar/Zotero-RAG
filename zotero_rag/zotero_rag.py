@@ -232,7 +232,7 @@ class ZoteroRAG:
                 if cached_pdf.pdf_hash in by_hash:
                     continue
                 by_hash[cached_pdf.pdf_hash] = cached_pdf
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
                 logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {e!s}")
                 result.failed_uploads.append(
                     {"title": str(uploaded_pdf.title), "error": str(e)}
@@ -289,7 +289,7 @@ class ZoteroRAG:
                 self.pdf_cache.remove_pdf(pdf_hash)
                 self.pdf_processor.remove_cache_item(pdf_hash)
                 logger.debug("Rolled back PDF from cache: %s", pdf_hash)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - rollback is best-effort
                 logger.error("Error rolling back PDF '%s': %s", pdf_hash, str(e))
 
         return True
@@ -377,7 +377,7 @@ class ZoteroRAG:
                                     message,
                                 )
                             continue
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - index check failure: fall through to reindexing
                         logger.warning(
                             "Qdrant index check failed for '%s': %s", title, str(e),
                         )
@@ -416,7 +416,7 @@ class ZoteroRAG:
                         )
                         all_paragraphs.append(paragraph)
                         per_pdf_context[pdf_hash]["paragraph_indices"].append(len(all_paragraphs) - 1)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
                     logger.error("Failed to process PDF '%s': %s", title, str(e))
                     result.failed_pdfs.append({"title": title, "error": str(e), "pdf_hash": pdf_hash})
 
@@ -491,7 +491,7 @@ class ZoteroRAG:
                                 len(pdf_hashes_with_chunks),
                                 f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
                             )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - contextualization optional: keep the original chunks
                     logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
             else:
                 logger.info("Chunk contextualization disabled: using original chunks for embedding.")
@@ -553,7 +553,7 @@ class ZoteroRAG:
 
             logger.warning("No paragraphs found to delete for PDF: %s", pdf_title)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
             logger.error(f"Error during delete_pdf_from_index: {e!s}")
             return False
         finally:
@@ -572,7 +572,7 @@ class ZoteroRAG:
             self.pdf_processor.clear_index_cache(deleted_pdfs)
             logger.info("Successfully cleared the Qdrant collection.")
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
             logger.error(f"Error during clear_collection: {e!s}")
             return False
         finally:

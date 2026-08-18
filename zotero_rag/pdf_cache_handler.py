@@ -108,7 +108,7 @@ class PDFCacheHandler:
                 os.remove(candidate_path)
                 logger.info(f"Removed PDF file: {candidate_path}")
                 return True
-            except Exception as e:
+            except OSError as e:
                 logger.error(f"Error removing PDF file '{candidate_path}': {e}")
                 return False
         else:

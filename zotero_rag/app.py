@@ -50,7 +50,7 @@ def _load_zotero_collections():
         else:
             st.error(f"Database error: {e}")
         st.stop()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
         st.error(f"Error loading Zotero: {e}")
         st.info("Make sure Zotero is installed and the database is accessible")
 
@@ -178,7 +178,7 @@ def _run_ingest_and_index(result):
             st.error("GROBID is not running. Start the service and retry indexing.")
         else:
             st.error(f"Connection error: {e}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
         stage_status.error("Indexing failed.")
         with st.expander("Show full error"):
             st.exception(e)
@@ -418,7 +418,7 @@ def show_setup_tab():
 
                     st.success(f"Model loaded: {model_input}\n\n**Batch sizes:** {' | '.join(batch_info)}")
                     st.rerun()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
                     st.error(f"Error loading model: {e}")
                     st.info("Make sure the model name is correct and supported by FastEmbed")
         else:
@@ -439,7 +439,7 @@ def show_setup_tab():
 
             try:
                 indexed_titles = st.session_state.rag.get_indexed_pdfs() if st.session_state.rag else []
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
                 if isinstance(e, ConnectionError) and "Qdrant" in str(e):
                     st.error("Qdrant is not running. Start the service to view indexed PDFs.")
                 else:
@@ -1000,7 +1000,7 @@ def show_search_tab():
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
             st.session_state.current_index = 0
             st.session_state.current_query = query
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
             st.error(f"Search failed: {e}")
             st.session_state.search_results = []
             with st.expander("Show full error"):
@@ -1060,7 +1060,7 @@ def show_search_tab():
                     else:  # Linux
                         subprocess.run(['xdg-open', pdf_path], check=False)
                     st.success(f"Opened PDF at page {answer.page_num + 1}")
-                except Exception as e:
+                except OSError as e:
                     st.error(f"Could not open PDF: {e}")
 
         # Highlight color selection for Highlight Selected

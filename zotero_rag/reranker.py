@@ -106,7 +106,7 @@ class Reranker:
                     return max(start_size, int(last_safe_size * target_memory_fraction))
                 else:
                     return last_safe_size
-            except Exception:
+            except Exception:  # noqa: BLE001 - probe failure: fall back to last safe batch size
                 return last_safe_size
         
         # Hit max size without OOM, use target fraction of max

@@ -72,7 +72,7 @@ class PDFProcessor:
         try:
             resp = requests.get(f"{self.grobid_url}/api/isalive", timeout=5)
             return resp.status_code == 200
-        except Exception:
+        except requests.RequestException:
             return False
         
     @staticmethod
@@ -234,7 +234,7 @@ class PDFProcessor:
                     shutil.rmtree(out_dir, ignore_errors=True)
         except ConnectionError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - GROBID failure: skip this PDF
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
 

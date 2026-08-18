@@ -131,7 +131,7 @@ class PDFHighlighter:
                                                 break
                                     if found_annotation_spot:
                                         break
-                            except Exception as e:
+                            except Exception as e:  # noqa: BLE001 - skip pages PyMuPDF cannot annotate
                                 logger.debug(f"Could not annotate on page {page_num}: {e}")
                                 continue
             
