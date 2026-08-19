@@ -38,12 +38,12 @@ def sanitize_filename(name: str | None, max_length: int = 200) -> str:
     return sanitized
 
 
-def compute_stream_hash(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
+def compute_stream_hash(stream: BinaryIO, buffer_size: int = 1024 * 1024) -> str:
     """Compute SHA-256 hash from a binary stream.
     
     Args:
         stream: A binary stream to read from.
-        chunk_size: The size of chunks to read at a time (default is 1 MB).
+        buffer_size: Bytes read per iteration (default is 1 MB).
         
     Returns:
         The SHA-256 hash of the stream as a hexadecimal string.
@@ -57,10 +57,10 @@ def compute_stream_hash(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
         except (OSError, ValueError):
             can_seek = False
 
-    for chunk in iter(lambda: stream.read(chunk_size), b""):
-        if not chunk:
+    for block in iter(lambda: stream.read(buffer_size), b""):
+        if not block:
             break
-        h.update(chunk)
+        h.update(block)
 
     if can_seek:
         try:
@@ -71,15 +71,15 @@ def compute_stream_hash(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def compute_file_hash(file_path: str, chunk_size: int = 1024 * 1024) -> str:
+def compute_file_hash(file_path: str, buffer_size: int = 1024 * 1024) -> str:
     """Compute SHA-256 hash of a file.
     
     Args:
         file_path: The path to the file to hash.
-        chunk_size: The size of chunks to read at a time (default is 1 MB).
+        buffer_size: Bytes read per iteration (default is 1 MB).
         
     Returns:
         The SHA-256 hash of the file as a hexadecimal string.
     """
     with open(file_path, "rb") as f:
-        return compute_stream_hash(f, chunk_size=chunk_size)
+        return compute_stream_hash(f, buffer_size=buffer_size)

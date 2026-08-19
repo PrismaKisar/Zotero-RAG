@@ -5,7 +5,7 @@ parameter except one at the fixed baseline, sweep that one parameter, repeat
 per parameter. This is deliberately NOT the adaptive per-question-type preset
 in zotero_rag/question_presets.py (that's a separate, out-of-scope experiment).
 
-Runs on the QASPER dev golden set (benchmark_out/), same dataset the frozen
+Runs on the QASPER dev golden set (benchmark_out_qasper/), same dataset the frozen
 alignment protocol designates for ablation (see benchmark/README.md). Scores:
 
 - Answer F1, per question, via qasper_evaluator.token_f1_score (the official
@@ -15,7 +15,7 @@ alignment protocol designates for ablation (see benchmark/README.md). Scores:
 - Evidence precision/recall/F1 over the chunks the system actually attributed
   (the ones the highlighter would mark). This replaces QASPER's official
   Evidence F1, which matches evidence by exact string equality against
-  LaTeX-derived text that our GROBID/PDF-extracted paragraphs never equal
+  LaTeX-derived text that our GROBID/PDF-extracted chunks never equal
   verbatim - it evaluates to 0.0 regardless of config, confirmed empirically.
 
 The grid ablates parameters that *reorder* results, not just filter them.
@@ -35,11 +35,11 @@ one of the ablated parameters, and holding it constant keeps the one-at-a-time
 methodology honest (also sidesteps the Ollama dependency, unused otherwise).
 
 Requires: GROBID + Qdrant running, and the corpus already indexed via
-benchmark/index_benchmark_pdfs.py (same output_base_dir passed here).
+benchmark/index_pdfs.py (same output_base_dir passed here).
 
 Usage:
-  python -m benchmark.ablation --work-dir benchmark_out/grobid \
-      --hash-map benchmark_out/pdf_hash_map.json --out benchmark_out/ablation_results.csv
+  python -m benchmark.ablation --work-dir benchmark_out_qasper/grobid \
+      --hash-map benchmark_out_qasper/pdf_hash_map.json --out-file benchmark_out_qasper/ablation_results.csv
 """
 
 import argparse
@@ -49,7 +49,8 @@ import random
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
+# appended (not inserted): prepending lets zotero_rag.py shadow the zotero_rag package
+sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from question_presets import PRESETS
 
@@ -170,11 +171,11 @@ def answer_f1(predicted_answer: str, references: list[dict]) -> tuple[float, str
 def attributed_ids(answers, reranked) -> set[tuple[str, int]]:
     """Chunk ids the system surfaced as evidence for its answers.
 
-    Answer carries no para_idx, so answers are mapped back to the paragraph
+    Answer carries no chunk_index, so answers are mapped back to the chunk
     they were extracted from by context text - the same text the highlighter
     resolves coordinates against.
     """
-    by_text = {c.paragraph.text: (c.paragraph.pdf_hash, c.paragraph.para_idx)
+    by_text = {c.chunk.text: (c.chunk.pdf_hash, c.chunk.chunk_index)
                for c in reranked}
     return {by_text[a.context] for a in answers if a.context in by_text}
 
@@ -191,8 +192,8 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
                                 gold_answers.get(question["question_id"], []))
 
     ranked = sorted(rag.last_candidates, key=lambda c: c["retrieval_score"], reverse=True)
-    ranked_ids = [(c["paragraph"].pdf_hash, c["paragraph"].para_idx) for c in ranked]
-    reranked_ids = [(c.paragraph.pdf_hash, c.paragraph.para_idx) for c in rag.last_reranked]
+    ranked_ids = [(c["chunk"].pdf_hash, c["chunk"].chunk_index) for c in ranked]
+    reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in rag.last_reranked]
 
     row = {"answer_f1": f1}
     row.update(per_question_scores(
@@ -225,7 +226,7 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
     Retrieval metrics are perfect by construction and therefore omitted: the
     only meaningful number here is Answer F1, the reader's ceiling.
     """
-    from models import RerankedParagraph
+    from models import RerankedChunk
 
     rows = []
     rag.qdrant_manager.open_connection()
@@ -234,11 +235,11 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
             gold_ids = gold_chunks.get(q["question_id"])
             if gold_ids is None:
                 continue
-            paragraphs = rag.qdrant_manager.fetch_paragraphs(sorted(gold_ids))
-            if not paragraphs:
+            chunks = rag.qdrant_manager.fetch_chunks(sorted(gold_ids))
+            if not chunks:
                 continue
-            candidates = [RerankedParagraph(paragraph=p, retrieval_score=1.0, rerank_score=1.0)
-                          for p in paragraphs]
+            candidates = [RerankedChunk(chunk=p, retrieval_score=1.0, rerank_score=1.0)
+                          for p in chunks]
             answers = rag.qa_engine.extract_answers(
                 q["question"], candidates, config, question_variations=[q["question"]])
             f1, answer_type = answer_f1(answers[0].text if answers else "",
@@ -271,23 +272,46 @@ def write_per_question(rows: list[dict], path: Path) -> None:
             f.write(json.dumps(row, default=str) + "\n")
 
 
+def check_corpus_indexed(rag) -> int:
+    """Fail fast unless the collection being queried actually holds chunks.
+
+    open_connection() *creates* a missing collection, so a wrong
+    --collection-suffix does not raise: the run quietly scores an empty index
+    and every metric comes out 0.0, indistinguishable from a real result.
+    """
+    rag.qdrant_manager.open_connection()
+    try:
+        name = rag.qdrant_manager.chunk_collection
+        if not rag.qdrant_manager.client.collection_exists(name):
+            raise SystemExit(f"Qdrant collection {name!r} does not exist - "
+                             "index the corpus first, or check --qdrant-collection-suffix.")
+        count = rag.qdrant_manager.client.count(name).count
+        if not count:
+            raise SystemExit(f"Qdrant collection {name!r} is empty.")
+        return count
+    finally:
+        rag.qdrant_manager.close_connection()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="benchmark_out")
-    parser.add_argument("--hash-map", default="benchmark_out/pdf_hash_map.json")
-    parser.add_argument("--work-dir", default="benchmark_out/grobid",
+    parser.add_argument("--golden-dir", default="benchmark_out_qasper")
+    parser.add_argument("--hash-map", default="benchmark_out_qasper/pdf_hash_map.json")
+    parser.add_argument("--work-dir", default="benchmark_out_qasper/grobid",
                         help="output_base_dir ZoteroRAG was indexed with")
-    parser.add_argument("--out", default="benchmark_out/ablation_results.csv")
-    parser.add_argument("--strata-out", default="benchmark_out/ablation_by_stratum.md",
+    parser.add_argument("--out-file", default="benchmark_out_qasper/ablation_results.csv")
+    parser.add_argument("--strata-file", default="benchmark_out_qasper/ablation_by_stratum.md",
                         help="stratified breakdown of the baseline run")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
+    parser.add_argument("--collection-suffix", default="_qasper",
+                        help="the Qdrant collection this corpus was indexed into")
     parser.add_argument("--sample", type=int, default=None,
                         help="subsample this many questions (default: all 218)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    from zotero_rag import (
+    from zotero_rag.zotero_rag import (
         ZoteroRAG,  # heavy import, kept out of build_configs()'s pure path
     )
 
@@ -307,14 +331,17 @@ def main():
     print(f"scoring {len(questions)} aligned questions")
 
     rag = ZoteroRAG(grobid_url=args.grobid_url, qdrant_url=args.qdrant_url,
-                    output_base_dir=args.work_dir)
+                    output_base_dir=args.work_dir,
+                    qdrant_collection_suffix=args.collection_suffix)
+    print(f"querying {rag.qdrant_manager.chunk_collection}: "
+          f"{check_corpus_indexed(rag)} chunks")
     # ponytail: deberta-v3-large's disentangled attention has no efficient MPS
     # kernel on this hardware (measured ~2x slower than CPU at 512 tokens);
     # the reranker has no such issue, so only the QA model moves to CPU.
     rag.qa_engine.model = rag.qa_engine.model.to("cpu")
     rag.qa_engine.device = "cpu"
 
-    out_path = Path(args.out)
+    out_path = Path(args.out_file)
     fieldnames = build_fieldnames()
     check_schema_compatible(out_path, fieldnames)
     done = load_completed_configs(out_path)
@@ -335,7 +362,7 @@ def main():
         label = entry["param"] if entry["value"] is None else f"{entry['param']}_{entry['value']}"
         write_per_question(rows, out_path.parent / "per_question" / f"{label}.jsonl")
         if entry["param"] == "baseline":
-            Path(args.strata_out).write_text(to_markdown(
+            Path(args.strata_file).write_text(to_markdown(
                 {"QASPER": stratify(rows)},
                 [m for m in CSV_METRICS if m in rows[0]]))
 

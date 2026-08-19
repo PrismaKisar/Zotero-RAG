@@ -70,11 +70,11 @@ class PDFCacheHandler:
         candidate_filename = f"{pdf_hash}.pdf"
         candidate_path = os.path.join(self.folder_path, candidate_filename)
 
-        created = False
+        newly_cached = False
         if not os.path.exists(candidate_path):
             try:
                 uploaded_pdf.source.write_to(candidate_path)
-                created = True
+                newly_cached = True
             except Exception as e:
                 raise OSError(f"Failed to ingest PDF '{uploaded_pdf.title}'") from e
 
@@ -83,7 +83,7 @@ class PDFCacheHandler:
             pdf_hash=pdf_hash,
             title=title,
             cache_path=candidate_path,
-            created=created,
+            newly_cached=newly_cached,
         )
 
     def remove_pdf(self, pdf_hash: str) -> bool:

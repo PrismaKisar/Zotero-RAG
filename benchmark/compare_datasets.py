@@ -8,8 +8,8 @@ Everything is computed from artefacts already produced by the pipeline:
 
 Usage:
   python -m benchmark.compare_datasets \
-      --dataset QASPER=benchmark_out --dataset QASA=benchmark_out_qasa \
-      --out benchmark_out/dataset_comparison.md
+      --dataset QASPER=benchmark_out_qasper --dataset QASA=benchmark_out_qasa \
+      --out-file benchmark_out_qasper/dataset_comparison.md
 """
 
 import argparse
@@ -242,9 +242,9 @@ def report(datasets):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dataset", action="append", required=True,
-                    metavar="NAME=DIR", help="repeatable, e.g. QASPER=benchmark_out")
-    ap.add_argument("--out", type=Path, help="write the markdown report here")
-    ap.add_argument("--json", type=Path, help="also dump raw metric values")
+                    metavar="NAME=DIR", help="repeatable, e.g. QASPER=benchmark_out_qasper")
+    ap.add_argument("--out-file", type=Path, help="write the markdown report here")
+    ap.add_argument("--metrics-file", type=Path, help="also dump raw metric values as JSON")
     args = ap.parse_args()
 
     datasets = {}
@@ -254,10 +254,10 @@ def main():
 
     md = report(datasets)
     print(md)
-    if args.out:
-        args.out.write_text(md)
-    if args.json:
-        args.json.write_text(json.dumps(
+    if args.out_file:
+        args.out_file.write_text(md)
+    if args.metrics_file:
+        args.metrics_file.write_text(json.dumps(
             {n: {"metrics": m, "categories": {k: dict(v) for k, v in c.items()}}
              for n, (m, c) in datasets.items()}, indent=2))
 

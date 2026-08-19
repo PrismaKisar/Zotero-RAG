@@ -8,25 +8,25 @@ from pdf_utils import compute_file_hash, compute_stream_hash
 
 
 @dataclass
-class ExtractedParagraph:
-    """Represents a paragraph extracted from TEI before PDF metadata is attached."""
+class ExtractedChunk:
+    """A chunk extracted from a TEI paragraph, before PDF metadata is attached."""
     text: str
-    page_num: int
-    para_idx: int
+    page_number: int
+    chunk_index: int
     section: str
     sentences: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
-class Paragraph:
-    """Represents a paragraph-level chunk for QA."""
+class Chunk:
+    """The unit of retrieval: one TEI paragraph, indexed and searched as a whole."""
     text: str
-    page_num: int
-    para_idx: int
+    page_number: int
+    chunk_index: int
     title: str
     pdf_hash: str
     section: str = "body"  # section type: body, abstract, intro, etc.
-    sentence_count: int = 0  # number of sentences in this paragraph
+    sentence_count: int = 0  # number of sentences in this chunk
     sentences: list[tuple[str, str]] = field(default_factory=list)  # List of (sentence_text, coords)
     
     def __reduce__(self):
@@ -35,8 +35,8 @@ class Paragraph:
             self.__class__,
             (
                 self.text,
-                self.page_num,
-                self.para_idx,
+                self.page_number,
+                self.chunk_index,
                 self.title,
                 self.pdf_hash,
                 self.section,
@@ -47,9 +47,9 @@ class Paragraph:
 
 
 @dataclass
-class RerankedParagraph:
-    """Represents a paragraph with retrieval and rerank scores."""
-    paragraph: Paragraph
+class RerankedChunk:
+    """A chunk with its retrieval and rerank scores."""
+    chunk: Chunk
     retrieval_score: float
     rerank_score: float
 
@@ -58,8 +58,8 @@ class RerankedParagraph:
 class Answer:
     """Represents an extracted answer to a question."""
     text: str  # The answer text extracted from passage
-    context: str  # Full paragraph context
-    page_num: int
+    context: str  # Full text of the chunk the answer was extracted from
+    page_number: int
     title: str
     section: str = "body"
     start_char: int = 0  # Character position in context where answer starts
@@ -77,7 +77,7 @@ class Answer:
         """Custom pickle support for dataclass."""
         return (
             self.__class__,
-            (self.text, self.context, self.page_num, self.title,
+            (self.text, self.context, self.page_number, self.title,
              self.section, self.start_char, self.end_char, self.score, self.query, self.color,
              self.sentence_coords, self.retrieval_score, self.rerank_score, self.pdf_path, self.pdf_hash)
         )
@@ -98,14 +98,14 @@ class CachedPDF:
     pdf_hash: str
     title: str
     cache_path: str
-    created: bool = False
+    newly_cached: bool = False
 
 
 @dataclass
 class IngestResult:
     """Summary of an ingestion operation."""
     ingested_pdfs: list[CachedPDF] = field(default_factory=list)
-    failed_uploads: list[dict[str, str]] = field(default_factory=list)
+    failed_pdfs: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -113,19 +113,19 @@ class UpsertResult:
     """Summary of an indexing operation."""
     indexed_chunks: int = 0
     processed_pdfs: int = 0
-    already_indexed_info: list[dict[str, str]] = field(default_factory=list)
+    already_indexed: list[dict[str, str]] = field(default_factory=list)
     title_overrides: list[dict[str, str]] = field(default_factory=list)
-    duplicate_title_titles: list[str] = field(default_factory=list)
+    duplicate_titles: list[str] = field(default_factory=list)
     failed_pdfs: list[dict[str, str]] = field(default_factory=list)
 
 
 class PDFSource(Protocol):
     """Strategy interface for PDF ingestion sources."""
 
-    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
+    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
         ...
 
-    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
         ...
 
 
@@ -134,13 +134,13 @@ class UploadSource:
     """PDF source backed by an in-memory upload."""
     uploaded_file: Any
 
-    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
-        return compute_stream_hash(self.uploaded_file, chunk_size=chunk_size)
+    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
+        return compute_stream_hash(self.uploaded_file, buffer_size=buffer_size)
 
-    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
         self.uploaded_file.seek(0)
         with open(dest_path, "wb") as out_file:
-            shutil.copyfileobj(self.uploaded_file, out_file, length=chunk_size)
+            shutil.copyfileobj(self.uploaded_file, out_file, length=buffer_size)
         self.uploaded_file.seek(0)
 
 
@@ -149,10 +149,10 @@ class PathSource:
     """PDF source backed by a file path."""
     path: str
 
-    def compute_hash(self, chunk_size: int = 1024 * 1024) -> str:
-        return compute_file_hash(self.path, chunk_size=chunk_size)
+    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
+        return compute_file_hash(self.path, buffer_size=buffer_size)
 
-    def write_to(self, dest_path: str, chunk_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
         shutil.copy2(self.path, dest_path)
 
 

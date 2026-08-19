@@ -1,4 +1,4 @@
-# Benchmark QASPER
+# Benchmark
 
 Protocollo congelato: vedi `thesis/chapters/03-methodology.tex`. I comandi qui
 sotto sono quelli con cui il golden set è stato fissato, e non vanno cambiati
@@ -13,11 +13,11 @@ Entrambi da `https://qasper-dataset.s3.us-west-2.amazonaws.com/`. I file JSON no
 sono versionati qui: il golden set si rigenera dal comando sotto, che è
 deterministico a parità di seed.
 
-## Golden set congelato
+## Golden set QASPER
 
 ```
-python -m benchmark.build_golden_set qasper-dev-v0.3.json \
-    --out benchmark_out --papers 100 --seed 42 --pdf-dir benchmark_out/pdfs
+python -m benchmark.build_qasper_golden_set qasper-dev-v0.3.json \
+    --out-dir benchmark_out_qasper --papers 100 --seed 42 --pdf-dir benchmark_out_qasper/pdfs
 ```
 
 Risultato: **100 paper, 218 domande**, di cui 90 (41,3%) a evidenza multipla.
@@ -30,9 +30,9 @@ Esclusioni sul dev completo (1005 domande): 237 abstractive, 113 yes/no,
 Richiede GROBID attivo (`docker-compose up`).
 
 ```
-python -m benchmark.extract_chunks --pdf-dir benchmark_out/pdfs --out benchmark_out/chunks
-python -m benchmark.align_evidence benchmark_out/golden_set.jsonl \
-    --chunks benchmark_out/chunks --out benchmark_out --sample 30 --seed 42
+python -m benchmark.extract_chunks --pdf-dir benchmark_out_qasper/pdfs --out-dir benchmark_out_qasper/chunks
+python -m benchmark.align_evidence benchmark_out_qasper/golden_set.jsonl \
+    --chunks-dir benchmark_out_qasper/chunks --out-dir benchmark_out_qasper --sample 30 --seed 42
 ```
 
 Criterio: un paragrafo è allineato solo quando un **singolo** chunk lo copre.
@@ -94,7 +94,7 @@ risolti sono riportati e vanno recuperati a mano.
 
 ```
 python -m benchmark.build_qasa_golden_set testset_answerable_1554_v1.1.json \
-    --out benchmark_out_qasa --papers 100 --seed 42 --pdf-dir benchmark_out_qasa/pdfs
+    --out-dir benchmark_out_qasa --papers 100 --seed 42 --pdf-dir benchmark_out_qasa/pdfs
 ```
 
 Risultato: **100 paper, 1.381 domande**, di cui 631 (45,7%) a evidenza multipla
@@ -121,7 +121,7 @@ conta come predizioni mancanti tutte le domande escluse dal golden set.
 ```
 python benchmark/qasper_evaluator.py \
     --predictions predictions.jsonl \
-    --gold benchmark_out/golden_gold.json \
+    --gold benchmark_out_qasper/golden_gold.json \
     --text_evidence_only
 ```
 
@@ -158,8 +158,8 @@ marcati come non interpretabili anziché essere taciuti.
 
 ```
 python -m benchmark.compare_datasets \
-    --dataset QASPER=benchmark_out --dataset QASA=benchmark_out_qasa \
-    --out benchmark_out/dataset_comparison.md
+    --dataset QASPER=benchmark_out_qasper --dataset QASA=benchmark_out_qasa \
+    --out-file benchmark_out_qasper/dataset_comparison.md
 ```
 
 Nota: QASA non ha risposte brevi annotate, quindi l'Answer F1 non è calcolabile

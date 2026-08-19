@@ -2,7 +2,7 @@
 # Demonstrates advanced features and custom paraphrases
 
 # Zotero settings
-collection_name: "Machine Learning Papers"  # Optional, use specific collection
+zotero_collection: "Machine Learning Papers"  # Optional, use specific collection
 output_base_dir: ./ml_papers_output
 
 # Model settings (optional overrides)

@@ -12,7 +12,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - Chunk contextualization via Ollama before embedding (optional)
 - Question expansion via automatic paraphrasing for improved recall
 - Question type presets (factoid, methodology, explanation, comparison)
-- Sliding window QA for answers spanning paragraph boundaries
+- Sliding window QA for answers spanning chunk boundaries
 - Multi-color highlighting for multiple queries
 - Streamlit web interface with real-time progress tracking
 

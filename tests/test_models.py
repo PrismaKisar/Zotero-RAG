@@ -5,9 +5,9 @@ import pickle
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import Answer, Paragraph, PathSource, UploadSource
+from models import Answer, Chunk, PathSource, UploadSource
 from pdf_utils import compute_file_hash, compute_stream_hash
 
 
@@ -44,9 +44,9 @@ def test_path_source_write_to_copies_file(tmp_path):
     assert dest.read_bytes() == src.read_bytes()
 
 
-def test_paragraph_survives_pickle_roundtrip():
-    original = Paragraph(
-        text="some text", page_num=1, para_idx=2, title="Title",
+def test_chunk_survives_pickle_roundtrip():
+    original = Chunk(
+        text="some text", page_number=1, chunk_index=2, title="Title",
         pdf_hash="abc123", section="abstract", sentence_count=3,
         sentences=[("s1", "coords1")],
     )
@@ -56,7 +56,7 @@ def test_paragraph_survives_pickle_roundtrip():
 
 def test_answer_survives_pickle_roundtrip():
     original = Answer(
-        text="answer", context="context", page_num=1, title="Title",
+        text="answer", context="context", page_number=1, title="Title",
         section="body", start_char=0, end_char=6, score=0.9, query="q",
         sentence_coords=["c1"], retrieval_score=0.5, rerank_score=0.4,
         pdf_path="/tmp/x.pdf", pdf_hash="hash",

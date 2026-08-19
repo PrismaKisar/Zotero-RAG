@@ -68,7 +68,7 @@ def answer_to_dict(answer: Answer) -> dict[str, Any]:
         'text': answer.text,
         'context': answer.context,
         'pdf_path': answer.pdf_path,
-        'page_num': answer.page_num,
+        'page_number': answer.page_number,
         'title': answer.title,
         'section': answer.section,
         'start_char': answer.start_char,
@@ -118,7 +118,7 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
         rag = ZoteroRAG(
             source_type='zotero',
             zotero_data_dir=config.get('zotero_data_dir'),
-            collection_name=config.get('collection_name'),
+            zotero_collection=config.get('zotero_collection'),
             dense_model_name=config['model_name'],
             qa_model=config['qa_model'],
             reranker_model=config['reranker_model'],

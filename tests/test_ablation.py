@@ -1,4 +1,5 @@
 import json
+import types
 
 import pytest
 
@@ -9,6 +10,7 @@ from benchmark.ablation import (
     attributed_ids,
     build_configs,
     build_fieldnames,
+    check_corpus_indexed,
     check_schema_compatible,
     csv_row,
     load_completed_configs,
@@ -20,16 +22,16 @@ from benchmark.ablation import (
 )
 
 
-class _FakeParagraph:
-    def __init__(self, pdf_hash, para_idx, text=""):
+class _FakeChunk:
+    def __init__(self, pdf_hash, chunk_index, text=""):
         self.pdf_hash = pdf_hash
-        self.para_idx = para_idx
+        self.chunk_index = chunk_index
         self.text = text
 
 
 class _FakeReranked:
-    def __init__(self, pdf_hash, para_idx, text=""):
-        self.paragraph = _FakeParagraph(pdf_hash, para_idx, text)
+    def __init__(self, pdf_hash, chunk_index, text=""):
+        self.chunk = _FakeChunk(pdf_hash, chunk_index, text)
 
 
 class _FakeAnswer:
@@ -45,8 +47,8 @@ class _FakeRag:
     def __init__(self, answers=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
         self.last_candidates = [
-            {"paragraph": _FakeParagraph("h", 2, "ctx-2"), "retrieval_score": 0.9},
-            {"paragraph": _FakeParagraph("h", 1, "ctx-1"), "retrieval_score": 0.5},
+            {"chunk": _FakeChunk("h", 2, "ctx-2"), "retrieval_score": 0.9},
+            {"chunk": _FakeChunk("h", 1, "ctx-1"), "retrieval_score": 0.5},
         ]
         self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
 
@@ -174,8 +176,8 @@ def test_run_config_skips_questions_without_gold_chunks():
 
 
 class _FakeQdrant:
-    def __init__(self, paragraphs):
-        self._paragraphs = paragraphs
+    def __init__(self, chunks):
+        self._chunks = chunks
         self.opened = False
 
     def open_connection(self):
@@ -184,8 +186,8 @@ class _FakeQdrant:
     def close_connection(self):
         self.opened = False
 
-    def fetch_paragraphs(self, ids):
-        return [p for p in self._paragraphs if (p.pdf_hash, p.para_idx) in set(ids)]
+    def fetch_chunks(self, ids):
+        return [p for p in self._chunks if (p.pdf_hash, p.chunk_index) in set(ids)]
 
 
 class _FakeQaEngine:
@@ -199,23 +201,23 @@ class _FakeQaEngine:
 
 
 class _OracleRag:
-    def __init__(self, paragraphs, answers):
-        self.qdrant_manager = _FakeQdrant(paragraphs)
+    def __init__(self, chunks, answers):
+        self.qdrant_manager = _FakeQdrant(chunks)
         self.qa_engine = _FakeQaEngine(answers)
 
 
 def test_run_oracle_feeds_gold_chunks_to_the_reader():
-    from models import Paragraph
+    from models import Chunk
 
-    gold_para = Paragraph(text="gold text", page_num=1, para_idx=1, title="T", pdf_hash="h")
-    rag = _OracleRag([gold_para], [_FakeAnswer(text="some answer")])
+    gold_chunk = Chunk(text="gold text", page_number=1, chunk_index=1, title="T", pdf_hash="h")
+    rag = _OracleRag([gold_chunk], [_FakeAnswer(text="some answer")])
 
     rows = run_oracle(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)
 
     assert len(rows) == 1
     assert rows[0]["answer_f1"] == 1.0
-    # the reader saw exactly the gold paragraph, never the retriever's output
-    assert [c.paragraph.text for c in rag.qa_engine.seen_candidates] == ["gold text"]
+    # the reader saw exactly the gold chunk, never the retriever's output
+    assert [c.chunk.text for c in rag.qa_engine.seen_candidates] == ["gold text"]
     # oracle rows carry no retrieval metrics: they would be 1.0 by construction
     assert f"recall@{RECALL_K}" not in rows[0]
     assert rag.qdrant_manager.opened is False  # connection closed again
@@ -291,3 +293,46 @@ def test_check_schema_compatible_rejects_old_schema(tmp_path):
     out.write_text("param,value,answer_f1,recall@10,mrr\n")
     with pytest.raises(SystemExit):
         check_schema_compatible(out, build_fieldnames())
+
+
+class _FakeClient:
+    def __init__(self, exists=True, count=42):
+        self._exists, self._count = exists, count
+
+    def collection_exists(self, name):
+        return self._exists
+
+    def count(self, name):
+        return types.SimpleNamespace(count=self._count)
+
+
+class _FakeManager:
+    def __init__(self, **kwargs):
+        self.chunk_collection = "zotero_rag_test"
+        self.client = _FakeClient(**kwargs)
+        self.closed = False
+
+    def open_connection(self):
+        pass
+
+    def close_connection(self):
+        self.closed = True
+
+
+def test_check_corpus_indexed_returns_chunk_count():
+    rag = types.SimpleNamespace(qdrant_manager=_FakeManager(count=4978))
+    assert check_corpus_indexed(rag) == 4978
+    assert rag.qdrant_manager.closed
+
+
+def test_check_corpus_indexed_rejects_missing_collection():
+    rag = types.SimpleNamespace(qdrant_manager=_FakeManager(exists=False))
+    with pytest.raises(SystemExit, match="does not exist"):
+        check_corpus_indexed(rag)
+
+
+def test_check_corpus_indexed_rejects_empty_collection():
+    """An empty collection yields 0.0 on every metric, which reads as a real result."""
+    rag = types.SimpleNamespace(qdrant_manager=_FakeManager(count=0))
+    with pytest.raises(SystemExit, match="is empty"):
+        check_corpus_indexed(rag)

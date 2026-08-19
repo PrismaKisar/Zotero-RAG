@@ -25,7 +25,7 @@ A paragraph with no chunk above the threshold is left unaligned and counted,
 never paired with its closest chunk.
 
 Usage:
-  python -m benchmark.align_evidence golden_set.jsonl --chunks chunks/ --out out/
+  python -m benchmark.align_evidence golden_set.jsonl --chunks-dir chunks/ --out-dir out/
 """
 
 import argparse
@@ -156,10 +156,10 @@ def load_chunks(chunks_dir: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("golden_set", help="golden_set.jsonl from build_golden_set")
-    parser.add_argument("--chunks", required=True,
+    parser.add_argument("golden_set", help="golden_set.jsonl from a golden-set builder")
+    parser.add_argument("--chunks-dir", required=True,
                         help="directory of <paper_id>.json files, each a list of chunk texts")
-    parser.add_argument("--out", default="benchmark_out", help="output directory")
+    parser.add_argument("--out-dir", default="benchmark_out_qasper", help="output directory")
     parser.add_argument("--threshold", type=float, default=THRESHOLD)
     parser.add_argument("--sample", type=int, default=30,
                         help="size of the sample to validate by hand")
@@ -170,10 +170,10 @@ def main():
     args = parser.parse_args()
 
     records = [json.loads(line) for line in Path(args.golden_set).read_text().splitlines() if line]
-    chunks_by_paper = load_chunks(Path(args.chunks))
+    chunks_by_paper = load_chunks(Path(args.chunks_dir))
     aligned, dropped, stats = align_records(records, chunks_by_paper, args.threshold)
 
-    out = Path(args.out)
+    out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     with (out / "golden_set_aligned.jsonl").open("w") as f:
         for record in aligned:

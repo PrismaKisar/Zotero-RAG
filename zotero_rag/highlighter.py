@@ -44,7 +44,7 @@ class PDFHighlighter:
             doc = self.fitz.open(source_pdf)
             
             # Group answers by the actual pages their coordinates reference
-            # (not by answer.page_num which may be wrong for multi-page paragraphs)
+            # (not by answer.page_number which may be wrong for multi-page chunks)
             coords_by_page = {}
             for answer in answers:
                 if answer.sentence_coords:
@@ -62,12 +62,12 @@ class PDFHighlighter:
                                 continue
             
             # Process each page that has coordinates
-            for page_num, page_data in coords_by_page.items():
-                if page_num >= len(doc):
-                    logger.warning(f"Page {page_num} referenced in coords but PDF only has {len(doc)} pages")
+            for page_number, page_data in coords_by_page.items():
+                if page_number >= len(doc):
+                    logger.warning(f"Page {page_number} referenced in coords but PDF only has {len(doc)} pages")
                     continue
                     
-                page = doc[page_num]
+                page = doc[page_number]
                 
                 # Group by answer ID to track if we highlighted anything for each
                 # (using id() since Answer objects aren't hashable)
@@ -113,7 +113,7 @@ class PDFHighlighter:
                                         parts = coord_group.strip().split(',')
                                         if len(parts) >= 5:
                                             coord_page = int(parts[0]) - 1
-                                            if coord_page == page_num:
+                                            if coord_page == page_number:
                                                 x0, y0 = float(parts[1]), float(parts[2])
                                                 annot_text = (
                                                     f"Q: {answer.query}\n\n"
@@ -132,7 +132,7 @@ class PDFHighlighter:
                                     if found_annotation_spot:
                                         break
                             except Exception as e:  # noqa: BLE001 - skip pages PyMuPDF cannot annotate
-                                logger.debug(f"Could not annotate on page {page_num}: {e}")
+                                logger.debug(f"Could not annotate on page {page_number}: {e}")
                                 continue
             
             # Save the PDF with all highlights

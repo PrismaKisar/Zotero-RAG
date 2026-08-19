@@ -10,7 +10,7 @@ Not covered by ``qasper_evaluator.py`` (see benchmark/README.md):
 - ``evidence_prf`` is the attribution metric the thesis needs for the
   highlighting deliverable. It deliberately scores *chunk ids*, not strings:
   QASPER's official Evidence F1 matches evidence by exact string equality
-  against LaTeX-derived text that our GROBID/PDF-extracted paragraphs never
+  against LaTeX-derived text that our GROBID/PDF-extracted chunks never
   equal verbatim, so it evaluates to 0.0 regardless of configuration. The ids
   come from benchmark/align_evidence.py's fuzzy overlap alignment.
 

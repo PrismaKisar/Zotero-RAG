@@ -26,8 +26,8 @@ def rgb_to_hex(rgb):
 def _load_zotero_collections():
     try:
         with st.spinner("Loading Zotero collections..."):
-            st.session_state.collections = ZoteroDatabase(None).list_collections()
-            st.session_state.collections_loaded = True
+            st.session_state.zotero_collections = ZoteroDatabase(None).list_collections()
+            st.session_state.zotero_collections_loaded = True
     except sqlite3.OperationalError as e:
         if "locked" in str(e):
             st.error("Zotero database is locked")
@@ -60,10 +60,10 @@ def _run_ingest_and_index(result):
         st.warning("No ingest result returned.")
         return
 
-    if result.failed_uploads:
-        st.warning(f"{len(result.failed_uploads)} PDF could not be uploaded to cache.")
+    if result.failed_pdfs:
+        st.warning(f"{len(result.failed_pdfs)} PDF could not be uploaded to cache.")
         with st.expander("Show upload issues"):
-            for item in result.failed_uploads:
+            for item in result.failed_pdfs:
                 st.write(f"- {item.get('title', 'Unknown file')}: {item.get('error', 'Unknown error')}")
 
     ingested_pdfs = getattr(result, "ingested_pdfs", [])
@@ -72,10 +72,10 @@ def _run_ingest_and_index(result):
         st.info("No new PDF to index.")
         return
 
-    created_count = len([item for item in ingested_pdfs if getattr(item, "created", False)])
-    if created_count < len(ingested_pdfs):
+    newly_cached_count = len([item for item in ingested_pdfs if getattr(item, "newly_cached", False)])
+    if newly_cached_count < len(ingested_pdfs):
         st.info(
-            f"Using cache for {len(ingested_pdfs) - created_count} PDF(s) already stored by hash."
+            f"Using cache for {len(ingested_pdfs) - newly_cached_count} PDF(s) already stored by hash."
         )
 
     stage_status = st.empty()
@@ -105,16 +105,16 @@ def _run_ingest_and_index(result):
         indexed_chunks = int(getattr(upsert_report, "indexed_chunks", 0))
         processed_pdfs = int(getattr(upsert_report, "processed_pdfs", 0))
         failed_pdfs = getattr(upsert_report, "failed_pdfs", [])
-        already_indexed_info = getattr(upsert_report, "already_indexed_info", [])
+        already_indexed = getattr(upsert_report, "already_indexed", [])
         title_overrides = getattr(upsert_report, "title_overrides", [])
-        duplicate_title_titles = getattr(upsert_report, "duplicate_title_titles", [])
+        duplicate_titles = getattr(upsert_report, "duplicate_titles", [])
 
-        if already_indexed_info:
+        if already_indexed:
             st.info(
-                f"{len(already_indexed_info)} PDF(s) skipped because already indexed in Qdrant."
+                f"{len(already_indexed)} PDF(s) skipped because already indexed in Qdrant."
             )
             with st.expander("Show Qdrant duplicates"):
-                for item in already_indexed_info:
+                for item in already_indexed:
                     input_title = item.get("input_title", "")
                     indexed_title = item.get("indexed_title", "")
                     if indexed_title and indexed_title != input_title:
@@ -122,12 +122,12 @@ def _run_ingest_and_index(result):
                     else:
                         st.write(f"- {input_title or indexed_title}")
 
-        if duplicate_title_titles:
+        if duplicate_titles:
             st.warning(
-                f"{len(duplicate_title_titles)} PDF(s) skipped because the title is already in use."
+                f"{len(duplicate_titles)} PDF(s) skipped because the title is already in use."
             )
             with st.expander("Show duplicate titles"):
-                for title in duplicate_title_titles:
+                for title in duplicate_titles:
                     st.write(f"- {title}")
 
         if title_overrides:
@@ -211,16 +211,16 @@ def main():
         st.session_state.search_results = []
     if 'search_candidates' not in st.session_state:
         st.session_state.search_candidates = []
-    if 'current_index' not in st.session_state:
-        st.session_state.current_index = 0
+    if 'current_answer' not in st.session_state:
+        st.session_state.current_answer = 0
     if 'indexed' not in st.session_state:
         st.session_state.indexed = False
-    if 'collections_loaded' not in st.session_state:
-        st.session_state.collections_loaded = False
-    if 'collections' not in st.session_state:
-        st.session_state.collections = []
-    if 'collection_name' not in st.session_state:
-        st.session_state.collection_name = None
+    if 'zotero_collections_loaded' not in st.session_state:
+        st.session_state.zotero_collections_loaded = False
+    if 'zotero_collections' not in st.session_state:
+        st.session_state.zotero_collections = []
+    if 'zotero_collection' not in st.session_state:
+        st.session_state.zotero_collection = None
     if 'dense_model_name' not in st.session_state:
         st.session_state.dense_model_name = "BAAI/bge-base-en-v1.5"
     if 'model_loaded' not in st.session_state:
@@ -557,32 +557,32 @@ def show_setup_tab():
 
             with st.expander("Add PDFs from Zotero", expanded=False):
                 _load_zotero_collections()
-                if st.session_state.collections_loaded and st.session_state.collections:
-                    collection_options = ["All Library"]
-                    for coll in st.session_state.collections:
+                if st.session_state.zotero_collections_loaded and st.session_state.zotero_collections:
+                    zotero_collection_options = ["All Library"]
+                    for coll in st.session_state.zotero_collections:
                         name = coll['name']
                         if coll['parent_id']:
-                            parent_name = next((c['name'] for c in st.session_state.collections
+                            parent_name = next((c['name'] for c in st.session_state.zotero_collections
                                             if c['id'] == coll['parent_id']), "Unknown")
                             name = f"{parent_name} > {name}"
-                        collection_options.append(name)
+                        zotero_collection_options.append(name)
 
-                    selected_collection = st.selectbox(
+                    selected_zotero_collection = st.selectbox(
                         "Choose which Zotero collection to search",
-                        collection_options,
-                        key="collection_selector"
+                        zotero_collection_options,
+                        key="zotero_collection_selector"
                     )
 
-                    st.session_state.collection_name = None if selected_collection == "All Library" else selected_collection.split(" > ")[-1].strip()
+                    st.session_state.zotero_collection = None if selected_zotero_collection == "All Library" else selected_zotero_collection.split(" > ")[-1].strip()
                 else:
-                    st.session_state.collection_name = None
+                    st.session_state.zotero_collection = None
 
-                if st.button("Index PDFs from selected collection", width="stretch", key="btn_index_collection"):
+                if st.button("Index PDFs from selected collection", width="stretch", key="btn_index_zotero_collection"):
                     if st.session_state.rag is None:
                         st.error("Load a model first.")
                     else:
                         result = st.session_state.rag.ingest_pdfs_from_zotero(
-                                st.session_state.collection_name
+                                st.session_state.zotero_collection
                             )
                         _run_ingest_and_index(result)
 
@@ -623,11 +623,11 @@ def show_setup_tab():
 
     # Reset button
     if st.button("Start Over", width="stretch"):
-        collections = st.session_state.get('collections', [])
-        collections_loaded = st.session_state.get('collections_loaded', False)
+        zotero_collections = st.session_state.get('zotero_collections', [])
+        zotero_collections_loaded = st.session_state.get('zotero_collections_loaded', False)
         st.session_state.clear()
-        st.session_state.collections_loaded = collections_loaded
-        st.session_state.collections = collections
+        st.session_state.zotero_collections_loaded = zotero_collections_loaded
+        st.session_state.zotero_collections = zotero_collections
         st.rerun()
 
 def _format_time(seconds: float) -> str:
@@ -715,7 +715,7 @@ def show_search_tab():
                 min_value=0.0, max_value=1.0,
                 value=preset['retrieval_threshold'],
                 step=0.05,
-                help="Stage 1 (Cosine Similarity): Lower = more paragraphs retrieved (-1.0, 1.0)."
+                help="Stage 1 (Cosine Similarity): Lower = more chunks retrieved (-1.0, 1.0)."
             )
 
         with col_rerank:
@@ -896,7 +896,7 @@ def show_search_tab():
     with col_clear:
         if st.button("Clear Results", width="stretch"):
             st.session_state.search_results = []
-            st.session_state.current_index = 0
+            st.session_state.current_answer = 0
             st.rerun()
 
     if search_clicked and query:
@@ -998,7 +998,7 @@ def show_search_tab():
             qa_status.text("Stage 2 - QA Extraction: Complete!")
 
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
-            st.session_state.current_index = 0
+            st.session_state.current_answer = 0
             st.session_state.current_query = query
         except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
             st.error(f"Search failed: {e}")
@@ -1033,16 +1033,16 @@ def show_search_tab():
         with col1:
             if st.button("Previous"):
                 # Wrap around: if at first result, go to last
-                st.session_state.current_index = (st.session_state.current_index - 1) % len(st.session_state.search_results)
+                st.session_state.current_answer = (st.session_state.current_answer - 1) % len(st.session_state.search_results)
                 st.rerun()
 
         with col2:
-            st.markdown(f"**Answer {st.session_state.current_index + 1} / {len(st.session_state.search_results)}**")
+            st.markdown(f"**Answer {st.session_state.current_answer + 1} / {len(st.session_state.search_results)}**")
 
         with col3:
             if st.button("Next "):
                 # Wrap around: if at last result, go to first
-                st.session_state.current_index = (st.session_state.current_index + 1) % len(st.session_state.search_results)
+                st.session_state.current_answer = (st.session_state.current_answer + 1) % len(st.session_state.search_results)
                 st.rerun()
 
         with spaceCol:
@@ -1050,7 +1050,7 @@ def show_search_tab():
 
         with col4:
             if st.button("Open PDF"):
-                answer = st.session_state.search_results[st.session_state.current_index]
+                answer = st.session_state.search_results[st.session_state.current_answer]
                 pdf_path = answer.pdf_path
                 try:
                     if sys.platform == 'darwin':  # macOS
@@ -1059,7 +1059,7 @@ def show_search_tab():
                         os.startfile(pdf_path)
                     else:  # Linux
                         subprocess.run(['xdg-open', pdf_path], check=False)
-                    st.success(f"Opened PDF at page {answer.page_num + 1}")
+                    st.success(f"Opened PDF at page {answer.page_number + 1}")
                 except OSError as e:
                     st.error(f"Could not open PDF: {e}")
 
@@ -1128,7 +1128,7 @@ def show_search_tab():
                         pdfs_answers[answer.pdf_path].append(answer)
 
                     highlighted_paths = []
-                    failed_pdfs = []
+                    failed_highlights = []
                     progress_bar = st.progress(0)
 
                     for idx, (pdf_path, answers) in enumerate(pdfs_answers.items()):
@@ -1141,16 +1141,16 @@ def show_search_tab():
                         if result_path:
                             highlighted_paths.append(result_path)
                         else:
-                            failed_pdfs.append(display_title)
+                            failed_highlights.append(display_title)
 
                         progress_bar.progress((idx + 1) / len(pdfs_answers))
 
                     progress_bar.empty()
 
-                    if failed_pdfs:
-                        st.error(f"Failed to highlight {len(failed_pdfs)} PDF(s)")
+                    if failed_highlights:
+                        st.error(f"Failed to highlight {len(failed_highlights)} PDF(s)")
                         with st.expander("Show failed PDFs"):
-                            for pdf_name in failed_pdfs:
+                            for pdf_name in failed_highlights:
                                 st.text(f"{pdf_name}")
 
                     if highlighted_paths:
@@ -1162,7 +1162,7 @@ def show_search_tab():
 
         # Current result display
         st.markdown("---")
-        answer = st.session_state.search_results[st.session_state.current_index]
+        answer = st.session_state.search_results[st.session_state.current_answer]
 
         st.subheader(f"{answer.title}")
         info_col, select_col = st.columns([5, 1], gap="large")
@@ -1170,7 +1170,7 @@ def show_search_tab():
         with info_col:
             st.markdown(
                 f"""**PDF**: {answer.title}<br>
-                **Page**: {answer.page_num + 1} |
+                **Page**: {answer.page_number + 1} |
                 **Section**: {answer.section or 'Unknown'} |
                 **Retrieval Score**: {answer.retrieval_score:.4f} |
                 **Rerank Score**: {answer.rerank_score:.4f} |
@@ -1179,27 +1179,27 @@ def show_search_tab():
             )
 
         with select_col:
-            selection_key = f"highlight_select_{st.session_state.search_run_id}_{st.session_state.current_index}"
+            selection_key = f"highlight_select_{st.session_state.search_run_id}_{st.session_state.current_answer}"
             highlight_this = st.checkbox(
                 "Highlight this answer",
-                value=st.session_state.highlight_selected.get(st.session_state.current_index, True),
+                value=st.session_state.highlight_selected.get(st.session_state.current_answer, True),
                 key=selection_key
             )
-            st.session_state.highlight_selected[st.session_state.current_index] = highlight_this
+            st.session_state.highlight_selected[st.session_state.current_answer] = highlight_this
 
         # Answer display
         st.subheader("Answer")
         st.info(answer.text)
 
         # Context
-        st.subheader("Context (Full Paragraph)")
+        st.subheader("Context (Full Chunk)")
         st.text_area(
-            "Full paragraph containing the answer",
+            "Full chunk containing the answer",
             value=answer.context,
             height=250,
             disabled=True,
             label_visibility="collapsed",
-            key=f"context_{st.session_state.current_index}"
+            key=f"context_{st.session_state.current_answer}"
         )
 
     elif query and search_clicked:
@@ -1208,7 +1208,7 @@ def show_search_tab():
         **Possible reasons:**
         - QA score threshold too high (try 0.0)
         - Retrieval threshold too low (try increasing to 3.0-5.0)
-        - No semantically similar paragraphs found
+        - No semantically similar chunks found
         - Question format doesn't match extractive QA style
 
         **Try:**

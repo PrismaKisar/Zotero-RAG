@@ -9,9 +9,9 @@
 # Example: /Users/username/Zotero
 zotero_data_dir: null
 
-# Name of Zotero collection to use (optional - use entire library if not provided)
+# Name of the Zotero collection to use (optional - use entire library if not provided)
 # Example: "Machine Learning Papers"
-collection_name: null
+zotero_collection: null
 
 # Base directory for all outputs (indexes, TEI cache, highlighted PDFs)
 output_base_dir: ./output

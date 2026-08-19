@@ -11,7 +11,7 @@ Output:
                     evaluator can be run on the golden set without modification
 
 Usage:
-  python -m benchmark.build_golden_set qasper-dev-v0.3.json --out out/ \
+  python -m benchmark.build_qasper_golden_set qasper-dev-v0.3.json --out-dir out/ \
       --papers 25 --seed 42 --pdf-dir out/pdfs
 """
 
@@ -145,7 +145,7 @@ def download_pdfs(paper_ids, pdf_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qasper", help="path to the QASPER JSON release")
-    parser.add_argument("--out", default="benchmark_out", help="output directory")
+    parser.add_argument("--out-dir", default="benchmark_out_qasper", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)
@@ -155,7 +155,7 @@ def main():
     qasper = json.loads(Path(args.qasper).read_text())
     records, stats = build(qasper, args.papers, args.seed)
 
-    out = Path(args.out)
+    out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     with (out / "golden_set.jsonl").open("w") as f:
         for record in records:

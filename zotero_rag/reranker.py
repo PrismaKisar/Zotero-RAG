@@ -4,7 +4,7 @@ import logging
 
 import numpy as np
 import torch
-from models import Paragraph, RerankedParagraph
+from models import Chunk, RerankedChunk
 from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
@@ -114,21 +114,21 @@ class Reranker:
     
     def rerank(self,
             query: str,
-            candidates: list[tuple[Paragraph, float]],
+            candidates: list[tuple[Chunk, float]],
             threshold: float = 0.45,
             progress_callback=None,
-            query_variations: list[str] | None = None) -> list[RerankedParagraph]:
+            query_variations: list[str] | None = None) -> list[RerankedChunk]:
         """Rerank candidates using cross-encoder scores.
         
         Args:
             query: The query string.
-            candidates: List of (Paragraph, retrieval_score) tuples.
+            candidates: List of (Chunk, retrieval_score) tuples.
             threshold: Minimum probability threshold to keep candidates.
             progress_callback: Function(current, total, message) for progress updates.
             query_variations: List of query paraphrases to average scores over.
             
         Returns:
-            List of (Paragraph, retrieval_score, rerank_score) tuples,
+            List of (Chunk, retrieval_score, rerank_score) tuples,
             filtered and sorted by rerank_score descending.
         """
         if not candidates:
@@ -202,10 +202,10 @@ class Reranker:
         adjusted_threshold = self.adaptive_rerank_threshold(probs, threshold)
         
         # Combine probabilities with candidate data
-        # Each item: (paragraph, retrieval_score, rerank_score)
+        # Each item: (chunk, retrieval_score, rerank_score)
         scored_candidates = [
-            RerankedParagraph(
-                paragraph=p[0],
+            RerankedChunk(
+                chunk=p[0],
                 retrieval_score=p[1],
                 rerank_score=float(prob),
             )
@@ -233,10 +233,10 @@ class Reranker:
         
         # Log threshold statistics
         if adjusted_threshold != threshold:
-            logger.info(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} paragraphs "
+            logger.info(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} chunks "
                        f"(base threshold: {threshold:.3f}, adjusted: {adjusted_threshold:.3f})")
         else:
             logger.debug(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} "
-                        f"paragraphs passed threshold {threshold:.3f}")
+                        f"chunks passed threshold {threshold:.3f}")
         
         return filtered_candidates

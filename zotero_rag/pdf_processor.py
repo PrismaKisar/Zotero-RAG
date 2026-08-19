@@ -11,7 +11,7 @@ from typing import ClassVar
 
 import requests
 from grobid_client.grobid_client import GrobidClient
-from models import ExtractedParagraph
+from models import ExtractedChunk
 from pdf_utils import compute_file_hash
 
 logger = logging.getLogger(__name__)
@@ -238,32 +238,32 @@ class PDFProcessor:
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
 
-    def _collect_paragraphs_from_elements(self,
+    def _collect_chunks_from_elements(self,
                                     p_elements: list[ET.Element],
                                     section_type: str,
-                                    paragraphs: list[ExtractedParagraph],
+                                    chunks: list[ExtractedChunk],
                                     full_text_parts: list[str],
-                                    para_idx: int,
+                                    chunk_index: int,
                                     pending_short_para: str,
                                     pending_coords: list[tuple[str, str]],
                                     ns: dict[str, str]) -> tuple[int, str, list[tuple[str, str]]]:
-        """Process a list of <p> elements to extract paragraphs, handling short paragraphs.
+        """Turn a list of <p> elements into chunks, merging paragraphs too short to stand alone.
         
         Args:
             p_elements: List of <p> elements to process.
             section_type: Section type for categorization.
-            paragraphs: List to append ExtractedParagraph objects to.
+            chunks: List to append ExtractedChunk objects to.
             full_text_parts: List to append full text parts for context reconstruction.
-            para_idx: Current paragraph index for ordering.
+            chunk_index: Current chunk index for ordering.
             pending_short_para: Buffer for short paragraph text that may need to be merged.
             pending_coords: Buffer for coordinates of sentences in the pending short paragraph.
             ns: Namespace dictionary for XML parsing.
                 
         Returns:
-            Updated paragraph index, pending short paragraph text, and pending coordinates.
+            Updated chunk index, pending short paragraph text, and pending coordinates.
         """
         for p_elem in p_elements:
-            p_text, sentences_coords, page_num = self._process_paragraph_element(p_elem, ns)
+            p_text, sentences_coords, page_number = self._process_paragraph_element(p_elem, ns)
 
             if not p_text:
                 continue
@@ -279,50 +279,50 @@ class PDFProcessor:
                 pending_coords = sentences_coords
                 continue
 
-            paragraphs.append(
-                ExtractedParagraph(
+            chunks.append(
+                ExtractedChunk(
                     text=p_text,
-                    page_num=page_num,
-                    para_idx=para_idx,
+                    page_number=page_number,
+                    chunk_index=chunk_index,
                     section=section_type,
                     sentences=sentences_coords,
                 )
             )
             full_text_parts.append(p_text)
-            para_idx += 1
+            chunk_index += 1
 
-        return para_idx, pending_short_para, pending_coords
+        return chunk_index, pending_short_para, pending_coords
     
-    def _extract_paragraphs_from_tei(self, tei_root: ET.Element) -> tuple[list[ExtractedParagraph], str]:
-        """Extract paragraphs from TEI XML structure.
+    def _extract_chunks_from_tei(self, tei_root: ET.Element) -> tuple[list[ExtractedChunk], str]:
+        """Extract chunks from TEI XML structure.
         
         Args:
             tei_root: Root element of TEI XML.
             
         Returns:
-            - List of ExtractedParagraph objects
+            - List of ExtractedChunk objects
             - document_text: Full cleaned text of the PDF for context.
         """
-        paragraphs: list[ExtractedParagraph] = []
+        chunks: list[ExtractedChunk] = []
         full_text_parts = []
-        para_idx = 0
+        chunk_index = 0
         
         # Define TEI namespace
         ns = {'tei': 'http://www.tei-c.org/ns/1.0'}
 
-        # Buffer to handle short paragraphs
+        # Buffer to merge paragraphs too short to stand alone as a chunk
         pending_short_para = ""
         pending_coords = []
         
         # Extract from abstract (each <p> is a paragraph)
         abstract = tei_root.find('.//tei:abstract', ns)
         if abstract is not None:
-            para_idx, pending_short_para, pending_coords = self._collect_paragraphs_from_elements(
+            chunk_index, pending_short_para, pending_coords = self._collect_chunks_from_elements(
                 abstract.findall('.//tei:p', ns),
                 "abstract",
-                paragraphs,
+                chunks,
                 full_text_parts,
-                para_idx,
+                chunk_index,
                 pending_short_para,
                 pending_coords,
                 ns,
@@ -338,21 +338,21 @@ class PDFProcessor:
                 head_text_lower = head_text_raw.lower()
                 section_type = self._determine_section_type(head_text_lower)
                 
-                para_idx, pending_short_para, pending_coords = self._collect_paragraphs_from_elements(
+                chunk_index, pending_short_para, pending_coords = self._collect_chunks_from_elements(
                     section_div.findall('.//tei:p', ns),
                     section_type,
-                    paragraphs,
+                    chunks,
                     full_text_parts,
-                    para_idx,
+                    chunk_index,
                     pending_short_para,
                     pending_coords,
                     ns,
                 )
         
-        if pending_short_para and paragraphs:
-            last_para = paragraphs[-1]
-            last_para.text = f"{last_para.text} {pending_short_para}"
-            last_para.sentences.extend(pending_coords)
+        if pending_short_para and chunks:
+            last_chunk = chunks[-1]
+            last_chunk.text = f"{last_chunk.text} {pending_short_para}"
+            last_chunk.sentences.extend(pending_coords)
             full_text_parts.append(pending_short_para)
 
         document_text = "\n\n".join(full_text_parts)
@@ -361,7 +361,7 @@ class PDFProcessor:
             title_block = f"Title: {title_text}"
             document_text = f"{title_block}\n\n{document_text}" if document_text else title_block
         
-        return paragraphs, document_text
+        return chunks, document_text
 
     def _extract_title_from_tei(self, tei_root: ET.Element, ns: dict[str, str]) -> str:
         """Extract document title from TEI header when available.
@@ -401,7 +401,7 @@ class PDFProcessor:
             ns: Namespace dictionary for XML parsing.
         """
         sentences_with_coords = []
-        page_num = 0
+        page_number = 0
         
         for s in p_elem.findall('.//tei:s', ns):
             sentence_text = " ".join("".join(s.itertext()).split())
@@ -409,14 +409,14 @@ class PDFProcessor:
             
             if sentence_text:
                 sentences_with_coords.append((sentence_text, coords))
-                if page_num == 0 and coords:
+                if page_number == 0 and coords:
                     try:
-                        page_num = int(coords.split(',')[0]) - 1
+                        page_number = int(coords.split(',')[0]) - 1
                     except ValueError: 
                         pass
                     
         paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
-        return paragraph_text, sentences_with_coords, page_num
+        return paragraph_text, sentences_with_coords, page_number
 
     def _determine_section_type(self, head_text):
         """Determine section type based on head text, using simple keyword mapping.
@@ -437,16 +437,16 @@ class PDFProcessor:
             if key in head_text: return value
         return 'body'
     
-    def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> tuple[list[ExtractedParagraph], str]:
-        """Extract paragraphs from PDF using GROBID.
+    def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> tuple[list[ExtractedChunk], str]:
+        """Extract chunks from PDF using GROBID.
         
         Args:
             pdf_hash: Hash of the cached PDF file.
             pdf_title: Optional display title for logging.
             
         Returns:
-            - List of ExtractedParagraph objects.
-            - Full document text reconstructed from extracted paragraphs.
+            - List of ExtractedChunk objects.
+            - Full document text reconstructed from extracted chunks.
         """
         if not pdf_hash:
             raise ValueError("pdf_hash cannot be empty")
@@ -457,10 +457,10 @@ class PDFProcessor:
         if tei_root is None:
             title_info = f" ({pdf_title})" if pdf_title else ""
             message = (
-                f"GROBID parsing failed for {pdf_path}{title_info}; no paragraphs extracted"
+                f"GROBID parsing failed for {pdf_path}{title_info}; no chunks extracted"
             )
             logger.warning(message)
             raise ValueError(message)
 
-        paragraphs, document_text = self._extract_paragraphs_from_tei(tei_root)
-        return paragraphs, document_text
+        chunks, document_text = self._extract_chunks_from_tei(tei_root)
+        return chunks, document_text

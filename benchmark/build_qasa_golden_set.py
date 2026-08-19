@@ -1,5 +1,5 @@
 """Build the golden set from QASA, the retrieval-evidence counterpart to
-build_golden_set.py (methodology chapter, second passage-level dataset).
+build_qasper_golden_set.py (methodology chapter, second passage-level dataset).
 
 Input: a QASA release file, e.g. testset_answerable_1554_v1.1.json from
 https://github.com/lgresearch/QASA (data/), keyed by an arbitrary index and
@@ -15,12 +15,12 @@ QASA papers are not keyed by arXiv id, so PDFs are fetched by resolving each
 paper's title against the arXiv search API first.
 
 Output:
-  qasa_golden_set.jsonl   one record per (question, paper) kept
-  qasa_golden_stats.json  counts for the thesis
+  golden_set.jsonl   one record per (question, paper) kept
+  golden_stats.json  counts for the thesis
 
 Usage:
   python -m benchmark.build_qasa_golden_set testset_answerable_1554_v1.1.json \
-      --out out/ --papers 40 --seed 42 --pdf-dir out/pdfs
+      --out-dir out/ --papers 40 --seed 42 --pdf-dir out/pdfs
 """
 
 import argparse
@@ -144,7 +144,7 @@ def download_pdfs(records: list, pdf_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qasa", help="path to a QASA JSON release")
-    parser.add_argument("--out", default="benchmark_out_qasa", help="output directory")
+    parser.add_argument("--out-dir", default="benchmark_out_qasa", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)
@@ -154,12 +154,12 @@ def main():
     qasa = json.loads(Path(args.qasa).read_text())
     records, stats = build(qasa, args.papers, args.seed)
 
-    out = Path(args.out)
+    out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    with (out / "qasa_golden_set.jsonl").open("w") as f:
+    with (out / "golden_set.jsonl").open("w") as f:
         for record in records:
             f.write(json.dumps(record) + "\n")
-    (out / "qasa_golden_stats.json").write_text(json.dumps(stats, indent=2))
+    (out / "golden_stats.json").write_text(json.dumps(stats, indent=2))
 
     if args.pdf_dir:
         unresolved, failed = download_pdfs(records, Path(args.pdf_dir))

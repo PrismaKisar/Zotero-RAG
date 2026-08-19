@@ -5,32 +5,37 @@ import re
 import uuid
 
 import qdrant_client as qc
-from models import Paragraph
+from models import Chunk
 from qdrant_client.http import models as qmodels
 
 logger = logging.getLogger(__name__)
 
 
 class QdrantManager:
-    """Manage Qdrant vector database for storing and searching paragraph vectors."""
+    """Manage Qdrant vector database for storing and searching chunk vectors."""
     
     def __init__(self, 
                 dense_model_name: str = "BAAI/bge-base-en-v1.5", 
                 qdrant_url: str = "http://localhost:6333",
-                vector_size: int = 768):
+                vector_size: int = 768,
+                collection_suffix: str = ""):
         """Initialize the Qdrant manager.
-        
+
         Args:
             dense_model_name: Name used to derive a deterministic collection name.
             qdrant_url: URL of the Qdrant service.
             vector_size: Dimensionality of the dense vectors stored in Qdrant.
+            collection_suffix: Appended to both collection names, to keep separate
+                corpora (e.g. two benchmark datasets) from sharing a retrieval pool.
         """
         self.dense_model_name = dense_model_name
         self.qdrant_url = qdrant_url
-        self.qdrant_collection = "zoteroRAG_" + self._sanitize_model_name(dense_model_name)
-        self.lookup_collection = "zoteroRAG_registry"
+        self.collection_suffix = collection_suffix
+        self.chunk_collection = (
+            "zotero_rag_" + self._sanitize_model_name(dense_model_name) + collection_suffix)
+        self.registry_collection = "zotero_rag_registry" + collection_suffix
         self.vector_size = vector_size
-        self.paragraphs: list[Paragraph] = []
+        self.chunks: list[Chunk] = []
         self.client: qc.QdrantClient | None = None
         self.conn_initialized = False
     
@@ -48,20 +53,20 @@ class QdrantManager:
         return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
     
     @staticmethod
-    def _generate_point_id(pdf_hash: str, paragraph_index: int) -> str:
+    def _generate_point_id(pdf_hash: str, chunk_index: int) -> str:
         """Generate a unique point ID for Qdrant.
         
         Args:
             pdf_hash: Hash of the PDF document.
-            paragraph_index: Index of the paragraph within the PDF (can be None for registry entries).
+            chunk_index: Index of the chunk within the PDF (can be None for registry entries).
             
         Returns:
-            A deterministic UUID string based on the PDF hash and paragraph index.
+            A deterministic UUID string based on the PDF hash and chunk index.
         """
-        if paragraph_index is None:
+        if chunk_index is None:
             input_str = f"{pdf_hash}"
         else:
-            input_str = f"{pdf_hash}_{paragraph_index}"
+            input_str = f"{pdf_hash}_{chunk_index}"
         NAMESPACE_RAG = uuid.UUID("12345678-1234-5678-1234-567812345678")
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
 
@@ -93,9 +98,9 @@ class QdrantManager:
         """Initialize Qdrant client and ensure collections and indexes are set up."""
         self._start_connection()
         
-        if not self.client.collection_exists(self.qdrant_collection):
+        if not self.client.collection_exists(self.chunk_collection):
             self.client.create_collection(
-                collection_name=self.qdrant_collection,
+                collection_name=self.chunk_collection,
                 hnsw_config=qmodels.HnswConfigDiff(
                     ef_construct=100,
                 ),
@@ -117,7 +122,7 @@ class QdrantManager:
 
             # Create an index on 'pdf_hash' payload field for efficient lookups
             self.client.create_payload_index(
-                collection_name=self.qdrant_collection,
+                collection_name=self.chunk_collection,
                 field_name="pdf_hash",
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
@@ -126,19 +131,19 @@ class QdrantManager:
                 ),
             )
 
-            logger.info(f"Created Qdrant collection: {self.qdrant_collection}")
+            logger.info(f"Created Qdrant chunk collection: {self.chunk_collection}")
         else:
-            logger.info(f"Qdrant collection already exists: {self.qdrant_collection}")
+            logger.info(f"Qdrant chunk collection already exists: {self.chunk_collection}")
 
-        if not self.client.collection_exists(self.lookup_collection):
+        if not self.client.collection_exists(self.registry_collection):
             self.client.create_collection(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 vectors_config=None,
             )
 
             # Create an index on 'models' payload field for efficient lookups
             self.client.create_payload_index(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 field_name="models",
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
@@ -147,16 +152,16 @@ class QdrantManager:
             )
             # Create an index on title to allow lookups by name
             self.client.create_payload_index(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 field_name="title",
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
                     enable_hnsw=False,
                 ),
             )
-            logger.info(f"Created Qdrant lookup collection: {self.lookup_collection}")
+            logger.info(f"Created Qdrant registry collection: {self.registry_collection}")
         else:
-            logger.info(f"Qdrant lookup collection already exists: {self.lookup_collection}")
+            logger.info(f"Qdrant registry collection already exists: {self.registry_collection}")
 
         self.conn_initialized = True
 
@@ -186,10 +191,10 @@ class QdrantManager:
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
 
-        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         flt = qmodels.Filter(
             must=[
-                qmodels.HasIdCondition(has_id=[lookup_id]),
+                qmodels.HasIdCondition(has_id=[registry_id]),
                 qmodels.FieldCondition(
                     key="models",
                     match=qmodels.MatchValue(value=self.dense_model_name),
@@ -200,7 +205,7 @@ class QdrantManager:
         next_offset = None
         while True:
             points, next_offset = self.client.scroll(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 scroll_filter=flt,
                 limit=1,
                 with_payload=False,
@@ -238,7 +243,7 @@ class QdrantManager:
         next_offset = None
         while True:
             points, next_offset = self.client.scroll(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 scroll_filter=flt,
                 limit=128,
                 with_payload=["title", "pdf_hash"],
@@ -257,48 +262,48 @@ class QdrantManager:
 
         return indexed
     
-    def upsert_paragraphs(self,
-                        paragraphs: list[Paragraph],
+    def upsert_chunks(self,
+                        chunks: list[Chunk],
                         dense_embeddings: list[list[float]],
                         sparse_embeddings: list[dict[str, list[float]]],
                         contextual_texts: list[str] | None = None, #:FIXME: debug
                         progress_callback=None) -> tuple[int, list[dict[str, str]]]:
-        """Upsert paragraphs into Qdrant collection with hybrid vectors (dense + sparse).
+        """Upsert chunks into Qdrant chunk collection with hybrid vectors (dense + sparse).
 
         Args:
-            paragraphs: List of Paragraph objects to upsert.
-            dense_embeddings: Dense vectors aligned by paragraph index.
-            sparse_embeddings: Sparse vectors aligned by paragraph index.
+            chunks: List of Chunk objects to upsert.
+            dense_embeddings: Dense vectors aligned by chunk index.
+            sparse_embeddings: Sparse vectors aligned by chunk index.
             progress_callback: Function(stage, current, total, message) for progress updates.
 
         Returns:
-            Tuple of (number of paragraphs upserted, title override info).
+            Tuple of (number of chunks upserted, title override info).
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
 
-        if not paragraphs:
-            raise ValueError("No paragraphs provided for indexing.")
+        if not chunks:
+            raise ValueError("No chunks provided for indexing.")
 
-        if len(dense_embeddings) != len(paragraphs):
-            raise ValueError("Dense embeddings count does not match paragraphs count.")
+        if len(dense_embeddings) != len(chunks):
+            raise ValueError("Dense embeddings count does not match chunks count.")
 
-        if len(sparse_embeddings) != len(paragraphs):
-            raise ValueError("Sparse embeddings count does not match paragraphs count.")
+        if len(sparse_embeddings) != len(chunks):
+            raise ValueError("Sparse embeddings count does not match chunks count.")
 
         if contextual_texts is None:    #FIXME: debug
-            contextual_texts = [p.text for p in paragraphs]
-        elif len(contextual_texts) != len(paragraphs):
-            raise ValueError("Contextual texts count does not match paragraphs count.")
+            contextual_texts = [p.text for p in chunks]
+        elif len(contextual_texts) != len(chunks):
+            raise ValueError("Contextual texts count does not match chunks count.")
         
-        self.paragraphs = paragraphs
+        self.chunks = chunks
 
         points = []
         pdf_indexed_titles: dict[str, str] = {}
-        for i, para in enumerate(self.paragraphs):
-            point_id = QdrantManager._generate_point_id(para.pdf_hash, para.para_idx)
-            if para.pdf_hash not in pdf_indexed_titles:
-                pdf_indexed_titles[para.pdf_hash] = para.title
+        for i, chunk in enumerate(self.chunks):
+            point_id = QdrantManager._generate_point_id(chunk.pdf_hash, chunk.chunk_index)
+            if chunk.pdf_hash not in pdf_indexed_titles:
+                pdf_indexed_titles[chunk.pdf_hash] = chunk.title
                         
             vector_config = {
                 "": dense_embeddings[i],
@@ -309,15 +314,15 @@ class QdrantManager:
                 id=point_id,
                 vector=vector_config,
                 payload={
-                    'text': para.text,
+                    'text': chunk.text,
                     'contextual_text': contextual_texts[i], #FIXME: debug
-                    'page_num': para.page_num,
-                    'para_idx': para.para_idx,
-                    'title': para.title,
-                    'pdf_hash': para.pdf_hash,
-                    'section': para.section,
-                    'sentence_count': para.sentence_count,
-                    'sentences': para.sentences
+                    'page_number': chunk.page_number,
+                    'chunk_index': chunk.chunk_index,
+                    'title': chunk.title,
+                    'pdf_hash': chunk.pdf_hash,
+                    'section': chunk.section,
+                    'sentence_count': chunk.sentence_count,
+                    'sentences': chunk.sentences
                 }
             )
             points.append(point)
@@ -327,15 +332,15 @@ class QdrantManager:
         for i in range(0, len(points), batch_size):
             batch_points = points[i:i + batch_size]
             self.client.upsert(
-                collection_name=self.qdrant_collection,
+                collection_name=self.chunk_collection,
                 points=batch_points
             )
             if progress_callback:
                 progress_callback('upserting', min(i + batch_size, len(points)), len(points), 
-                                f"Upserted {min(i + batch_size, len(points))}/{len(points)} paragraphs...")
-        logger.info(f"Upserted {len(points)} paragraphs into Qdrant collection: {self.qdrant_collection}")
+                                f"Upserted {min(i + batch_size, len(points))}/{len(points)} chunks...")
+        logger.info(f"Upserted {len(points)} chunks into Qdrant chunk collection: {self.chunk_collection}")
 
-        # Update lookup collection with indexed PDFs
+        # Update the registry collection with indexed PDFs
         title_overrides: list[dict[str, str]] = []
         for pdf_hash, pdf_title in pdf_indexed_titles.items():
             canonical_title = self.register_pdf_title(pdf_hash, pdf_title)
@@ -349,7 +354,7 @@ class QdrantManager:
         return len(points), title_overrides
 
     def register_pdf_title(self, pdf_hash: str, title: str) -> str | None:
-        """Register or update the title for a given PDF hash in the lookup collection.
+        """Register or update the title for a given PDF hash in the registry collection.
 
         Args:
             pdf_hash: Hash of the PDF to register.
@@ -364,10 +369,10 @@ class QdrantManager:
         if not pdf_hash:
             raise ValueError("PDF hash is required to register title.")
 
-        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         existing = self.client.retrieve(
-            collection_name=self.lookup_collection,
-            ids=[lookup_id],
+            collection_name=self.registry_collection,
+            ids=[registry_id],
             with_payload=True,
             with_vectors=False,
         )
@@ -398,17 +403,17 @@ class QdrantManager:
                 "title": primary_title or "",
             }
             self.client.set_payload(
-                collection_name=self.lookup_collection,
+                collection_name=self.registry_collection,
                 payload=update_payload,
-                points=[lookup_id],
+                points=[registry_id],
             )
             return primary_title or None
 
         self.client.upsert(
-            collection_name=self.lookup_collection,
+            collection_name=self.registry_collection,
             points=[
                 qmodels.PointStruct(
-                    id=lookup_id,
+                    id=registry_id,
                     vector={},
                     payload={
                         "pdf_hash": pdf_hash,
@@ -421,7 +426,7 @@ class QdrantManager:
         return normalized_title or None
 
     def _title_in_use_by_other_hash(self, title: str, pdf_hash: str) -> bool:
-        """Check if a given title is already associated with a different PDF hash in the lookup collection.
+        """Check if a given title is already associated with a different PDF hash in the registry collection.
         
         Args:
             title: Title to check for usage.
@@ -469,7 +474,7 @@ class QdrantManager:
         flt = qmodels.Filter(must=must_conditions)
 
         points, _ = self.client.scroll(
-            collection_name=self.lookup_collection,
+            collection_name=self.registry_collection,
             scroll_filter=flt,
             limit=1,
             with_payload=["pdf_hash"],
@@ -483,10 +488,10 @@ class QdrantManager:
         return payload.get("pdf_hash")
 
     def delete_pdf_from_index(self, pdf_hash: str) -> dict[str, bool]:
-        """Delete all paragraphs associated with a specific PDF hash from the Qdrant collection.
+        """Delete all chunks associated with a specific PDF hash from the Qdrant collection.
         
         Args:
-            pdf_hash: Hash of the PDF whose paragraphs should be deleted.
+            pdf_hash: Hash of the PDF whose chunks should be deleted.
 
         Returns:
             Dictionary indicating whether the entry was deleted and if it had other models.
@@ -504,7 +509,7 @@ class QdrantManager:
         )
 
         delete_result = self.client.delete(
-            collection_name=self.qdrant_collection,
+            collection_name=self.chunk_collection,
             points_selector=qmodels.FilterSelector(filter=flt)
         )
 
@@ -515,7 +520,7 @@ class QdrantManager:
         raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
     
     def delete_registry_entry(self, pdf_hash: str) -> dict[str, bool]:
-        """Delete the registry entry for a specific PDF hash from the lookup collection.
+        """Delete the registry entry for a specific PDF hash from the registry collection.
         
         Args:
             pdf_hash: Hash of the PDF whose registry entry should be deleted.
@@ -525,10 +530,10 @@ class QdrantManager:
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
         
-        lookup_id = QdrantManager._generate_point_id(pdf_hash, None)
+        registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         existing = self.client.retrieve(
-            collection_name=self.lookup_collection,
-            ids=[lookup_id],
+            collection_name=self.registry_collection,
+            ids=[registry_id],
             with_payload=True,
             with_vectors=False,
         )
@@ -544,21 +549,21 @@ class QdrantManager:
             if not models:
 
                 self.client.delete(
-                    collection_name=self.lookup_collection,
-                    points_selector=qmodels.PointIdsList(points=[lookup_id]),
+                    collection_name=self.registry_collection,
+                    points_selector=qmodels.PointIdsList(points=[registry_id]),
                 )
                 return {"deleted": True, "had_other_models": False}
             else:
                 self.client.set_payload(
-                    collection_name=self.lookup_collection,
+                    collection_name=self.registry_collection,
                     payload={"models": models},
-                    points=[lookup_id],
+                    points=[registry_id],
                 )
             return {"deleted": True, "had_other_models": True}
         return {"deleted": False, "had_other_models": False}
 
-    def clear_collection(self) -> dict[str, str]:
-        """Clear all data from the Qdrant collection.
+    def clear_chunk_collection(self) -> dict[str, str]:
+        """Clear all data from the Qdrant chunk collection.
         
         Returns:
             Dictionary of deleted PDF hashes and their titles.
@@ -575,9 +580,9 @@ class QdrantManager:
                 if res["deleted"] and not res["had_other_models"]:
                     deleted_entries[pdf_hash] = item.get("title", "")
 
-        self.client.delete_collection(self.qdrant_collection)
+        self.client.delete_collection(self.chunk_collection)
         self.conn_initialized = False
-        logger.info(f"Cleared Qdrant collection: {self.qdrant_collection}")
+        logger.info(f"Cleared Qdrant chunk collection: {self.chunk_collection}")
         return deleted_entries
 
     @staticmethod
@@ -619,11 +624,11 @@ class QdrantManager:
         )
 
     @staticmethod
-    def _paragraph_from_payload(payload: dict) -> Paragraph:
-        return Paragraph(
+    def _chunk_from_payload(payload: dict) -> Chunk:
+        return Chunk(
             text=payload.get('text', ''),
-            page_num=payload.get('page_num', -1),
-            para_idx=payload.get('para_idx', -1),
+            page_number=payload.get('page_number', -1),
+            chunk_index=payload.get('chunk_index', -1),
             title=payload.get('title', ''),
             pdf_hash=payload.get('pdf_hash', ''),
             section=payload.get('section', ''),
@@ -631,10 +636,10 @@ class QdrantManager:
             sentences=payload.get('sentences', [])
         )
 
-    def fetch_paragraphs(self, ids: list[tuple[str, int]]) -> list[Paragraph]:
-        """Retrieve indexed paragraphs by (pdf_hash, para_idx), skipping misses.
+    def fetch_chunks(self, ids: list[tuple[str, int]]) -> list[Chunk]:
+        """Retrieve indexed chunks by (pdf_hash, chunk_index), skipping misses.
 
-        Used by the oracle-context evaluation, which needs the gold paragraphs
+        Used by the oracle-context evaluation, which needs the gold chunks
         exactly as the reader would have received them from retrieval.
         """
         if not self.client:
@@ -643,15 +648,15 @@ class QdrantManager:
             return []
         point_ids = [QdrantManager._generate_point_id(pdf_hash, idx) for pdf_hash, idx in ids]
         points = self.client.retrieve(
-            collection_name=self.qdrant_collection, ids=point_ids, with_payload=True)
-        return [QdrantManager._paragraph_from_payload(p.payload or {}) for p in points]
+            collection_name=self.chunk_collection, ids=point_ids, with_payload=True)
+        return [QdrantManager._chunk_from_payload(p.payload or {}) for p in points]
 
     def search_batch(self,
                     query_embeddings: list[dict[str, list[float]]],
                     threshold: float = 0.45,
                     result_limit: int = 30,
-                    mode: str = "hybrid") -> list[list[Paragraph]]:
-        """Batch search for relevant paragraphs using Hybrid Search (Dense + Sparse BM25).
+                    mode: str = "hybrid") -> list[list[Chunk]]:
+        """Batch search for relevant chunks using Hybrid Search (Dense + Sparse BM25).
 
         Args:
             query_embeddings: List of query embedding dicts with 'dense' and 'sparse' keys.
@@ -660,7 +665,7 @@ class QdrantManager:
             mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
 
         Returns:
-            List of lists of (Paragraph, score) tuples, aligned to query order.
+            List of lists of (Chunk, score) tuples, aligned to query order.
         """
         if not self.client:
             raise ValueError("Qdrant client is not connected. Call open_connection() first.")
@@ -678,7 +683,7 @@ class QdrantManager:
                 dense_query, sparse_query, threshold, result_limit, mode))
 
         search_results = self.client.query_batch_points(
-            collection_name=self.qdrant_collection,
+            collection_name=self.chunk_collection,
             requests=requests,
         )
 
@@ -690,10 +695,10 @@ class QdrantManager:
 
         relevant_batches = []
         for response in search_results:
-            relevant_paragraphs = []
+            relevant_chunks = []
             for result in response.points:
-                para = QdrantManager._paragraph_from_payload(result.payload or {})
-                relevant_paragraphs.append((para, result.score))
-            relevant_batches.append(relevant_paragraphs)
+                chunk = QdrantManager._chunk_from_payload(result.payload or {})
+                relevant_chunks.append((chunk, result.score))
+            relevant_batches.append(relevant_chunks)
 
         return relevant_batches

@@ -1,4 +1,4 @@
-from benchmark.build_golden_set import build, gold_subset, question_type
+from benchmark.build_qasper_golden_set import build, gold_subset, question_type
 
 
 def _qa(qid, question, answers):

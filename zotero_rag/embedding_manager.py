@@ -24,7 +24,7 @@ class EmbeddingManager:
         Args:
             dense_model_name: FastEmbed dense model name.
             device: Device for dense model ('cpu', 'cuda'). Auto-detect CUDA if None.
-            encode_batch_size: Batch size for paragraph encoding. If None or 0, auto-detect.
+            encode_batch_size: Batch size for chunk encoding. If None or 0, auto-detect.
         """
         self.dense_model_name = dense_model_name
         self.sparse_model_name = "Qdrant/bm25"
@@ -164,7 +164,7 @@ class EmbeddingManager:
         required_ctx = prompt_tokens + predict_tokens + buffer_tokens
         optimal_num_ctx = max(2048, min(required_ctx, 16384))
 
-        # Prompt template for generating contextualized chunks one paragraph at a time.
+        # Prompt template for generating contextualized chunks one chunk at a time.
         prompt_template = (
             "<document_summary>\n{doc_summary}\n</document_summary>\n\n"
             "<current_chunk>\n{chunk}\n</current_chunk>\n\n"
@@ -217,12 +217,12 @@ class EmbeddingManager:
         except Exception as e:  # noqa: BLE001 - cache flush is best-effort
             logger.warning("Failed to flush Ollama cache: %s", str(e))
 
-    def encode_paragraphs(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:
-        """Encode paragraphs into dense+sparse vectors with progress updates.
+    def encode_chunks(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:
+        """Encode chunks into dense+sparse vectors with progress updates.
         
         Args:
             progress_callback: Function to call with progress updates (stage, current, total, message).
-            all_texts: List of paragraph texts to encode.
+            all_texts: List of chunk texts to encode.
         
         Returns:
             Dictionary with 'dense' and 'sparse' keys containing the respective embeddings.

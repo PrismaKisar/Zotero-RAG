@@ -4,7 +4,7 @@ import logging
 import math
 
 import torch
-from models import Answer, ExpandedAnswerSpan, Paragraph, RerankedParagraph
+from models import Answer, Chunk, ExpandedAnswerSpan, RerankedChunk
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 
 logger = logging.getLogger(__name__)
@@ -192,22 +192,22 @@ class QAEngine:
         return variations
     
     def _expand_to_sentences(self, 
-                            paragraph: Paragraph, 
+                            chunk: Chunk, 
                             start_char: int, 
                             end_char: int) -> ExpandedAnswerSpan:
         """Expand answer span to include complete sentences and return their coordinates.
         
         Args:
-            paragraph: The Paragraph object containing the answer.
+            chunk: The Chunk object containing the answer.
             start_char: Start position of answer in context.
             end_char: End position of answer in context.
             
         Returns:
             (expanded_text, new_start, new_end, sentence_coords) tuple.
         """
-        if not paragraph.sentences:
+        if not chunk.sentences:
             return ExpandedAnswerSpan(
-                text=paragraph.text[start_char:end_char],
+                text=chunk.text[start_char:end_char],
                 start_char=start_char,
                 end_char=end_char,
                 sentence_coords=[],
@@ -218,7 +218,7 @@ class QAEngine:
         end_sentence_idx = -1
         
         current_pos = 0
-        for i, (sent_text, _) in enumerate(paragraph.sentences):
+        for i, (sent_text, _) in enumerate(chunk.sentences):
             sent_len = len(sent_text)
             sent_end = current_pos + sent_len
             
@@ -236,18 +236,18 @@ class QAEngine:
         if start_sentence_idx == -1:
             start_sentence_idx = 0
         if end_sentence_idx == -1:
-            end_sentence_idx = len(paragraph.sentences) - 1
+            end_sentence_idx = len(chunk.sentences) - 1
             
         # Extract full text of all involved sentences
-        involved_sentences = paragraph.sentences[start_sentence_idx : end_sentence_idx + 1]
+        involved_sentences = chunk.sentences[start_sentence_idx : end_sentence_idx + 1]
         
         expanded_text = " ".join(s[0] for s in involved_sentences)
         sentence_coords = [s[1] for s in involved_sentences if s[1]]
         
-        # Calculate new start/end relative to the whole paragraph text
+        # Calculate new start/end relative to the whole chunk text
         new_start = 0
         for i in range(start_sentence_idx):
-            new_start += len(paragraph.sentences[i][0]) + 1
+            new_start += len(chunk.sentences[i][0]) + 1
             
         new_end = new_start + len(expanded_text)
         
@@ -260,16 +260,16 @@ class QAEngine:
     
     def extract_answers(self,
                     question: str,
-                    candidates: list[RerankedParagraph],
+                    candidates: list[RerankedChunk],
                     config: dict,
                     color: tuple[float, float, float] = (1, 1, 0),
                     progress_callback=None,
                     question_variations: list[str] | None = None) -> list[Answer]:
-        """Extract answers for a given question from candidate paragraphs.
+        """Extract answers for a given question from candidate chunks.
 
         Args:
             question: The question to answer.
-            candidates: List of RerankedParagraph objects to extract answers from.
+            candidates: List of RerankedChunk objects to extract answers from.
             config: Resolved question-type config (see ``question_presets.resolve``).
                 Reads ``qa_score_threshold``, ``min_answer_words`` and
                 ``section_diversity``.
@@ -308,15 +308,15 @@ class QAEngine:
         metadata_map = [] 
         
         for i, candidate in enumerate(candidates):
-            paragraph = candidate.paragraph
-            combined_text = paragraph.text
+            chunk = candidate.chunk
+            combined_text = chunk.text
             
             # Prepare variations
             for q_var in questions_to_use:
                 batch_questions.append(q_var)
                 batch_contexts.append(combined_text)
                 metadata_map.append({
-                    'paragraph': paragraph,
+                    'chunk': chunk,
                     'retrieval_score': candidate.retrieval_score,
                     'rerank_score': candidate.rerank_score,
                     'q_var': q_var,
@@ -416,24 +416,24 @@ class QAEngine:
                 
             meta = best_res['meta']
             
-            # Recalculate offsets relative to original paragraph
-            paragraph = meta['paragraph']
+            # Recalculate offsets relative to original chunk
+            chunk = meta['chunk']
             raw_start, raw_end = best_res['start'], best_res['end']
             
-            target_paragraph = paragraph
+            target_chunk = chunk
             local_start, local_end = raw_start, raw_end
 
             # Sentence expansion
             expanded = self._expand_to_sentences(
-                target_paragraph, local_start, local_end
+                target_chunk, local_start, local_end
             )
             
             answers.append(Answer(
                 text=expanded.text,
-                context=target_paragraph.text,
-                page_num=target_paragraph.page_num,
-                title=target_paragraph.title,
-                section=target_paragraph.section,
+                context=target_chunk.text,
+                page_number=target_chunk.page_number,
+                title=target_chunk.title,
+                section=target_chunk.section,
                 start_char=expanded.start_char,
                 end_char=expanded.end_char,
                 score=best_res['score'],
@@ -442,7 +442,7 @@ class QAEngine:
                 sentence_coords=expanded.sentence_coords,
                 retrieval_score=meta['retrieval_score'],
                 rerank_score=meta['rerank_score'],
-                pdf_hash=target_paragraph.pdf_hash
+                pdf_hash=target_chunk.pdf_hash
             ))
 
         # Sort by score descending
