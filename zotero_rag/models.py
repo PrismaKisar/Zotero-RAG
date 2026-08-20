@@ -2,6 +2,7 @@
 
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from pdf_utils import compute_file_hash, compute_stream_hash
@@ -161,3 +162,23 @@ class PDFIngestItem:
     """Represents a PDF ingestion source."""
     title: str
     source: PDFSource
+
+
+def ingest_items_from_folder(folder_path: str) -> list[PDFIngestItem]:
+    """One PDFIngestItem per PDF in ``folder_path``, titled by its filename stem.
+
+    Args:
+        folder_path: Path to the folder to read PDFs from (not recursive).
+
+    Returns:
+        PDFIngestItem objects, sorted by filename.
+
+    Raises:
+        ValueError: If the path is not a directory.
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        raise ValueError(f"Not a directory: {folder_path}")
+
+    return [PDFIngestItem(title=pdf.stem, source=PathSource(str(pdf)))
+            for pdf in sorted(folder.glob("*.pdf"))]

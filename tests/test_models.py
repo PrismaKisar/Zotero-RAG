@@ -5,9 +5,11 @@ import pickle
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from models import Answer, Chunk, PathSource, UploadSource
+from models import Answer, Chunk, PathSource, UploadSource, ingest_items_from_folder
 from pdf_utils import compute_file_hash, compute_stream_hash
 
 
@@ -63,3 +65,26 @@ def test_answer_survives_pickle_roundtrip():
     )
     restored = pickle.loads(pickle.dumps(original))
     assert restored == original
+
+
+def test_ingest_items_from_folder_titles_by_file_stem(tmp_path):
+    for paper_id in ("1605.03481", "1601.02403"):
+        (tmp_path / f"{paper_id}.pdf").write_bytes(b"%PDF-1.4")
+
+    items = ingest_items_from_folder(str(tmp_path))
+
+    assert [item.title for item in items] == ["1601.02403", "1605.03481"]
+    assert all(item.source.path.endswith(".pdf") for item in items)
+
+
+def test_ingest_items_from_folder_ignores_non_pdf_files(tmp_path):
+    (tmp_path / "notes.txt").write_text("not a pdf")
+    (tmp_path / "1601.02403.pdf").write_bytes(b"%PDF-1.4")
+
+    assert [item.title for item in ingest_items_from_folder(str(tmp_path))] == ["1601.02403"]
+
+
+def test_ingest_items_from_folder_rejects_a_non_directory(tmp_path):
+    missing = tmp_path / "nope"
+    with pytest.raises(ValueError, match="Not a directory"):
+        ingest_items_from_folder(str(missing))

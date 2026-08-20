@@ -5,15 +5,16 @@
 # Usage: ./orchestrator.sh [run|stop|build]
 #   run    (default) start services, wait until ready, launch the native app detached
 #   stop   stop the native app and the Docker services
-#   build  re-sync the native Python env after pyproject/lock changes (poetry install)
+#   build  re-sync the native Python env after pyproject/lock changes (uv sync)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# brew installs poetry/python here; ensure they're on PATH when run from Finder
+# brew installs uv/python here; ensure they're on PATH when run from Finder
 export PATH="/opt/homebrew/bin:$PATH"
 
 APP_PID_FILE=".app.pid"
-APP_LOG="app.log"
+LOG_DIR="logs"
+APP_LOG="$LOG_DIR/app.log"
 
 app_running() { [ -f "$APP_PID_FILE" ] && kill -0 "$(cat "$APP_PID_FILE")" 2>/dev/null; }
 
@@ -34,8 +35,9 @@ case "$cmd" in
     printf "  waiting for GROBID"
     until curl -sf http://localhost:8070/api/isalive >/dev/null 2>&1; do printf .; sleep 2; done; echo " ok"
 
+    mkdir -p "$LOG_DIR"
     echo "▶ Launching app (native, MPS) detached…"
-    nohup poetry run streamlit run zotero_rag/app.py --server.headless=true \
+    nohup uv run streamlit run zotero_rag/app.py --server.headless=true \
       >"$APP_LOG" 2>&1 &
     echo $! > "$APP_PID_FILE"
 
@@ -56,7 +58,7 @@ case "$cmd" in
     ;;
   build)
     echo "▶ Re-syncing native Python env…"
-    poetry install
+    uv sync
     ;;
   *)
     echo "Usage: ./orchestrator.sh [run|stop|build]" >&2
