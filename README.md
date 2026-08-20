@@ -34,27 +34,27 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── embedding_manager.py    # Dense, sparse, and contextual embeddings
 │   ├── highlighter.py          # PDF annotation using coordinates
 │   ├── models.py               # Data classes
-│   ├── pdf_cache_handler.py    # Local PDF cache management
+│   ├── pdf_cache_manager.py    # Local PDF cache management
 │   ├── pdf_processor.py        # GROBID client and TEI parsing
 │   ├── pdf_utils.py            # PDF utilities
+│   ├── pipeline.py             # Main orchestration class
 │   ├── qa_engine.py            # Extractive QA with question expansion
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
-│   ├── zotero_db.py            # Zotero SQLite database interface
-│   └── zotero_rag.py           # Main orchestration class
+│   └── zotero_db.py            # Zotero SQLite database interface
 │
-├── example_configs/                # Example YAML configurations
-│   ├── example_config.yaml         # Full YAML config with documentation
-│   ├── advanced_config.yaml        # Advanced YAML config with custom paraphrases
-│   ├── folder_example_config.yaml  # Example config for PDF upload workflows
-│   └── highlighter_colors.html     # Color reference for highlighting
+├── example_configs/         # Example YAML configurations
+│   ├── basic.yaml           # Zotero source, every option documented
+│   ├── advanced.yaml        # Zotero source, custom paraphrases and per-question overrides
+│   ├── folder.yaml          # Folder source, for PDF upload workflows
+│   └── highlight_colors.html # Swatch reference for the highlight_color key
 │
 ├── pyproject.toml           # Poetry dependencies
 ├── README.md                # This file
 └── LICENSE                  # GPL v3.0 license
 
-output/                     # Output directory (indexes, cache, highlighted PDFs)
+output/                     # App run artefacts; each benchmark run gets output_<corpus>/
 ├── highlighted_results
 │   └──{title}.pdf          #Highlighted PDFs
 |
@@ -63,6 +63,8 @@ output/                     # Output directory (indexes, cache, highlighted PDFs
 |
 └── tei_cache/
     └── {hash}.tei.xml      #GROBID output cache
+
+logs/                       # app.log, zotero_rag.log, run_from_config.log
 ```
 
 ## Installation

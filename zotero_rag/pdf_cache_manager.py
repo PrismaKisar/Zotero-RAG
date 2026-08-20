@@ -2,15 +2,15 @@
 
 import logging
 import os
-import re
 
 from models import CachedPDF, PDFIngestItem, UploadSource
+from pdf_utils import is_pdf_hash
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 logger = logging.getLogger(__name__)
 
-class PDFCacheHandler:
-    """Handles PDFs cache, ensuring unique filenames and proper storage."""
+class PDFCacheManager:
+    """Owns the local PDF cache, ensuring unique filenames and proper storage."""
     
     def __init__(self, folder_path: str):
         """Initialize PDF folder source.
@@ -27,12 +27,8 @@ class PDFCacheHandler:
         if not os.path.isdir(self.folder_path):
             raise ValueError(f"Path is not a directory: {self.folder_path}")
 
-        logger.info(f"Initialized PDFCacheHandler with folder: {self.folder_path}")
+        logger.info(f"Initialized PDFCacheManager with folder: {self.folder_path}")
 
-    @staticmethod
-    def _is_hash_name(name: str) -> bool:
-        return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
-    
     @staticmethod
     def get_items_from_upload(uploaded_files: list[UploadedFile]) -> list[PDFIngestItem]:
         """Convert list of UploadedFile to list of PDFIngestItem for ingestion.
@@ -115,7 +111,7 @@ class PDFCacheHandler:
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
         
-    def clear_index_cache(self, deleted_pdfs: dict[str, str]):
+    def clear_pdf_cache(self, deleted_pdfs: dict[str, str]):
         """Clear cached PDF files for deleted entries.
 
         Args:
@@ -167,7 +163,7 @@ class PDFCacheHandler:
             for filename in files:
                 if filename.lower().endswith(".pdf"):
                     base_name = os.path.splitext(filename)[0]
-                    if self._is_hash_name(base_name):
+                    if is_pdf_hash(base_name):
                         items.add(base_name.lower())
                     else:
                         logger.warning("Ignoring non-hash cached PDF: %s", filename)

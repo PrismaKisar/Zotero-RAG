@@ -1,24 +1,24 @@
 import json
 
 from benchmark.compare_datasets import (
-    analyse,
+    analyze_dataset,
     cliffs_delta,
     coverage,
     flesch_kincaid,
     jaccard,
-    load,
+    load_dataset,
     mann_whitney_p,
-    q_type,
-    report,
+    question_form,
+    to_markdown,
 )
 
 
-def test_q_type():
-    assert q_type("Why does the model fail?") == "why (causal)"
-    assert q_type("How were the judgements assembled?") == "how (procedural)"
-    assert q_type("What is the architecture?") == "what/which (factual)"
-    assert q_type("Is the model pretrained?") == "yes/no (verification)"
-    assert q_type("Authors used DropPath. What changed?") == "other"
+def test_question_form():
+    assert question_form("Why does the model fail?") == "why (causal)"
+    assert question_form("How were the judgements assembled?") == "how (procedural)"
+    assert question_form("What is the architecture?") == "what/which (factual)"
+    assert question_form("Is the model pretrained?") == "yes/no (verification)"
+    assert question_form("Authors used DropPath. What changed?") == "other"
 
 
 def test_overlap_metrics():
@@ -64,8 +64,8 @@ def _fixture(tmp_path):
     return tmp_path
 
 
-def test_analyse_and_report(tmp_path):
-    metrics, cats = analyse(*load(_fixture(tmp_path)))
+def test_analyze_dataset_and_to_markdown(tmp_path):
+    metrics, cats = analyze_dataset(*load_dataset(_fixture(tmp_path)))
 
     assert metrics["paper_chunks"] == [2]
     assert metrics["q_words"] == [4]
@@ -74,9 +74,9 @@ def test_analyse_and_report(tmp_path):
     assert metrics["spread"] == [0.0]
     assert metrics["position"] == [0.0]
     assert metrics["cite_density"][0] > 0
-    assert cats["q_type"]["why (causal)"] == 1
+    assert cats["question_form"]["why (causal)"] == 1
     assert cats["extractive"]["short extractive span"] == 1
 
-    md = report({"A": (metrics, cats)})
+    md = to_markdown({"A": (metrics, cats)})
     assert "| Questions | 1 |" in md
     assert "why (causal) | 1 (100.0%)" in md

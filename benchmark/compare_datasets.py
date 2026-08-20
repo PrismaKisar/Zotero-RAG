@@ -2,21 +2,22 @@
 methodology chapter needs: information density, kind of information, question
 difficulty and level of abstraction.
 
-Everything is computed from artefacts already produced by the pipeline:
+Everything is computed from artifacts already produced by the pipeline:
   <out>/golden_set_aligned.jsonl   questions + evidence + chunk alignment
   <out>/chunks/<paper_id>.json     the chunked full text of each paper
 
 Usage:
   python -m benchmark.compare_datasets \
-      --dataset QASPER=benchmark_out_qasper --dataset QASA=benchmark_out_qasa \
-      --out-file benchmark_out_qasper/dataset_comparison.md
+      --dataset QASPER=output_qasper --dataset QASA=output_qasa \
+      --out-file output_qasper/dataset_comparison.md
 """
 
 import argparse
+import bisect
 import json
 import math
 import re
-import statistics as st
+import statistics
 from collections import Counter
 from pathlib import Path
 
@@ -34,11 +35,11 @@ with as by from at it its their they we our what which how why who when where do
 can could not no than then there here such using used use paper authors author study""".split())  # noqa: SIM905 - a 55-element list literal is unreadable
 
 
-def words(text):
+def tokenize(text):
     return WORD_RE.findall(text.lower())
 
 
-def syllables(word):
+def count_syllables(word):
     groups = re.findall(r"[aeiouy]+", word)
     n = len(groups) - (1 if word.endswith("e") and len(groups) > 1 else 0)
     return max(n, 1)
@@ -46,15 +47,15 @@ def syllables(word):
 
 def flesch_kincaid(text):
     """FK grade level; a coarse but standard readability proxy."""
-    ws = words(text)
+    ws = tokenize(text)
     sents = max(len(SENT_RE.findall(text)) + 1, 1)
     if not ws:
         return None
-    return 0.39 * len(ws) / sents + 11.8 * sum(map(syllables, ws)) / len(ws) - 15.59
+    return 0.39 * len(ws) / sents + 11.8 * sum(map(count_syllables, ws)) / len(ws) - 15.59
 
 
-def q_type(question):
-    ws = words(question)
+def question_form(question):
+    ws = tokenize(question)
     if not ws:
         return "other"
     for w in ws[:3]:
@@ -105,13 +106,12 @@ def mann_whitney_p(x, y):
 def cliffs_delta(x, y):
     """Non-parametric effect size in [-1, 1]; robust to the skew here."""
     ys = sorted(y)
-    import bisect
     gt = sum(bisect.bisect_left(ys, v) for v in x)
     lt = sum(len(ys) - bisect.bisect_right(ys, v) for v in x)
     return (gt - lt) / (len(x) * len(ys)) if x and ys else 0.0
 
 
-def load(out_dir):
+def load_dataset(out_dir):
     out_dir = Path(out_dir)
     records = [json.loads(line) for line in
                (out_dir / "golden_set_aligned.jsonl").read_text().splitlines() if line.strip()]
@@ -119,66 +119,66 @@ def load(out_dir):
     return records, chunks
 
 
-def analyse(records, chunks):
+def analyze_dataset(records, chunks):
     """Return {metric: list_of_values} plus categorical counters."""
-    m = {k: [] for k in (
+    metrics = {key: [] for key in (
         "q_words", "ev_spans", "ev_words", "ev_words_total", "aligned_chunks",
         "align_overlap", "spread", "position", "q_ev_jaccard", "q_ev_coverage",
         "paper_chunks", "paper_words", "chunk_words", "ttr", "fk_grade",
         "math_density", "cite_density", "num_density")}
-    cats = {"q_type": Counter(), "extractive": Counter()}
+    categories = {"question_form": Counter(), "extractive": Counter()}
 
     for texts in chunks.values():
         text = " ".join(texts)
-        ws = words(text)
+        ws = tokenize(text)
         if not ws:
             continue
-        m["paper_chunks"].append(len(texts))
-        m["paper_words"].append(len(ws))
-        m["chunk_words"] += [len(words(t)) for t in texts]
-        m["ttr"].append(len(set(ws)) / len(ws))
+        metrics["paper_chunks"].append(len(texts))
+        metrics["paper_words"].append(len(ws))
+        metrics["chunk_words"] += [len(tokenize(t)) for t in texts]
+        metrics["ttr"].append(len(set(ws)) / len(ws))
         fk = flesch_kincaid(text)
         if fk is not None:
-            m["fk_grade"].append(fk)
+            metrics["fk_grade"].append(fk)
         per_1k = 1000 / len(ws)
-        m["math_density"].append(len(MATH_RE.findall(text)) * per_1k)
-        m["cite_density"].append(len(CITE_RE.findall(text)) * per_1k)
-        m["num_density"].append(len(NUM_RE.findall(text)) * per_1k)
+        metrics["math_density"].append(len(MATH_RE.findall(text)) * per_1k)
+        metrics["cite_density"].append(len(CITE_RE.findall(text)) * per_1k)
+        metrics["num_density"].append(len(NUM_RE.findall(text)) * per_1k)
 
     for r in records:
-        qw = words(r["question"])
-        m["q_words"].append(len(qw))
-        cats["q_type"][q_type(r["question"])] += 1
-        cats["extractive"]["short extractive span" if r.get("gold_spans")
-                           else "free-form (no short span)"] += 1
+        qw = tokenize(r["question"])
+        metrics["q_words"].append(len(qw))
+        categories["question_form"][question_form(r["question"])] += 1
+        categories["extractive"]["short extractive span" if r.get("gold_spans")
+                                 else "free-form (no short span)"] += 1
 
         ev = r["evidence"]
-        m["ev_spans"].append(len(ev))
-        ev_words = [words(e) for e in ev]
-        m["ev_words"] += [len(e) for e in ev_words]
+        metrics["ev_spans"].append(len(ev))
+        ev_words = [tokenize(e) for e in ev]
+        metrics["ev_words"] += [len(e) for e in ev_words]
         flat = [w for e in ev_words for w in e]
-        m["ev_words_total"].append(len(flat))
-        m["q_ev_jaccard"].append(jaccard(qw, flat))
-        m["q_ev_coverage"].append(coverage(qw, flat))
+        metrics["ev_words_total"].append(len(flat))
+        metrics["q_ev_jaccard"].append(jaccard(qw, flat))
+        metrics["q_ev_coverage"].append(coverage(qw, flat))
 
         idx = sorted({c["chunk_index"] for hits in r["aligned_chunks"].values() for c in hits})
-        m["aligned_chunks"].append(len(idx))
-        m["align_overlap"] += [c["overlap"] for hits in r["aligned_chunks"].values() for c in hits]
+        metrics["aligned_chunks"].append(len(idx))
+        metrics["align_overlap"] += [c["overlap"] for hits in r["aligned_chunks"].values() for c in hits]
         n_chunks = len(chunks.get(r["paper_id"], []))
         if idx and n_chunks:
-            m["spread"].append((idx[-1] - idx[0]) / n_chunks)
-            m["position"].append(st.mean(idx) / n_chunks)
-    return m, cats
+            metrics["spread"].append((idx[-1] - idx[0]) / n_chunks)
+            metrics["position"].append(statistics.mean(idx) / n_chunks)
+    return metrics, categories
 
 
-def fmt(vals):
+def format_mean_median(vals):
     if not vals:
         return "n/a"
-    return f"{st.mean(vals):.2f} / {st.median(vals):.2f}"
+    return f"{statistics.mean(vals):.2f} / {statistics.median(vals):.2f}"
 
 
 ROWS = [
-    ("Papers analysed", "paper_chunks", "count"),
+    ("Papers analyzed", "paper_chunks", "count"),
     ("Chunks per paper", "paper_chunks", "dist"),
     ("Words per paper", "paper_words", "dist"),
     ("Words per chunk", "chunk_words", "dist"),
@@ -201,7 +201,7 @@ ROWS = [
 ]
 
 
-def report(datasets):
+def to_markdown(datasets):
     names = list(datasets)
     lines = ["# QASPER vs QASA: dataset comparison", "",
              ("Values are **mean / median** unless stated otherwise. "
@@ -216,7 +216,7 @@ def report(datasets):
             cells = [str(len(v)) for v in vals]
             p = d = ""
         else:
-            cells = [fmt(v) for v in vals]
+            cells = [format_mean_median(v) for v in vals]
             if len(vals) == 2 and vals[0] and vals[1]:
                 pv = mann_whitney_p(vals[0], vals[1])
                 p = "n/a" if pv is None else ("<0.001" if pv < 0.001 else f"{pv:.3f}")
@@ -225,7 +225,7 @@ def report(datasets):
                 p = d = ""
         lines.append(f"| {label} | " + " | ".join(cells) + f" | {p} | {d} |")
 
-    for cat, title in (("q_type", "Question form"), ("extractive", "Answer form")):
+    for cat, title in (("question_form", "Question form"), ("extractive", "Answer form")):
         keys = sorted({k for n in names for k in datasets[n][1][cat]})
         lines += ["", f"## {title}", "", "| Category | " + " | ".join(names) + " |",
                   "|---|" + "---|" * len(names)]
@@ -240,19 +240,19 @@ def report(datasets):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dataset", action="append", required=True,
-                    metavar="NAME=DIR", help="repeatable, e.g. QASPER=benchmark_out_qasper")
-    ap.add_argument("--out-file", type=Path, help="write the markdown report here")
-    ap.add_argument("--metrics-file", type=Path, help="also dump raw metric values as JSON")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", action="append", required=True,
+                        metavar="NAME=DIR", help="repeatable, e.g. QASPER=output_qasper")
+    parser.add_argument("--out-file", type=Path, help="write the markdown report here")
+    parser.add_argument("--metrics-file", type=Path, help="also dump raw metric values as JSON")
+    args = parser.parse_args()
 
     datasets = {}
     for spec in args.dataset:
         name, _, path = spec.partition("=")
-        datasets[name] = analyse(*load(path))
+        datasets[name] = analyze_dataset(*load_dataset(path))
 
-    md = report(datasets)
+    md = to_markdown(datasets)
     print(md)
     if args.out_file:
         args.out_file.write_text(md)

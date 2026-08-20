@@ -145,7 +145,7 @@ def download_pdfs(paper_ids, pdf_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qasper", help="path to the QASPER JSON release")
-    parser.add_argument("--out-dir", default="benchmark_out_qasper", help="output directory")
+    parser.add_argument("--out-dir", default="output_qasper", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)

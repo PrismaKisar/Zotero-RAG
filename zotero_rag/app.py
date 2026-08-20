@@ -12,10 +12,9 @@ import time
 
 import streamlit as st
 from pdf_utils import sanitize_filename
+from pipeline import ZoteroRAG
 from question_presets import PRESETS, resolve
 from zotero_db import ZoteroDatabase
-
-from zotero_rag import ZoteroRAG
 
 
 def rgb_to_hex(rgb):
@@ -23,7 +22,7 @@ def rgb_to_hex(rgb):
     r, g, b = [int(x * 255) for x in rgb]
     return f'#{r:02x}{g:02x}{b:02x}'
 
-def _load_zotero_collections():
+def load_zotero_collections():
     try:
         with st.spinner("Loading Zotero collections..."):
             st.session_state.zotero_collections = ZoteroDatabase(None).list_collections()
@@ -55,7 +54,7 @@ def _load_zotero_collections():
         st.info("Make sure Zotero is installed and the database is accessible")
 
 
-def _run_ingest_and_index(result):
+def run_ingest_and_index(result):
     if result is None:
         st.warning("No ingest result returned.")
         return
@@ -464,7 +463,7 @@ def show_setup_tab():
                 key="indexed_pdf_filter"
             )
 
-            def _get_pdf_title(item):
+            def get_pdf_title(item):
                 if isinstance(item, dict):
                     return item.get("title", "")
                 return str(item)
@@ -472,7 +471,7 @@ def show_setup_tab():
             if filter_text:
                 filtered_pdfs = [
                     item for item in indexed_titles
-                    if filter_text.lower() in _get_pdf_title(item).lower()
+                    if filter_text.lower() in get_pdf_title(item).lower()
                 ]
             else:
                 filtered_pdfs = indexed_titles
@@ -509,8 +508,8 @@ def show_setup_tab():
                     left_value = left_column_items[row_idx] if row_idx < len(left_column_items) else None
                     right_value = right_column_items[row_idx] if row_idx < len(right_column_items) else None
                     two_col_rows.append({
-                        "PDF Name (1)": _get_pdf_title(left_value) if left_value else "",
-                        "PDF Name (2)": _get_pdf_title(right_value) if right_value else "",
+                        "PDF Name (1)": get_pdf_title(left_value) if left_value else "",
+                        "PDF Name (2)": get_pdf_title(right_value) if right_value else "",
                     })
 
                 st.caption(f"Showing {start + 1}-{min(end, total_filtered)} of {total_filtered} PDFs")
@@ -553,10 +552,10 @@ def show_setup_tab():
                         result = st.session_state.rag.ingest_pdfs_from_upload(
                             uploaded_pdfs
                         )
-                        _run_ingest_and_index(result)
+                        run_ingest_and_index(result)
 
             with st.expander("Add PDFs from Zotero", expanded=False):
-                _load_zotero_collections()
+                load_zotero_collections()
                 if st.session_state.zotero_collections_loaded and st.session_state.zotero_collections:
                     zotero_collection_options = ["All Library"]
                     for coll in st.session_state.zotero_collections:
@@ -584,7 +583,7 @@ def show_setup_tab():
                         result = st.session_state.rag.ingest_pdfs_from_zotero(
                                 st.session_state.zotero_collection
                             )
-                        _run_ingest_and_index(result)
+                        run_ingest_and_index(result)
 
             with st.expander("Remove one PDF", expanded=False):
                 pdf_name_to_delete = st.text_input(
@@ -630,7 +629,7 @@ def show_setup_tab():
         st.session_state.zotero_collections = zotero_collections
         st.rerun()
 
-def _format_time(seconds: float) -> str:
+def format_time(seconds: float) -> str:
     """Format time in seconds to human-readable string."""
     if seconds < 60:
         return f"{seconds:.1f}s"
@@ -782,7 +781,7 @@ def show_search_tab():
     if 'highlight_color_custom' not in st.session_state:
         st.session_state.highlight_color_custom = (1.0, 1.0, 0.0)
 
-    def _get_selected_highlight_color():
+    def get_selected_highlight_color():
         color_preset = st.session_state.get('highlight_color_preset', 'Yellow')
         if color_preset == 'Custom':
             return st.session_state.get('highlight_color_custom', (1.0, 1.0, 0.0))
@@ -928,9 +927,9 @@ def show_search_tab():
                 if current > 0 and progress < 1.0:
                     estimated_total = elapsed / progress
                     remaining = estimated_total - elapsed
-                    time_info = f"Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
+                    time_info = f"Elapsed: {format_time(elapsed)} | Remaining: ~{format_time(remaining)}"
                 elif progress >= 1.0:
-                    time_info = f"Completed in {_format_time(elapsed)}"
+                    time_info = f"Completed in {format_time(elapsed)}"
                 else:
                     time_info = ""
             else:
@@ -952,9 +951,9 @@ def show_search_tab():
                 if current > 0 and progress < 1.0:
                     estimated_total = elapsed / progress
                     remaining = estimated_total - elapsed
-                    time_info = f"Elapsed: {_format_time(elapsed)} | Remaining: ~{_format_time(remaining)}"
+                    time_info = f"Elapsed: {format_time(elapsed)} | Remaining: ~{format_time(remaining)}"
                 elif progress >= 1.0:
-                    time_info = f"Completed in {_format_time(elapsed)}"
+                    time_info = f"Completed in {format_time(elapsed)}"
                 else:
                     time_info = ""
             else:
@@ -1104,7 +1103,7 @@ def show_search_tab():
 
         with col_highlight:
             if st.button("Highlight Selected Articles", width="stretch"):
-                highlight_color_override = _get_selected_highlight_color()
+                highlight_color_override = get_selected_highlight_color()
                 selected_indices = [
                     i for i, selected in st.session_state.highlight_selected.items() if selected
                 ]

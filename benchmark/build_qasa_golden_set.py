@@ -144,7 +144,7 @@ def download_pdfs(records: list, pdf_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qasa", help="path to a QASA JSON release")
-    parser.add_argument("--out-dir", default="benchmark_out_qasa", help="output directory")
+    parser.add_argument("--out-dir", default="output_qasa", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)

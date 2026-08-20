@@ -1,4 +1,4 @@
-# Example configuration for using a folder of PDFs instead of Zotero collection
+# Folder: a folder of PDFs as the source, instead of a Zotero collection
 
 # Source configuration - use 'folder' mode instead of 'zotero'
 source_type: folder
@@ -8,7 +8,7 @@ folder_path: /path/to/your/pdf/folder  # Replace with your actual folder path
 output_base_dir: ./output
 
 # Model configuration
-model_name: BAAI/bge-base-en-v1.5
+dense_model_name: BAAI/bge-base-en-v1.5
 qa_model: deepset/roberta-base-squad2
 reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
 

@@ -38,6 +38,18 @@ def sanitize_filename(name: str | None, max_length: int = 200) -> str:
     return sanitized
 
 
+def is_pdf_hash(name: str) -> bool:
+    """Tell whether a bare filename is one of our SHA-256 cache names.
+
+    Args:
+        name: Filename without extension.
+
+    Returns:
+        True if the name is a 64-character hexadecimal digest.
+    """
+    return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
+
+
 def compute_stream_hash(stream: BinaryIO, buffer_size: int = 1024 * 1024) -> str:
     """Compute SHA-256 hash from a binary stream.
     

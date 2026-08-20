@@ -7,7 +7,7 @@ LIVE_FIELDS = {
     "rerank_threshold",
     "qa_score_threshold",
     "min_answer_words",
-    "section_diversity",
+    "section_diversity_enabled",
     "retrieval_mode",
     "result_limit",
     "rerank_enabled",

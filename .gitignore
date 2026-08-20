@@ -7,9 +7,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
-# Runtime / output
-output/
-benchmark_out*/
+# Runtime / output: output/ is the app, output_<corpus>/ each benchmark run
+output*/
 *.log
 .app.pid
 

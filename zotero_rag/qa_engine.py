@@ -272,7 +272,7 @@ class QAEngine:
             candidates: List of RerankedChunk objects to extract answers from.
             config: Resolved question-type config (see ``question_presets.resolve``).
                 Reads ``qa_score_threshold``, ``min_answer_words`` and
-                ``section_diversity``.
+                ``section_diversity_enabled``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
             question_variations: Optional list of question variations to use instead of generating them.
@@ -458,7 +458,7 @@ class QAEngine:
                 return False
             return True
 
-        if config.get('section_diversity', False):
+        if config.get('section_diversity_enabled', False):
             # ... [Section Diversity Logic] ...
             intro_sections = ['abstract', 'introduction', 'intro']
             method_sections = ['methodology', 'methods', 'approach', 'algorithm', 'implementation']

@@ -28,8 +28,9 @@ from models import (
     PDFIngestItem,
     RerankedChunk,
     UpsertResult,
+    ingest_items_from_folder,
 )
-from pdf_cache_handler import PDFCacheHandler
+from pdf_cache_manager import PDFCacheManager
 from pdf_processor import PDFProcessor
 from qa_engine import QAEngine
 from qdrant_manager import QdrantManager
@@ -40,7 +41,9 @@ from zotero_db import ZoteroDatabase
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
 
-# Configure logging
+# Logs live in one directory instead of scattering across the working directory
+LOG_DIR = 'logs'
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -48,7 +51,8 @@ logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # File handler
-file_handler = logging.FileHandler('zotero_rag.log', mode='a')
+os.makedirs(LOG_DIR, exist_ok=True)
+file_handler = logging.FileHandler(os.path.join(LOG_DIR, 'zotero_rag.log'), mode='a')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(formatter)
 
@@ -110,7 +114,7 @@ class ZoteroRAG:
         self.output_base_dir = output_base_dir
         self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
         
-        self.pdf_cache = PDFCacheHandler(
+        self.pdf_cache = PDFCacheManager(
             folder_path=self.pdf_cache_dir
         )
         
@@ -264,22 +268,39 @@ class ZoteroRAG:
         if not uploaded_pdfs:
             raise ValueError("uploaded_pdfs cannot be empty")
         
-        return self._ingest_pdfs(PDFCacheHandler.get_items_from_upload(uploaded_pdfs))
+        return self._ingest_pdfs(PDFCacheManager.get_items_from_upload(uploaded_pdfs))
         
-    def ingest_pdfs_from_zotero(self, zotero_collection: str | None = None) -> IngestResult:
+    def ingest_pdfs_from_zotero(self, zotero_collection: str | None = None,
+                                zotero_data_dir: str | None = None) -> IngestResult:
         """Ingest PDFs from Zotero.
 
         Args:
             zotero_collection: Name of the Zotero collection to ingest from.
                 If None, ingest all PDFs from the library.
+            zotero_data_dir: Path to the Zotero data directory. If None, auto-detect.
 
         Returns:
             IngestResult with summary and error details.
         """ 
-        source = ZoteroDatabase(None)
+        source = ZoteroDatabase(zotero_data_dir)
         uploaded_pdfs = source.get_items(zotero_collection)
         
         return self._ingest_pdfs(uploaded_pdfs)
+
+    def ingest_pdfs_from_folder(self, folder_path: str) -> IngestResult:
+        """Ingest every PDF in a folder, each titled by its filename stem.
+
+        Args:
+            folder_path: Path to the folder to read PDFs from (not recursive).
+
+        Returns:
+            IngestResult with summary and error details.
+        """
+        items = ingest_items_from_folder(folder_path)
+        if not items:
+            logger.warning("No PDF found in %s", folder_path)
+
+        return self._ingest_pdfs(items)
 
     def _rollback_pdfs(self, newly_cached_hashes: set[str], failed_hashes: set[str]) -> bool:
         """Rollback cached PDFs that were newly cached during the current upsert if they failed to index.
@@ -298,7 +319,7 @@ class ZoteroRAG:
         for pdf_hash in to_remove:
             try:
                 self.pdf_cache.remove_pdf(pdf_hash)
-                self.pdf_processor.remove_cache_item(pdf_hash)
+                self.pdf_processor.remove_tei_cache(pdf_hash)
                 logger.debug("Rolled back PDF from cache: %s", pdf_hash)
             except Exception as e:  # noqa: BLE001 - rollback is best-effort
                 logger.error("Error rolling back PDF '%s': %s", pdf_hash, str(e))
@@ -557,7 +578,7 @@ class ZoteroRAG:
             deleted = delete_result.get("deleted", False)
             if deleted:
                 if not delete_result.get("had_other_models", False):
-                    self.pdf_processor.remove_cache_item(pdf_hash)
+                    self.pdf_processor.remove_tei_cache(pdf_hash)
                     self.pdf_cache.remove_pdf(pdf_hash)
                 logger.info("Successfully deleted chunks for PDF: %s", pdf_title)
                 return True
@@ -579,8 +600,8 @@ class ZoteroRAG:
         try:
             self.qdrant_manager.open_connection()
             deleted_pdfs = self.qdrant_manager.clear_chunk_collection()
-            self.pdf_cache.clear_index_cache(deleted_pdfs)
-            self.pdf_processor.clear_index_cache(deleted_pdfs)
+            self.pdf_cache.clear_pdf_cache(deleted_pdfs)
+            self.pdf_processor.clear_tei_cache(deleted_pdfs)
             logger.info("Successfully cleared the Qdrant collection.")
             return True
         except Exception as e:  # noqa: BLE001 - failure reported to the caller as False

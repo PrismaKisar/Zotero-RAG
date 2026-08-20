@@ -5,7 +5,7 @@ Writes one <paper_id>.json per paper, containing the list of chunk texts in the
 order GROBID returns them. Requires the GROBID service to be running.
 
 Usage:
-  python -m benchmark.extract_chunks --pdf-dir benchmark_out_qasper/pdfs --out-dir benchmark_out_qasper/chunks
+  python -m benchmark.extract_chunks --pdf-dir output_qasper/pdfs --out-dir output_qasper/chunks
 """
 
 import argparse
@@ -14,7 +14,7 @@ import shutil
 import sys
 from pathlib import Path
 
-# appended (not inserted): prepending lets zotero_rag.py shadow the zotero_rag package
+# appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from pdf_processor import PDFProcessor
@@ -46,8 +46,8 @@ def extract(pdf_dir: Path, out_dir: Path, work_dir: Path, grobid_url: str, timeo
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pdf-dir", required=True)
-    parser.add_argument("--out-dir", default="benchmark_out_qasper/chunks")
-    parser.add_argument("--work-dir", default="benchmark_out_qasper/grobid",
+    parser.add_argument("--out-dir", default="output_qasper/chunks")
+    parser.add_argument("--work-dir", default="output_qasper/grobid",
                         help="where the PDF and TEI caches are kept")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--timeout", type=int, default=180)

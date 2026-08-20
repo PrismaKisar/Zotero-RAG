@@ -5,7 +5,7 @@ parameter except one at the fixed baseline, sweep that one parameter, repeat
 per parameter. This is deliberately NOT the adaptive per-question-type preset
 in zotero_rag/question_presets.py (that's a separate, out-of-scope experiment).
 
-Runs on the QASPER dev golden set (benchmark_out_qasper/), same dataset the frozen
+Runs on the QASPER dev golden set (output_qasper/), same dataset the frozen
 alignment protocol designates for ablation (see benchmark/README.md). Scores:
 
 - Answer F1, per question, via qasper_evaluator.token_f1_score (the official
@@ -38,8 +38,8 @@ Requires: GROBID + Qdrant running, and the corpus already indexed via
 benchmark/index_pdfs.py (same output_base_dir passed here).
 
 Usage:
-  python -m benchmark.ablation --work-dir benchmark_out_qasper/grobid \
-      --hash-map benchmark_out_qasper/pdf_hash_map.json --out-file benchmark_out_qasper/ablation_results.csv
+  python -m benchmark.ablation --work-dir output_qasper/grobid \
+      --hash-map output_qasper/pdf_hash_map.json --out-file output_qasper/ablation_results.csv
 """
 
 import argparse
@@ -49,7 +49,7 @@ import random
 import sys
 from pathlib import Path
 
-# appended (not inserted): prepending lets zotero_rag.py shadow the zotero_rag package
+# appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from question_presets import PRESETS
@@ -75,7 +75,7 @@ GRID = {
     "rerank_threshold": [0.35, 0.55],
     "qa_score_threshold": [0.05, 0.20],
     "min_answer_words": [1, 5],
-    "section_diversity": [True],
+    "section_diversity_enabled": [True],
 }
 
 RECALL_K = 10
@@ -295,12 +295,12 @@ def check_corpus_indexed(rag) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="benchmark_out_qasper")
-    parser.add_argument("--hash-map", default="benchmark_out_qasper/pdf_hash_map.json")
-    parser.add_argument("--work-dir", default="benchmark_out_qasper/grobid",
+    parser.add_argument("--golden-dir", default="output_qasper")
+    parser.add_argument("--hash-map", default="output_qasper/pdf_hash_map.json")
+    parser.add_argument("--work-dir", default="output_qasper/grobid",
                         help="output_base_dir ZoteroRAG was indexed with")
-    parser.add_argument("--out-file", default="benchmark_out_qasper/ablation_results.csv")
-    parser.add_argument("--strata-file", default="benchmark_out_qasper/ablation_by_stratum.md",
+    parser.add_argument("--out-file", default="output_qasper/ablation_results.csv")
+    parser.add_argument("--strata-file", default="output_qasper/ablation_by_stratum.md",
                         help="stratified breakdown of the baseline run")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
@@ -311,7 +311,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    from zotero_rag.zotero_rag import (
+    from zotero_rag.pipeline import (
         ZoteroRAG,  # heavy import, kept out of build_configs()'s pure path
     )
 

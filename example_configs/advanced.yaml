@@ -1,12 +1,11 @@
-# Advanced ZoteroRAG Configuration Example
-# Demonstrates advanced features and custom paraphrases
+# Advanced: Zotero source, with custom paraphrases and per-question overrides
 
 # Zotero settings
 zotero_collection: "Machine Learning Papers"  # Optional, use specific collection
 output_base_dir: ./ml_papers_output
 
 # Model settings (optional overrides)
-model_name: BAAI/bge-base-en-v1.5
+dense_model_name: BAAI/bge-base-en-v1.5
 qa_model: deepset/roberta-base-squad2
 reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
 model_device: mps  # Use 'cpu', 'cuda', or null for auto-detect
@@ -31,7 +30,7 @@ questions:
     rerank_threshold: 0.3
     highlight_color: [1, 1, 0]  # Yellow
     question_type: explanation
-    custom_config:
+    overrides:
       qa_score_threshold: 0.15
       min_answer_words: 3
   
@@ -42,7 +41,7 @@ questions:
     rerank_threshold: 0.4
     highlight_color: [1, 0, 1]  # Pink
     question_type: factoid
-    custom_config:
+    overrides:
       qa_score_threshold: 0.3  # Only high-confidence answers
       min_answer_words: 2
   
@@ -53,10 +52,10 @@ questions:
     rerank_threshold: 0.2
     highlight_color: [0, 1, 0]  # Green
     question_type: methodology
-    custom_config:
+    overrides:
       qa_score_threshold: 0.05  # Accept more answers
       min_answer_words: 5
-      section_diversity: true
+      section_diversity_enabled: true
   
   # Question 4: With predefined paraphrases + strict filtering
   - question: "How does BERT differ from GPT?"
@@ -68,7 +67,7 @@ questions:
     rerank_threshold: 0.35
     highlight_color: [0, 0.5, 1]  # Blue
     question_type: comparison
-    custom_config:
+    overrides:
       qa_score_threshold: 0.2
   
   # Question 5: Using defaults (no overrides)
@@ -82,8 +81,8 @@ defaults:
   rerank_threshold: 0.25
   highlight_color: [1, 1, 0]
   question_type: general
-  custom_config: null
+  overrides: null
 
 # Output settings
 create_highlighted_pdfs: true  # Generate highlighted PDFs
-output_results_file: ml_papers_results.json  # Save to JSON
+results_file: ml_papers_results.json  # Save to JSON

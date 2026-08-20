@@ -1,5 +1,4 @@
-# ZoteroRAG Configuration File Example
-# This file demonstrates all available configuration options
+# Basic: Zotero source, with every available option documented inline
 
 # ============================================================================
 # Zotero and Output Settings
@@ -21,7 +20,7 @@ output_base_dir: ./output
 # ============================================================================
 
 # Embedding model for semantic search
-model_name: BAAI/bge-base-en-v1.5
+dense_model_name: BAAI/bge-base-en-v1.5
 
 # Question answering model for extractive QA
 qa_model: deepset/roberta-base-squad2
@@ -102,7 +101,7 @@ questions:
     num_paraphrases: 1
     highlight_color: [1, 0, 1]  # Pink
     question_type: factoid
-    custom_config:
+    overrides:
       qa_score_threshold: 0.3
       min_answer_words: 2
 
@@ -114,4 +113,4 @@ questions:
 create_highlighted_pdfs: true
 
 # Save results to JSON file (optional - set to null to disable)
-output_results_file: results.json
+results_file: results.json

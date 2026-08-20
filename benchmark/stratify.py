@@ -5,7 +5,7 @@ QASA questions are longer, more often causal, over denser papers), so a single
 pooled mean cannot say *why* one dataset scores lower than the other. Every
 metric is therefore reported per stratum:
 
-- ``question_form``  what/why/how/yes-no, reusing compare_datasets.q_type
+- ``question_form``  what/why/how/yes-no, reusing compare_datasets.question_form
 - ``evidence_count`` single- vs multi-evidence questions
 - ``evidence_spread`` whether the gold chunks are adjacent or scattered
 
@@ -15,7 +15,7 @@ a 120-question golden set the tail strata are too small to compare.
 
 from collections.abc import Callable, Sequence
 
-from benchmark.compare_datasets import q_type
+from benchmark.compare_datasets import question_form
 from benchmark.retrieval_metrics import summarize
 
 MIN_STRATUM_N = 20
@@ -36,7 +36,7 @@ def evidence_spread_stratum(record: dict) -> str:
 
 
 STRATA: dict[str, Callable[[dict], str]] = {
-    "question_form": lambda r: q_type(r["question"]),
+    "question_form": lambda r: question_form(r["question"]),
     "evidence_count": evidence_count_stratum,
     "evidence_spread": evidence_spread_stratum,
 }

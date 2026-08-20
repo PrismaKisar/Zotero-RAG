@@ -17,7 +17,7 @@ deterministico a parità di seed.
 
 ```
 python -m benchmark.build_qasper_golden_set qasper-dev-v0.3.json \
-    --out-dir benchmark_out_qasper --papers 100 --seed 42 --pdf-dir benchmark_out_qasper/pdfs
+    --out-dir output_qasper --papers 100 --seed 42 --pdf-dir output_qasper/pdfs
 ```
 
 Risultato: **100 paper, 218 domande**, di cui 90 (41,3%) a evidenza multipla.
@@ -30,9 +30,9 @@ Esclusioni sul dev completo (1005 domande): 237 abstractive, 113 yes/no,
 Richiede GROBID attivo (`docker-compose up`).
 
 ```
-python -m benchmark.extract_chunks --pdf-dir benchmark_out_qasper/pdfs --out-dir benchmark_out_qasper/chunks
-python -m benchmark.align_evidence benchmark_out_qasper/golden_set.jsonl \
-    --chunks-dir benchmark_out_qasper/chunks --out-dir benchmark_out_qasper --sample 30 --seed 42
+python -m benchmark.extract_chunks --pdf-dir output_qasper/pdfs --out-dir output_qasper/chunks
+python -m benchmark.align_evidence output_qasper/golden_set.jsonl \
+    --chunks-dir output_qasper/chunks --out-dir output_qasper --sample 30 --seed 42
 ```
 
 Criterio: un paragrafo è allineato solo quando un **singolo** chunk lo copre.
@@ -94,7 +94,7 @@ risolti sono riportati e vanno recuperati a mano.
 
 ```
 python -m benchmark.build_qasa_golden_set testset_answerable_1554_v1.1.json \
-    --out-dir benchmark_out_qasa --papers 100 --seed 42 --pdf-dir benchmark_out_qasa/pdfs
+    --out-dir output_qasa --papers 100 --seed 42 --pdf-dir output_qasa/pdfs
 ```
 
 Risultato: **100 paper, 1.381 domande**, di cui 631 (45,7%) a evidenza multipla
@@ -103,7 +103,7 @@ risolti su arXiv (verosimilmente artefatti di estrazione nel campo `title` di
 QASA, es. sillabazione spezzata), 1 download fallito.
 
 L'allineamento evidenza/chunk riusa `extract_chunks.py` e `align_evidence.py`
-senza modifiche specifiche a QASA, puntati su `benchmark_out_qasa/`.
+senza modifiche specifiche a QASA, puntati su `output_qasa/`.
 Risultato: allineamento paragrafi 61,2%, allineamento domande 43,7%
 (604/1381, soglia 0,8; 145 domande escluse per assenza di chunk sui 10 paper
 non scaricati). Il tasso è più basso che su QASPER perché il campo `context`
@@ -111,6 +111,29 @@ di QASA concatena punti elenco distinti più spesso — esattamente il caso di
 evidenza multi-chunk che il criterio ora esclude per scelta. Tasso d'errore
 sul campione di validazione a mano (n=30, seed 42), col criterio definitivo:
 **0% (0/30)**.
+
+## Indicizzazione (`index_pdfs.py`)
+
+Le metriche di retrieval richiedono che i PDF del golden set siano dentro Qdrant.
+`index_pdfs.py` li ingesta come sorgente cartella, bypassando Zotero, e scrive la
+mappa `{paper_id: pdf_hash}` che lo scoring usa per legare le domande ai chunk
+indicizzati. Richiede GROBID e Qdrant attivi (`docker compose up -d grobid qdrant`).
+
+```
+python -m benchmark.index_pdfs --pdf-dir output_qasper/pdfs \
+    --out-file output_qasper/pdf_hash_map.json --work-dir output_qasper/grobid \
+    --qdrant-collection-suffix _qasper
+```
+
+Ogni corpus va in una collection Qdrant separata (`--qdrant-collection-suffix`):
+il retrieval è su tutta la libreria, non su un paper, quindi due dataset che
+condividessero la collection si contaminerebbero il ranking a vicenda. Per QASA
+bastano gli stessi comandi con `output_qasa/` e `_qasa`.
+
+La contestualizzazione dei chunk è disattivata salvo `--contextualize`: è un
+intervento di fase 2 non misurato e il suo fallimento degrada in silenzio ai
+chunk grezzi, quindi lasciarla attiva renderebbe l'indice di baseline
+irriproducibile.
 
 ## Scoring
 
@@ -121,7 +144,7 @@ conta come predizioni mancanti tutte le domande escluse dal golden set.
 ```
 python benchmark/qasper_evaluator.py \
     --predictions predictions.jsonl \
-    --gold benchmark_out_qasper/golden_gold.json \
+    --gold output_qasper/golden_gold.json \
     --text_evidence_only
 ```
 
@@ -158,8 +181,8 @@ marcati come non interpretabili anziché essere taciuti.
 
 ```
 python -m benchmark.compare_datasets \
-    --dataset QASPER=benchmark_out_qasper --dataset QASA=benchmark_out_qasa \
-    --out-file benchmark_out_qasper/dataset_comparison.md
+    --dataset QASPER=output_qasper --dataset QASA=output_qasa \
+    --out-file output_qasper/dataset_comparison.md
 ```
 
 Nota: QASA non ha risposte brevi annotate, quindi l'Answer F1 non è calcolabile

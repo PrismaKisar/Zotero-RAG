@@ -12,7 +12,7 @@ from pathlib import Path
 from zotero_rag.question_presets import PRESETS
 
 # Modules that make up the runtime pipeline reading the resolved config.
-PIPELINE_SOURCES = ("zotero_rag.py", "qa_engine.py")
+PIPELINE_SOURCES = ("pipeline.py", "qa_engine.py")
 
 
 def _pipeline_text() -> str:

@@ -5,11 +5,12 @@ import io
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from pdf_utils import (
     compute_file_hash,
     compute_stream_hash,
+    is_pdf_hash,
     sanitize_filename,
 )
 
@@ -49,3 +50,14 @@ def test_compute_file_hash_matches_hashlib(tmp_path):
     file_path = tmp_path / "sample.bin"
     file_path.write_bytes(data)
     assert compute_file_hash(str(file_path)) == hashlib.sha256(data).hexdigest()
+
+
+def test_is_pdf_hash_accepts_only_sha256_digests():
+    assert is_pdf_hash("a" * 64)
+    assert is_pdf_hash("A" * 64)  # case-insensitive, cache names are lowercased later
+    assert not is_pdf_hash("a" * 63)
+    assert not is_pdf_hash("a" * 65)
+    assert not is_pdf_hash("my_paper")
+    assert not is_pdf_hash("g" * 64)  # not hexadecimal
+    assert not is_pdf_hash("")
+    assert not is_pdf_hash(None)

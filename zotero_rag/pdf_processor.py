@@ -2,7 +2,6 @@
 
 import logging
 import os
-import re
 import shutil
 import tempfile
 import threading
@@ -12,7 +11,7 @@ from typing import ClassVar
 import requests
 from grobid_client.grobid_client import GrobidClient
 from models import ExtractedChunk
-from pdf_utils import compute_file_hash
+from pdf_utils import compute_file_hash, is_pdf_hash
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +19,6 @@ logger = logging.getLogger(__name__)
 class PDFProcessor:
     """Handles PDF parsing and text extraction using GROBID."""
     
-    # Reference section patterns to detect bibliography/references
-    REFERENCE_PATTERNS: ClassVar[list[str]] = [
-        r'^\s*references\s*$',
-        r'^\s*bibliography\s*$',
-        r'^\s*works\s+cited\s*$',
-        r'^\s*literature\s+cited\s*$',
-    ]
-
     # Section types to include in chunking (can be customized)
     CONTENT_SECTIONS: ClassVar[dict[str, bool]] = {
         'body': True,
@@ -75,33 +66,14 @@ class PDFProcessor:
         except requests.RequestException:
             return False
         
-    @staticmethod
-    def _is_hash_name(name: str) -> bool:
-        return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
-    
-    def remove_cache_item(self, pdf_hash: str) -> bool:
-        """Remove cached TEI XML for a given PDF hash.
-        
+    def remove_tei_cache(self, pdf_hash: str) -> bool:
+        """Remove the cached TEI XML for a given PDF hash.
+
         Args:
             pdf_hash: Hash of the PDF whose cache should be removed.
-        
-        Returns:
-            True if cache was removed, False otherwise.
-        """
-        if not pdf_hash:
-            logger.warning("PDF hash cannot be empty for cache removal")
-            return False
 
-        return self._remove_cache_item_by_hash(pdf_hash)
-
-    def _remove_cache_item_by_hash(self, pdf_hash: str) -> bool:
-        """Helper method to remove cache item by hash, used internally and for public interface.
-        
-        Args:
-            pdf_hash: Hash of the PDF whose cache should be removed.
-            
         Returns:
-            True if cache was removed, False otherwise.
+            True if a cache file was removed, False otherwise.
         """
         if not pdf_hash:
             logger.warning("PDF hash cannot be empty for cache removal")
@@ -132,7 +104,7 @@ class PDFProcessor:
 
         return removed
 
-    def clear_index_cache(self, deleted_pdfs: dict[str, str]):
+    def clear_tei_cache(self, deleted_pdfs: dict[str, str]):
         """Clear cached TEI XML files for deleted PDFs.
         
         Args:
@@ -146,9 +118,8 @@ class PDFProcessor:
             if not pdf_hash:
                 logger.warning("Skipping cache clearing for entry with empty hash")
                 continue
-            self._remove_cache_item_by_hash(pdf_hash)
+            self.remove_tei_cache(pdf_hash)
 
-    
     def _parse_pdf(self, pdf_path: str, pdf_hash: str | None = None) -> ET.Element | None:
         """Parse a single PDF using GROBID and return TEI XML root.
         
@@ -162,7 +133,7 @@ class PDFProcessor:
         try:
             if not pdf_hash:
                 base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-                if self._is_hash_name(base_name):
+                if is_pdf_hash(base_name):
                     pdf_hash = base_name.lower()
                 else:
                     pdf_hash = compute_file_hash(pdf_path)

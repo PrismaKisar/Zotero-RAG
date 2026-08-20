@@ -159,7 +159,7 @@ def main():
     parser.add_argument("golden_set", help="golden_set.jsonl from a golden-set builder")
     parser.add_argument("--chunks-dir", required=True,
                         help="directory of <paper_id>.json files, each a list of chunk texts")
-    parser.add_argument("--out-dir", default="benchmark_out_qasper", help="output directory")
+    parser.add_argument("--out-dir", default="output_qasper", help="output directory")
     parser.add_argument("--threshold", type=float, default=THRESHOLD)
     parser.add_argument("--sample", type=int, default=30,
                         help="size of the sample to validate by hand")
