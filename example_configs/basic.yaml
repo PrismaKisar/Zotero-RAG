@@ -31,11 +31,11 @@ reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
 # Device to use: 'cpu', 'cuda', 'mps', or null for auto-detect
 model_device: null
 
-# Batch size for encoding embeddings (null = auto-detect for 75% memory)
-encode_batch_size: null
+# Batch size for encoding embeddings (null = library default)
+encode_batch_size: 32
 
-# Batch size for reranking (null = auto-detect for 75% memory)
-rerank_batch_size: null
+# Batch size for reranking (null = library default)
+rerank_batch_size: 32
 
 # ============================================================================
 # GROBID Settings (for PDF processing)

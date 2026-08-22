@@ -146,7 +146,7 @@ Then navigate to `http://localhost:8501`
 5. **Select Embedding Model**
    - Model name: Any HuggingFace SentenceTransformer (e.g., `BAAI/bge-base-en-v1.5`)
    - Device: auto/cpu/mps/cuda
-   - Batch sizes: Auto-detected or manual override
+   - Batch sizes: encoding and reranking (default 32)
    - Click "Load Model"
 
 6. **Add PDFs to Index**

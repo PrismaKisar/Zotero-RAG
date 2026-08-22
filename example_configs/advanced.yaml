@@ -8,9 +8,9 @@ output_base_dir: ./ml_papers_output
 dense_model_name: BAAI/bge-base-en-v1.5
 qa_model: deepset/roberta-base-squad2
 reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
-model_device: mps  # Use 'cpu', 'cuda', or null for auto-detect
+model_device: mps  # Use 'cpu', 'cuda', 'mps', or null for auto-detect
 
-# Batch sizes (null = auto-detect, or specify e.g. 32, 64, 128)
+# Batch sizes (null = library default of 32)
 encode_batch_size: 32   # For embedding model
 rerank_batch_size: 16   # For cross-encoder reranking
 

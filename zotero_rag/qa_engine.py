@@ -4,10 +4,13 @@ import logging
 import math
 
 import torch
+from device import resolve_device
 from models import Answer, Chunk, ExpandedAnswerSpan, RerankedChunk
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_QA_BATCH_SIZE = {"cuda": 128, "mps": 16, "cpu": 8}
 
 
 class QAEngine:
@@ -17,25 +20,24 @@ class QAEngine:
                 model_name: str = "deepset/deberta-v3-large-squad2", 
                 device: str | None = None,
                 enable_question_expansion: bool = True,
-                batch_size: int = 128):
+                batch_size: int | None = None):
         """Initialize the QA engine.
-        
+
         Args:
             model_name: Name of the HuggingFace QA model.
             device: Device to use ('cpu', 'cuda', 'mps'). Auto-detect if None.
             enable_question_expansion: Generate question variations to improve retrieval.
+            batch_size: Sequences per forward pass. Device default if None.
         """
         self.model_name = model_name
-        self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+        self.device = resolve_device(device)
         self.enable_question_expansion = enable_question_expansion
-        self.pipeline = None
         self.model = None
         self.tokenizer = None
         self.paraphraser = None
-        self.batch_size = batch_size if batch_size is not None else 128
-        # ponytail: 128 is a GPU number; on CPU a large QA model OOMs (exit 137). Cap it.
-        if self.device == "cpu":
-            self.batch_size = min(self.batch_size, 8)
+        # 512-token sequences through a large QA model: 128 only fits a dedicated GPU.
+        # MPS shares its memory with the OS, and CPU OOMs outright (exit 137).
+        self.batch_size = batch_size or DEFAULT_QA_BATCH_SIZE[self.device]
         
         self._load_model_direct()
         if enable_question_expansion:
@@ -49,10 +51,12 @@ class QAEngine:
             # Load Tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
             
-            # Load Model in BFloat16 (Crucial for H100 speed)
+            # Half precision where the accelerator supports it: bfloat16 on CUDA,
+            # float16 on MPS (which has no bfloat16 path). CPU stays float32.
+            dtype = {"cuda": torch.bfloat16, "mps": torch.float16}.get(self.device, torch.float32)
             self.model = AutoModelForQuestionAnswering.from_pretrained(
                 self.model_name,
-                dtype=torch.bfloat16 if self.device == "cuda" else torch.float32 #torch_dtype
+                dtype=dtype
             ).to(self.device)
             
             import sys
@@ -70,31 +74,13 @@ class QAEngine:
             logger.error(f"Could not load QA model {self.model_name}: {e}")
             raise
     
-    def _load_pipeline(self):
-        """Load the QA pipeline."""
-        try:
-            device_id = 0 if self.device == "cuda" else -1
-            self.pipeline = pipeline(
-                'question-answering',
-                model=self.model_name,
-                tokenizer=self.model_name,
-                device=device_id
-            )
-            logger.info(f"QA pipeline loaded: {self.model_name} on device {self.device}")
-        except Exception as e:  # noqa: BLE001 - optional model: continue without the pipeline
-            logger.warning(f"Could not load QA model {self.model_name}: {e}")
-            self.pipeline = None
-    
     def _load_paraphraser(self):
         """Load paraphrasing model for question expansion."""
         try:
-            # Detect device: 0 for CUDA, -1 for CPU
-            device_id = 0 if self.device == "cuda" else -1
-            
             self.paraphraser = pipeline(
                 "text2text-generation",
                 model="humarin/chatgpt_paraphraser_on_T5_base",
-                device=device_id
+                device=self.device
             )
             logger.info(f"Question paraphraser loaded on {self.device}")
         except Exception as e:  # noqa: BLE001 - optional model: continue without the paraphraser

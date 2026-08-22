@@ -13,9 +13,6 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --no-install-project --no-dev
 
-# nltk punkt at build time so no network is needed at runtime
-RUN python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True)"
-
 COPY zotero_rag/ ./zotero_rag/
 COPY example_configs/ ./example_configs/
 

@@ -11,9 +11,11 @@ import sys
 import time
 
 import streamlit as st
+from embedding_manager import DEFAULT_ENCODE_BATCH_SIZE
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
 from question_presets import PRESETS, resolve
+from reranker import DEFAULT_RERANK_BATCH_SIZE
 from zotero_db import ZoteroDatabase
 
 
@@ -324,7 +326,7 @@ def show_setup_tab():
         col_device, col_encode_batch, col_rerank_batch = st.columns(3)
 
         with col_device:
-            device_options = ["auto", "cpu", "cuda"]
+            device_options = ["auto", "cpu", "cuda", "mps"]
             current_device = "auto" if st.session_state.model_device is None else st.session_state.model_device
             if current_device not in device_options:
                 current_device = "auto"
@@ -333,42 +335,24 @@ def show_setup_tab():
                 "Device",
                 options=device_options,
                 index=device_options.index(current_device),
-                help="Select compute device. 'auto' uses CUDA when available, otherwise CPU."
+                help="Select compute device. 'auto' picks CUDA, then MPS, then CPU."
             )
 
         with col_encode_batch:
-            encode_batch_auto = st.checkbox(
-                "Auto-detect encoding batch",
-                value=st.session_state.get('encode_batch_auto', True),
-                help="Auto-detect safe batch size (targets 75% memory usage)",
-                key="encode_batch_auto_chk"
+            encode_batch_size = st.number_input(
+                "Encoding batch size",
+                min_value=1, max_value=256,
+                value=st.session_state.get('encode_batch_size', DEFAULT_ENCODE_BATCH_SIZE),
+                help="Chunks encoded per forward pass"
             )
-            if not encode_batch_auto:
-                encode_batch_size = st.number_input(
-                    "Encoding batch size",
-                    min_value=1, max_value=256, value=st.session_state.get('encode_batch_size', 8),
-                    help="Manual batch size for encoding"
-                )
-            else:
-                encode_batch_size = None
-                st.session_state.encode_batch_auto = True
 
         with col_rerank_batch:
-            rerank_batch_auto = st.checkbox(
-                "Auto-detect rerank batch",
-                value=st.session_state.get('rerank_batch_auto', True),
-                help="Auto-detect safe batch size (targets 75% memory usage)",
-                key="rerank_batch_auto_chk"
+            rerank_batch_size = st.number_input(
+                "Reranking batch size",
+                min_value=1, max_value=256,
+                value=st.session_state.get('rerank_batch_size', DEFAULT_RERANK_BATCH_SIZE),
+                help="Query/passage pairs scored per forward pass"
             )
-            if not rerank_batch_auto:
-                rerank_batch_size = st.number_input(
-                    "Reranking batch size",
-                    min_value=1, max_value=256, value=st.session_state.get('rerank_batch_size', 8),
-                    help="Manual batch size for reranking"
-                )
-            else:
-                rerank_batch_size = None
-                st.session_state.rerank_batch_auto = True
 
     with model_col_right:
         st.write("")
@@ -404,18 +388,10 @@ def show_setup_tab():
                     st.session_state.model_loaded = True
                     st.session_state.indexed = False  # Reset indexed status
 
-                    # Show configuration summary
-                    batch_info = []
-                    if encode_batch_size is None:
-                        batch_info.append("Encoding: Auto-detect")
-                    else:
-                        batch_info.append(f"Encoding: {encode_batch_size}")
-                    if rerank_batch_size is None:
-                        batch_info.append("Reranking: Auto-detect")
-                    else:
-                        batch_info.append(f"Reranking: {rerank_batch_size}")
-
-                    st.success(f"Model loaded: {model_input}\n\n**Batch sizes:** {' | '.join(batch_info)}")
+                    st.success(
+                        f"Model loaded: {model_input}\n\n"
+                        f"**Batch sizes:** Encoding: {encode_batch_size} | Reranking: {rerank_batch_size}"
+                    )
                     st.rerun()
                 except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
                     st.error(f"Error loading model: {e}")

@@ -4,10 +4,13 @@ import logging
 
 import numpy as np
 import torch
+from device import resolve_device
 from models import Chunk, RerankedChunk
 from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_RERANK_BATCH_SIZE = 32
 
 
 class Reranker:
@@ -22,12 +25,11 @@ class Reranker:
         Args:
             model_name: Name of the cross-encoder model.
             device: Device to use ('cpu', 'cuda', 'mps'). Auto-detect if None.
-            batch_size: Batch size for reranking. If None, auto-detect safe size.
+            batch_size: Batch size for reranking. Defaults to ``DEFAULT_RERANK_BATCH_SIZE``.
         """
-        import torch
         self.model_name = model_name
-        self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
-        self.batch_size = batch_size  # None means auto-detect
+        self.device = resolve_device(device)
+        self.batch_size = batch_size or DEFAULT_RERANK_BATCH_SIZE
         self.model = CrossEncoder(model_name, device=self.device)
         logger.info(f"Reranker initialized with model {model_name} on {self.device}")
     
@@ -70,48 +72,6 @@ class Reranker:
         logger.debug(f"Adaptive threshold: Using base threshold {base_threshold:.3f} (mean={mean_score:.3f}, max={max_score:.3f})")
         return base_threshold
     
-    def _find_safe_batch_size(self, 
-                            pairs: list[list[str]], 
-                            start_size: int = 2, 
-                            max_size: int = 128,
-                            target_memory_fraction: float = 0.75) -> int:
-        """Find safe batch size targeting specific memory usage.
-        
-        Args:
-            pairs: Sample of text pairs to test with.
-            start_size: Initial batch size to try.
-            max_size: Maximum batch size to test.
-            target_memory_fraction: Target fraction of memory to use (0.0-1.0).
-            
-        Returns:
-            Safe batch size.
-        """
-        import torch
-        test_sample = pairs[:min(100, len(pairs))]
-        
-        current_size = start_size
-        last_safe_size = start_size
-        
-        while current_size <= max_size:
-            try:
-                _ = self.model.predict(test_sample[:current_size], show_progress_bar=False)
-                last_safe_size = current_size
-                # Scale up more aggressively to find limit
-                current_size = int(current_size * 1.5)
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-                error_str = str(e).lower()
-                if any(phrase in error_str for phrase in 
-                      ["out of memory", "buffer size", "mps", "cuda", "memory"]):
-                    # Hit OOM, scale back to target fraction
-                    return max(start_size, int(last_safe_size * target_memory_fraction))
-                else:
-                    return last_safe_size
-            except Exception:  # noqa: BLE001 - probe failure: fall back to last safe batch size
-                return last_safe_size
-        
-        # Hit max size without OOM, use target fraction of max
-        return max(start_size, int(last_safe_size * target_memory_fraction))
-    
     def rerank(self,
             query: str,
             candidates: list[tuple[Chunk, float]],
@@ -137,19 +97,8 @@ class Reranker:
         # Use query variations if provided, otherwise just use the original query
         queries_to_use = query_variations if query_variations else [query]
         
-        # Prepare pairs for the reranker
-        pairs = [[query, p[0].text] for p in candidates]
-        
-        # Determine batch size
-        if self.batch_size is None:
-            # Auto-detect safe batch size
-            if progress_callback:
-                progress_callback(0, len(candidates), "Auto-detecting safe batch size for merged candidates...")
-            effective_batch_size = self._find_safe_batch_size(pairs, start_size=2, max_size=128)
-            logger.info(f"Auto-detected reranker batch size: {effective_batch_size}")
-        else:
-            effective_batch_size = self.batch_size
-        
+        effective_batch_size = self.batch_size
+
         # Score candidates with each query variation and average
         all_probs_per_variation = []
         

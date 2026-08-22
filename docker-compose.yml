@@ -20,7 +20,6 @@ services:
 
   grobid:
     image: grobid/grobid:0.9.0-crf  # lightweight CRF (~500MB); plain 0.9.0 is the ~10GB deep-learning image
-    platform: linux/amd64  # GROBID has no arm64 image; runs emulated on Apple Silicon
     ports:
       - "8070:8070"
 

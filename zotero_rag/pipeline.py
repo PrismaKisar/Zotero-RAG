@@ -7,17 +7,9 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
-# nltk >=3.9.2 refuses to import any dependency whose path lies under the CWD
-# (CWE-427 hardening, nltk/inisec.py). uv puts .venv inside the project root, so
-# running anything from the repo root makes *every* installed package look like a
-# CWD module and nltk dies on `import regex`. The guard's own escape hatch; safe
-# here because the repo root holds no top-level .py files to shadow anything with.
-os.environ.setdefault("NLTK_DISABLE_IMPORT_SECURITY", "1")
-
 import logging
 import warnings
 
-import nltk
 from embedding_manager import EmbeddingManager
 from highlighter import PDFHighlighter
 from models import (
@@ -66,12 +58,6 @@ if not logger.handlers:
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
-# Download NLTK data for sentence tokenization
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt', quiet=True)
-
 
 class ZoteroRAG:
     """Main orchestration class for the Zotero RAG pipeline."""
@@ -101,10 +87,10 @@ class ZoteroRAG:
             grobid_timeout: Timeout in seconds for GROBID requests.
             qdrant_url: URL of the Qdrant service.
             ollama_url: URL of the Ollama service.
-            model_device: Device to use for models ('cpu', 'cuda'). Auto-detect if None.
-            encode_batch_size: Batch size for encoding. If None, auto-detect (targets 75% memory).
-            qa_batch_size: Batch size for QA extraction. If None, auto-detect (targets 75% memory).
-            rerank_batch_size: Batch size for reranking. If None, auto-detect (targets 75% memory).
+            model_device: Device to use for models ('cpu', 'cuda', 'mps'). Auto-detect if None.
+            encode_batch_size: Batch size for encoding. Module default if None.
+            qa_batch_size: Batch size for QA extraction. Module default if None.
+            rerank_batch_size: Batch size for reranking. Module default if None.
             use_chunk_contextualization: Whether to contextualize chunks with Ollama before embedding.
             output_base_dir: Base directory for storing outputs.
             qdrant_collection_suffix: Appended to the Qdrant collection names, to keep

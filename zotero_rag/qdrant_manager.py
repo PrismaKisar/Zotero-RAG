@@ -108,13 +108,15 @@ class QdrantManager:
                     size=self.vector_size,
                     distance=qmodels.Distance.COSINE,
                     datatype=qmodels.Datatype.FLOAT16,
-                    on_disk=True
+                    # ponytail: thesis-scale corpus (~1e5 chunks fp16 ~= 150MB) fits in RAM;
+                    # on_disk pays mmap latency for nothing. Flip to True past ~1e7 chunks.
+                    on_disk=False
                 ),
                 sparse_vectors_config={
                     "text-sparse": qmodels.SparseVectorParams(
                         modifier=qmodels.Modifier.IDF,
                         index=qmodels.SparseIndexParams(
-                            on_disk=True,
+                            on_disk=False,
                         )
                     )
                 }
