@@ -63,8 +63,9 @@ defaults:
   # Cosine similarity threshold for initial retrieval (higher = more similar)
   retrieval_threshold: 0.7
 
-  # Minimum rerank probability to keep candidates (0-1)
-  rerank_threshold: 0.25
+  # Minimum rerank probability to keep candidates (0-1). The cross-encoder is
+  # conservative: gold evidence typically scores around 0.01, so keep this low.
+  rerank_threshold: 0.001
   
   # Default highlight color as RGB values (0-1)
   # Yellow: [1, 1, 0], Green: [0, 1, 0], Blue: [0, 0.5, 1], Pink: [1, 0, 1]
@@ -81,7 +82,7 @@ questions:
   # Example 2: Question with custom pipeline settings
   - question: "How does attention mechanism work?"
     retrieval_threshold: 0.6
-    rerank_threshold: 0.3
+    rerank_threshold: 0.001
     num_paraphrases: 3
     highlight_color: [0, 1, 0]  # Green
     question_type: methodology
@@ -97,7 +98,7 @@ questions:
   # Example 4: Question with custom QA config
   - question: "What is the learning rate used?"
     retrieval_threshold: 0.5
-    rerank_threshold: 0.4
+    rerank_threshold: 0.001
     num_paraphrases: 1
     highlight_color: [1, 0, 1]  # Pink
     question_type: factoid

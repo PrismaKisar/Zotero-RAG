@@ -18,6 +18,14 @@ alone cannot change the *ranking* the retrieval metrics score - they only
 filter an already-fixed order. An ablation restricted to thresholds is
 therefore unfalsifiable by construction; these three knobs are the ones that
 actually move recall@k and MRR without re-indexing.
+
+``rerank_threshold`` lives on a different scale from the other two: bge-reranker-base
+is a conservative model whose probabilities stay low even for real evidence.
+Measured on the QASPER golden set, gold evidence has p50 0.007 and p95 0.92 while
+random chunks sit at p50 0.000; 0.001 keeps 70% of the evidence and 17% of the
+noise, where the old 0.40-0.45 kept only 11-13% of the evidence. It used to look
+safe because a second sigmoid squashed every score into [0.5, 0.73], so the
+filter passed everything.
 """
 
 from copy import deepcopy
@@ -26,7 +34,7 @@ from copy import deepcopy
 PRESETS = {
     "factoid": {
         "retrieval_threshold": 0.45,
-        "rerank_threshold": 0.45,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 2,
         "section_diversity_enabled": False,
@@ -36,7 +44,7 @@ PRESETS = {
     },
     "methodology": {
         "retrieval_threshold": 0.35,
-        "rerank_threshold": 0.40,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.05,
         "min_answer_words": 5,
         "section_diversity_enabled": True,
@@ -46,7 +54,7 @@ PRESETS = {
     },
     "explanation": {
         "retrieval_threshold": 0.35,
-        "rerank_threshold": 0.40,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.05,
         "min_answer_words": 3,
         "section_diversity_enabled": False,
@@ -56,7 +64,7 @@ PRESETS = {
     },
     "comparison": {
         "retrieval_threshold": 0.45,
-        "rerank_threshold": 0.45,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.08,
         "min_answer_words": 3,
         "section_diversity_enabled": False,
@@ -66,7 +74,7 @@ PRESETS = {
     },
     "definition": {
         "retrieval_threshold": 0.45,
-        "rerank_threshold": 0.45,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
         "section_diversity_enabled": False,
@@ -76,7 +84,7 @@ PRESETS = {
     },
     "general": {
         "retrieval_threshold": 0.45,
-        "rerank_threshold": 0.45,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
         "section_diversity_enabled": False,
@@ -86,7 +94,7 @@ PRESETS = {
     },
     "custom": {
         "retrieval_threshold": 0.45,
-        "rerank_threshold": 0.45,
+        "rerank_threshold": 0.001,
         "qa_score_threshold": 0.0,
         "min_answer_words": 3,
         "section_diversity_enabled": False,

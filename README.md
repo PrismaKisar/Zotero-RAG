@@ -232,9 +232,9 @@ Question Expansion (optional paraphrasing)
     ↓
 Qdrant Hybrid Retrieval (dense + sparse, all variations)
     ↓
-CrossEncoder Reranking (adaptive threshold)
+CrossEncoder Reranking (probability threshold)
     ↓
-Extractive QA (sliding window with context overlap)
+Extractive QA (overlapping 512-token windows, joint span search)
     ↓
 Answer Deduplication & Scoring
     ↓

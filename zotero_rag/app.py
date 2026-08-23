@@ -698,8 +698,10 @@ def show_search_tab():
                 "2. Rerank Threshold",
                 min_value=0.0, max_value=1.0,
                 value=preset['rerank_threshold'],
-                step=0.05,
-                help="Stage 2 (CrossEncoder): Minimum semantic similarity score (0.0, 1.0)."
+                step=0.001,
+                format="%.4f",
+                help="Stage 2 (CrossEncoder): minimum probability. The model is "
+                     "conservative — gold evidence typically scores around 0.01."
             )
 
         with col_qa:

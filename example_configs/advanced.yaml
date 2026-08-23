@@ -27,7 +27,7 @@ questions:
       - "How do transformers work in NLP?"
       - "What is the transformer model?"
     retrieval_threshold: 0.6
-    rerank_threshold: 0.3
+    rerank_threshold: 0.001
     highlight_color: [1, 1, 0]  # Yellow
     question_type: explanation
     overrides:
@@ -38,7 +38,7 @@ questions:
   - question: "What learning rate was used?"
     num_paraphrases: 1  # Minimal paraphrasing for factoid questions
     retrieval_threshold: 0.5  # More strict retrieval
-    rerank_threshold: 0.4
+    rerank_threshold: 0.001
     highlight_color: [1, 0, 1]  # Pink
     question_type: factoid
     overrides:
@@ -49,7 +49,7 @@ questions:
   - question: "What are the main challenges in training large models?"
     num_paraphrases: 3
     retrieval_threshold: 0.8  # Cast wider net
-    rerank_threshold: 0.2
+    rerank_threshold: 0.001
     highlight_color: [0, 1, 0]  # Green
     question_type: methodology
     overrides:
@@ -64,7 +64,7 @@ questions:
       - "Compare BERT and GPT architectures"
       - "BERT vs GPT: what are the key distinctions?"
     retrieval_threshold: 0.6
-    rerank_threshold: 0.35
+    rerank_threshold: 0.001
     highlight_color: [0, 0.5, 1]  # Blue
     question_type: comparison
     overrides:
@@ -78,7 +78,7 @@ questions:
 defaults:
   num_paraphrases: 2
   retrieval_threshold: 0.7
-  rerank_threshold: 0.25
+  rerank_threshold: 0.001
   highlight_color: [1, 1, 0]
   question_type: general
   overrides: null

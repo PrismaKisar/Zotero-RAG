@@ -33,45 +33,6 @@ class Reranker:
         self.model = CrossEncoder(model_name, device=self.device)
         logger.info(f"Reranker initialized with model {model_name} on {self.device}")
     
-    def adaptive_rerank_threshold(self, rerank_scores: np.ndarray, base_threshold: float = 0.25) -> float:
-        """Adjust rerank threshold based on score distribution.
-        
-        Args:
-            rerank_scores: Array of rerank probability scores (0-1).
-            base_threshold: The baseline threshold to adjust from.
-            
-        Returns:
-            Adjusted threshold value.
-        """
-        if len(rerank_scores) < 3:
-            return base_threshold
-        
-        # Calculate statistics
-        mean_score = np.mean(rerank_scores)
-        std_score = np.std(rerank_scores)
-        max_score = np.max(rerank_scores)
-        
-        # If there's a clear winner (high max, low mean), be more selective
-        if max_score > 0.7 and mean_score < 0.4:
-            adjusted = max(base_threshold, mean_score + 0.5 * std_score)
-            logger.info(f"Adaptive threshold: Clear winner detected (max={max_score:.3f}, mean={mean_score:.3f}) -> {adjusted:.3f}")
-            return adjusted
-        
-        # If scores are uniformly low, be more lenient
-        if max_score < 0.4:
-            adjusted = min(base_threshold, base_threshold * 0.7)
-            logger.info(f"Adaptive threshold: Uniformly low scores (max={max_score:.3f}) -> {adjusted:.3f}")
-            return adjusted
-        
-        # If scores are uniformly high, be more selective
-        if mean_score > 0.6:
-            adjusted = max(base_threshold, mean_score - 0.5 * std_score)
-            logger.info(f"Adaptive threshold: Uniformly high scores (mean={mean_score:.3f}) -> {adjusted:.3f}")
-            return adjusted
-        
-        logger.debug(f"Adaptive threshold: Using base threshold {base_threshold:.3f} (mean={mean_score:.3f}, max={max_score:.3f})")
-        return base_threshold
-    
     def rerank(self,
             query: str,
             candidates: list[tuple[Chunk, float]],
@@ -83,7 +44,8 @@ class Reranker:
         Args:
             query: The query string.
             candidates: List of (Chunk, retrieval_score) tuples.
-            threshold: Minimum probability threshold to keep candidates.
+            threshold: Minimum cross-encoder probability to keep a candidate. The
+                model is conservative: see ``question_presets`` for the scale.
             progress_callback: Function(current, total, message) for progress updates.
             query_variations: List of query paraphrases to average scores over.
             
@@ -134,11 +96,10 @@ class Reranker:
                     message = f"{variation_info} - {batch_info}"
                     progress_callback(completed_operations, total_operations, message)
             
-            raw_scores = np.array(all_scores)
-            
-            # Apply Sigmoid to convert logits to 0-1 probabilities
-            var_probs = 1 / (1 + np.exp(-raw_scores))
-            all_probs_per_variation.append(var_probs)
+            # ``activation_fn`` above already turned the logits into probabilities;
+            # a second sigmoid used to squash them into [0.5, 0.73], where the
+            # threshold could no longer separate relevant passages from noise.
+            all_probs_per_variation.append(np.array(all_scores))
         
         # Calculate max probabilities across all variations
         if len(all_probs_per_variation) > 1:
@@ -146,9 +107,6 @@ class Reranker:
             logger.info(f"Using max rerank scores across {len(queries_to_use)} query variations")
         else:
             probs = all_probs_per_variation[0]
-        
-        # Adapt threshold based on score distribution
-        adjusted_threshold = self.adaptive_rerank_threshold(probs, threshold)
         
         # Combine probabilities with candidate data
         # Each item: (chunk, retrieval_score, rerank_score)
@@ -161,10 +119,9 @@ class Reranker:
             for p, prob in zip(candidates, probs)
         ]
         
-        # Filter by adjusted threshold
         filtered_candidates = [
             item for item in scored_candidates
-            if item.rerank_score >= adjusted_threshold
+            if item.rerank_score >= threshold
         ]
         
         # Sort by rerank score descending
@@ -180,12 +137,7 @@ class Reranker:
                 ),
             )
         
-        # Log threshold statistics
-        if adjusted_threshold != threshold:
-            logger.info(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} chunks "
-                       f"(base threshold: {threshold:.3f}, adjusted: {adjusted_threshold:.3f})")
-        else:
-            logger.debug(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} "
-                        f"chunks passed threshold {threshold:.3f}")
-        
+        logger.debug(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} "
+                    f"chunks passed threshold {threshold:.4f}")
+
         return filtered_candidates

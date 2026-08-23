@@ -30,12 +30,22 @@ Two reference rows bracket every configuration:
   retrieval. Its Answer F1 is the reader's ceiling, which is what makes a low
   end-to-end score attributable to retrieval rather than to extraction.
 
-Question paraphrasing (num_paraphrases) is fixed at 0 for every run: it is not
-one of the ablated parameters, and holding it constant keeps the one-at-a-time
-methodology honest (also sidesteps the Ollama dependency, unused otherwise).
+Three axes are applied by the harness rather than by the pipeline config, since
+they are not question-preset fields (see HARNESS_PARAMS):
+
+- ``num_paraphrases``: question expansion is a kwarg of answer_question, and it
+  costs a T5 generation plus one extra retrieval per variation. Baseline 0.
+- ``qa_model``: swaps the extractive reader. deberta-v3-large is 24 layers
+  against 12 for the two base-sized alternatives, so this axis separates reader
+  capacity from retrieval quality.
+- ``reader``: extractive vs generative. QASPER answers are frequently
+  abstractive, which no span extractor can reach; the generative arm needs
+  Ollama (``ollama pull llama3.2:3b``) and is skipped with a clear error if it
+  is not there.
 
 Requires: GROBID + Qdrant running, and the corpus already indexed via
-benchmark/index_pdfs.py (same output_base_dir passed here).
+benchmark/index_pdfs.py (same output_base_dir passed here). The ``reader``
+axis additionally requires Ollama.
 
 Usage:
   python -m benchmark.ablation --work-dir output_qasper/grobid \
@@ -63,20 +73,31 @@ from benchmark.stratify import stratify, to_markdown
 
 BASELINE = PRESETS["general"]
 
-# ponytail: threshold low/high span the range the pipeline's own question-type
-# presets already use (0.35-0.45); the ranking knobs get their full discrete
-# range (3 modes, reranker on/off) plus a narrow/wide result_limit. Not
-# exhaustively tuned - the point is which stage moves the needle, not the optimum.
+# ponytail: threshold low/high bracket the preset defaults. rerank_threshold is
+# on the cross-encoder's own probability scale, where gold evidence sits around
+# p50 0.007 - a 0.35/0.55 pair would discard nearly every candidate. The ranking
+# knobs get their full discrete range (3 modes, reranker on/off) plus a
+# narrow/wide result_limit. Not exhaustively tuned - the point is which stage
+# moves the needle, not the optimum.
 GRID = {
     "retrieval_mode": ["dense", "sparse"],
     "rerank_enabled": [False],
     "result_limit": [10, 60],
     "retrieval_threshold": [0.35, 0.55],
-    "rerank_threshold": [0.35, 0.55],
+    "rerank_threshold": [0.0002, 0.01],
     "qa_score_threshold": [0.05, 0.20],
     "min_answer_words": [1, 5],
     "section_diversity_enabled": [True],
+    "num_paraphrases": [2],
+    "qa_model": ["deepset/deberta-v3-base-squad2", "deepset/roberta-base-squad2"],
+    "reader": ["generative"],
 }
+
+# Axes the harness applies itself: not question-preset fields, so they are split
+# out before the merged config reaches answer_question. Absent from BASELINE on
+# purpose - each default is read off the pipeline as built, so there is no second
+# copy of the model name to drift.
+HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader")
 
 RECALL_K = 10
 
@@ -206,13 +227,68 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     return row
 
 
+def split_harness_params(config: dict) -> tuple[dict, dict]:
+    """Separate the harness-applied axes from the pipeline's own config.
+
+    Returns:
+        ``(pipeline_config, harness)``; the pipeline half is what answer_question
+        merges over the preset, and never carries a key no preset defines.
+    """
+    harness = {key: config[key] for key in HARNESS_PARAMS if key in config}
+    pipeline_config = {key: value for key, value in config.items() if key not in HARNESS_PARAMS}
+    return pipeline_config, harness
+
+
+def reader_key(reader) -> str:
+    """Identity of the loaded reader, for skipping redundant reloads."""
+    return getattr(reader, "reader_kind", None) or reader.model_name
+
+
+def wanted_reader(harness: dict, baseline_model: str) -> str:
+    """Which reader this config asks for, in ``reader_key`` terms."""
+    if harness.get("reader", "extractive") == "generative":
+        return "generative"
+    return harness.get("qa_model", baseline_model)
+
+
+def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
+    """Point ``rag.qa_engine`` at the reader this config asks for.
+
+    Reloading is skipped when the current reader already matches, so the many
+    configs that leave both axes at the baseline share one model load instead of
+    paying for one each.
+    """
+    wanted = wanted_reader(harness, baseline_engine.model_name)
+    if reader_key(rag.qa_engine) == wanted:
+        return
+
+    import torch
+    from generative_reader import GenerativeReader
+    from qa_engine import QAEngine
+
+    qa_model = harness.get("qa_model", baseline_engine.model_name)
+    if wanted == "generative":
+        rag.qa_engine = GenerativeReader(ollama_url=ollama_url)
+    elif qa_model == baseline_engine.model_name:
+        rag.qa_engine = baseline_engine
+    else:
+        # The paraphraser belongs to the baseline engine; an alternative reader
+        # never needs it, since one-at-a-time never moves both axes together.
+        rag.qa_engine = QAEngine(model_name=qa_model, enable_question_expansion=False)
+
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
                gold_answers: dict) -> list[dict]:
     """Answer every question under ``config``; return one metric row per question."""
+    pipeline_config, harness = split_harness_params(config)
     rows = []
     for q in questions:
-        answers = rag.answer_question(q["question"], question_type="general",
-                                      overrides=config, num_paraphrases=0)
+        answers = rag.answer_question(
+            q["question"], question_type="general", overrides=pipeline_config,
+            num_paraphrases=harness.get("num_paraphrases", 0))
         row = score_question(q, answers, rag, gold_chunks, gold_answers)
         if row is not None:
             rows.append(row)
@@ -228,6 +304,7 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
     """
     from models import RerankedChunk
 
+    config, _ = split_harness_params(config)
     rows = []
     rag.qdrant_manager.open_connection()
     try:
@@ -304,6 +381,8 @@ def main():
                         help="stratified breakdown of the baseline run")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
+    parser.add_argument("--ollama-url", default="http://localhost:11434",
+                        help="only used by the generative reader axis")
     parser.add_argument("--collection-suffix", default="_qasper",
                         help="the Qdrant collection this corpus was indexed into")
     parser.add_argument("--sample", type=int, default=None,
@@ -335,11 +414,12 @@ def main():
                     qdrant_collection_suffix=args.collection_suffix)
     print(f"querying {rag.qdrant_manager.chunk_collection}: "
           f"{check_corpus_indexed(rag)} chunks")
-    # ponytail: deberta-v3-large's disentangled attention has no efficient MPS
-    # kernel on this hardware (measured ~2x slower than CPU at 512 tokens);
-    # the reranker has no such issue, so only the QA model moves to CPU.
-    rag.qa_engine.model = rag.qa_engine.model.to("cpu")
-    rag.qa_engine.device = "cpu"
+    # The reader used to be forced onto the CPU here, from a measurement taken
+    # when it still ran in float32 on MPS. In float16 that is backwards: over 24
+    # chunks at batch 8 the medians are mps/fp16 3.45s, cpu/fp32 4.59s, and
+    # cpu/fp16 34.48s - which is what moving the half-precision model to the CPU
+    # actually produced. The device now stays wherever QAEngine put it.
+    baseline_engine = rag.qa_engine
 
     out_path = Path(args.out_file)
     fieldnames = build_fieldnames()
@@ -353,6 +433,14 @@ def main():
         if key in done:
             continue
         print(f"running: {entry['param']}={entry['value']}")
+        _, harness = split_harness_params(entry["config"])
+        try:
+            apply_reader(rag, baseline_engine, harness, args.ollama_url)
+        except RuntimeError as exc:
+            # Nothing is written, so this config is picked up on the next run
+            # once its dependency is there; the rest of the sweep still lands.
+            print(f"skipped: {entry['param']}={entry['value']} - {exc}")
+            continue
         runner = run_oracle if entry["param"] == "oracle_context" else run_config
         rows = runner(rag, questions, entry["config"], gold_chunks, gold_answers)
         if not rows:

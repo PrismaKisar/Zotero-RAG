@@ -31,7 +31,7 @@ create_highlighted_pdfs: true
 defaults:
   num_paraphrases: 2
   retrieval_threshold: 0.45  # Cosine similarity (higher = more similar)
-  rerank_threshold: 0.25
+  rerank_threshold: 0.001
   highlight_color: [1, 1, 0]  # RGB color (yellow)
   question_type: general
 

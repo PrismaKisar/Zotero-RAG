@@ -5,8 +5,10 @@ import pytest
 
 from benchmark.ablation import (
     CI_METRICS,
+    HARNESS_PARAMS,
     RECALL_K,
     answer_f1,
+    apply_reader,
     attributed_ids,
     build_configs,
     build_fieldnames,
@@ -15,9 +17,12 @@ from benchmark.ablation import (
     csv_row,
     load_completed_configs,
     load_gold_chunks,
+    reader_key,
     run_config,
     run_oracle,
     sample_questions,
+    split_harness_params,
+    wanted_reader,
     write_per_question,
 )
 
@@ -46,6 +51,7 @@ class _FakeRag:
 
     def __init__(self, answers=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
+        self.seen_call = None
         self.last_candidates = [
             {"chunk": _FakeChunk("h", 2, "ctx-2"), "retrieval_score": 0.9},
             {"chunk": _FakeChunk("h", 1, "ctx-1"), "retrieval_score": 0.5},
@@ -53,6 +59,7 @@ class _FakeRag:
         self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
 
     def answer_question(self, question, question_type, overrides, num_paraphrases):
+        self.seen_call = {"overrides": overrides, "num_paraphrases": num_paraphrases}
         return self._answers
 
 
@@ -83,6 +90,82 @@ def test_grid_ablates_parameters_that_reorder_results():
     """Regression guard: a threshold-only grid cannot move recall@k."""
     from benchmark.ablation import GRID
     assert {"retrieval_mode", "rerank_enabled", "result_limit"} <= set(GRID)
+
+
+def test_grid_ablates_the_reader_as_well_as_retrieval():
+    """The reader axes answer a different question than the retrieval ones."""
+    from benchmark.ablation import GRID
+    assert {"num_paraphrases", "qa_model", "reader"} <= set(GRID)
+
+
+def test_split_harness_params_keeps_harness_axes_out_of_the_pipeline_config():
+    config = {"retrieval_mode": "dense", "num_paraphrases": 2, "reader": "generative"}
+    pipeline_config, harness = split_harness_params(config)
+
+    assert pipeline_config == {"retrieval_mode": "dense"}
+    assert harness == {"num_paraphrases": 2, "reader": "generative"}
+
+
+def test_split_harness_params_omits_axes_the_config_leaves_at_baseline():
+    pipeline_config, harness = split_harness_params({"result_limit": 10})
+    assert pipeline_config == {"result_limit": 10}
+    assert harness == {}
+
+
+def test_harness_params_are_not_question_preset_fields():
+    """They must be split out: resolve() would carry them into every stage's config."""
+    from question_presets import PRESETS
+    assert not set(HARNESS_PARAMS) & set(PRESETS["general"])
+
+
+def test_run_config_forwards_the_paraphrase_axis_without_leaking_it():
+    rag = _FakeRag()
+    run_config(rag, QUESTIONS, {"retrieval_mode": "dense", "num_paraphrases": 2},
+               {"q1": {("h", 1)}}, GOLD_ANSWERS)
+
+    assert rag.seen_call["num_paraphrases"] == 2
+    assert rag.seen_call["overrides"] == {"retrieval_mode": "dense"}
+
+
+def test_run_config_defaults_the_paraphrase_axis_to_off():
+    rag = _FakeRag()
+    run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)
+    assert rag.seen_call["num_paraphrases"] == 0
+
+
+def test_reader_key_tells_the_two_reader_kinds_apart():
+    extractive = types.SimpleNamespace(model_name="deepset/roberta-base-squad2")
+    generative = types.SimpleNamespace(reader_kind="generative", model_name="llama3.2:3b")
+
+    assert reader_key(extractive) == "deepset/roberta-base-squad2"
+    assert reader_key(generative) == "generative"
+
+
+BASELINE_MODEL = "deepset/deberta-v3-large-squad2"
+
+
+def test_wanted_reader_defaults_to_the_pipeline_as_built():
+    assert wanted_reader({}, BASELINE_MODEL) == BASELINE_MODEL
+
+
+def test_wanted_reader_follows_the_qa_model_axis():
+    assert wanted_reader({"qa_model": "deepset/roberta-base-squad2"},
+                         BASELINE_MODEL) == "deepset/roberta-base-squad2"
+
+
+def test_wanted_reader_lets_the_generative_arm_override_the_model_axis():
+    assert wanted_reader({"reader": "generative", "qa_model": BASELINE_MODEL},
+                         BASELINE_MODEL) == "generative"
+
+
+def test_apply_reader_is_a_no_op_when_the_loaded_reader_already_matches():
+    """The early return must precede the heavy imports, or every config pays for them."""
+    baseline = types.SimpleNamespace(model_name=BASELINE_MODEL)
+    rag = types.SimpleNamespace(qa_engine=baseline)
+
+    apply_reader(rag, baseline, {}, "http://localhost:11434")
+
+    assert rag.qa_engine is baseline
 
 
 def test_load_gold_chunks_maps_paper_id_to_pdf_hash(tmp_path):

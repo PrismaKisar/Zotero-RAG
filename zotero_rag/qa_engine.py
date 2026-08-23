@@ -1,8 +1,8 @@
 """Question answering engine using extractive QA models."""
 
 import logging
-import math
 
+import numpy as np
 import torch
 from device import resolve_device
 from models import Answer, Chunk, ExpandedAnswerSpan, RerankedChunk
@@ -11,6 +11,49 @@ from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 logger = logging.getLogger(__name__)
 
 DEFAULT_QA_BATCH_SIZE = {"cuda": 128, "mps": 16, "cpu": 8}
+MAX_SEQUENCE_TOKENS = 512
+MAX_ANSWER_TOKENS = 60
+CONTEXT_STRIDE = 128
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    """Return the softmax of ``logits``, shifted for numerical stability."""
+    exponentials = np.exp(logits - np.max(logits))
+    return exponentials / exponentials.sum()
+
+
+def _best_span(start_logits: np.ndarray,
+            end_logits: np.ndarray,
+            sequence_ids: list[int | None]) -> tuple[int, int, float] | None:
+    """Pick the jointly most probable answer span inside the context tokens.
+
+    Taking ``argmax`` of the start and end logits independently can return an end
+    before its start, or two tokens from unrelated spans; and sigmoid over the mean
+    of two logits is not a probability, so scores were not comparable across
+    candidates. This scores every valid (start, end) pair instead and returns a
+    real probability.
+
+    Args:
+        start_logits: Start logits for one sequence.
+        end_logits: End logits for the same sequence.
+        sequence_ids: Per-token sequence id; ``1`` marks context tokens.
+
+    Returns:
+        ``(start_token, end_token, probability)``, or None if no context token exists.
+    """
+    is_context = np.array([sid == 1 for sid in sequence_ids])
+    if not is_context.any():
+        return None
+
+    start_probs = _softmax(np.where(is_context, start_logits, -np.inf))
+    end_probs = _softmax(np.where(is_context, end_logits, -np.inf))
+
+    # Rows are starts, columns are ends: keep end >= start and bound the span length.
+    scores = np.triu(np.outer(start_probs, end_probs))
+    scores = np.tril(scores, MAX_ANSWER_TOKENS)
+
+    start_token, end_token = np.unravel_index(scores.argmax(), scores.shape)
+    return int(start_token), int(end_token), float(scores[start_token, end_token])
 
 
 class QAEngine:
@@ -329,45 +372,45 @@ class QAEngine:
             b_c = batch_contexts[start_idx:end_idx]
             
             try:
-                inputs = self.tokenizer(
+                # A context longer than the window used to be silently cut, losing every
+                # answer past the 512th token. Overflowing windows keep the tail, and
+                # the stride keeps a span straddling a boundary intact in one of them.
+                encoded = self.tokenizer(
                     b_q, b_c,
-                    add_special_tokens=True, return_tensors="pt", padding=True, 
-                    truncation="only_second", max_length=512, return_offsets_mapping=True
-                ).to(self.device)
-                
-                offset_mapping = inputs.pop("offset_mapping").cpu().numpy()
-                
+                    add_special_tokens=True, return_tensors="pt", padding=True,
+                    truncation="only_second", max_length=MAX_SEQUENCE_TOKENS,
+                    stride=CONTEXT_STRIDE, return_overflowing_tokens=True,
+                    return_offsets_mapping=True
+                )
+
+                sample_mapping = encoded.pop("overflow_to_sample_mapping").tolist()
+                offset_mapping = encoded.pop("offset_mapping").numpy()
+                sequence_ids = [encoded.sequence_ids(k) for k in range(len(sample_mapping))]
+                inputs = encoded.to(self.device)
+
                 with torch.no_grad():
                     outputs = self.model(**inputs)
-                
-                start_logits = outputs.start_logits.cpu().numpy()
-                end_logits = outputs.end_logits.cpu().numpy()
-                
+
+                start_logits = outputs.start_logits.float().cpu().numpy()
+                end_logits = outputs.end_logits.float().cpu().numpy()
+
                 # Extract spans from logits
                 for k, (start_logit, end_logit, offsets) in enumerate(zip(start_logits, end_logits, offset_mapping)):
-                    global_idx = start_idx + k
-                    
-                    start_token = start_logit.argmax()
-                    end_token = end_logit.argmax()
-                    
-                    if start_token >= len(offsets) or end_token >= len(offsets) or end_token < start_token:
+                    global_idx = start_idx + sample_mapping[k]
+
+                    span = _best_span(start_logit, end_logit, sequence_ids[k])
+                    if span is None:
                         continue
-                        
+
+                    start_token, end_token, score_norm = span
                     start_char_idx = offsets[start_token][0]
                     end_char_idx = offsets[end_token][1]
-                    
-                    if start_char_idx == 0 and end_char_idx == 0:
+
+                    if start_char_idx >= end_char_idx:
                         continue
 
                     meta = metadata_map[global_idx]
                     ans_text = meta['context_text'][start_char_idx:end_char_idx]
-                    raw_score = (start_logit[start_token] + end_logit[end_token]) / 2.0
-                    
-                    # Sigmoid normalization
-                    try:
-                        score_norm = 1 / (1 + math.exp(-raw_score))
-                    except OverflowError:
-                        score_norm = 1.0 if raw_score > 0 else 0.0
 
                     all_answers_raw.append({
                         'text': ans_text,
