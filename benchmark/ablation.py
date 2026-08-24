@@ -24,11 +24,18 @@ cut), so a threshold-only grid is unfalsifiable by construction; thresholds are
 kept in the grid but are now read through precision@k and evidence F1, which do
 see the cut.
 
-Two reference rows bracket every configuration:
-- ``baseline``: the preset as shipped.
+Three reference rows bracket every configuration, and together they split the
+end-to-end score into the three things that can go wrong:
+
+- ``baseline``: the preset as shipped, retrieving over the whole corpus.
+- ``oracle_paper``: identical, except retrieval is scoped to the paper the
+  question was asked about. baseline -> oracle_paper is the cost of document
+  selection; QASPER is defined as single-paper QA, so searching all 99 papers is
+  a harder task than the dataset poses and that surcharge has to be visible
+  rather than folded into the retrieval number.
 - ``oracle_context``: the reader fed the *gold* chunks directly, bypassing
-  retrieval. Its Answer F1 is the reader's ceiling, which is what makes a low
-  end-to-end score attributable to retrieval rather than to extraction.
+  retrieval. oracle_paper -> oracle_context is the cost of passage selection,
+  and oracle_context itself is the reader's ceiling.
 
 Three axes are applied by the harness rather than by the pipeline config, since
 they are not question-preset fields (see HARNESS_PARAMS):
@@ -64,7 +71,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from question_presets import PRESETS
 
-from benchmark.qasper_evaluator import get_answers_and_evidence, token_f1_score
+from benchmark.qasper_evaluator import (
+    get_answers_and_evidence,
+    normalize_answer,
+    token_f1_score,
+)
 from benchmark.retrieval_metrics import (
     per_question_scores,
     summarize,
@@ -73,17 +84,21 @@ from benchmark.stratify import stratify, to_markdown
 
 BASELINE = PRESETS["general"]
 
-# ponytail: threshold low/high bracket the preset defaults. rerank_threshold is
-# on the cross-encoder's own probability scale, where gold evidence sits around
-# p50 0.007 - a 0.35/0.55 pair would discard nearly every candidate. The ranking
-# knobs get their full discrete range (3 modes, reranker on/off) plus a
-# narrow/wide result_limit. Not exhaustively tuned - the point is which stage
-# moves the needle, not the optimum.
+# ponytail: threshold low/high bracket the preset defaults, but each pair is set
+# on its *own* stage's score scale, measured rather than guessed - a pair outside
+# the observed range is a no-op row that reads as a null result. rerank_threshold
+# is on the cross-encoder's probability scale, where gold evidence sits around
+# p50 0.007. retrieval_threshold is dense cosine, where the top-30 measured
+# 0.63-0.82: the former 0.35/0.55 pair never cut a single candidate, so 0.65/0.72
+# straddle the observed median instead. qa_score_threshold spans 0.006-0.97 since
+# span scoring became a real softmax product. The ranking knobs get their full
+# discrete range (3 modes, reranker on/off) plus a narrow/wide result_limit. Not
+# exhaustively tuned - the point is which stage moves the needle, not the optimum.
 GRID = {
     "retrieval_mode": ["dense", "sparse"],
     "rerank_enabled": [False],
     "result_limit": [10, 60],
-    "retrieval_threshold": [0.35, 0.55],
+    "retrieval_threshold": [0.65, 0.72],
     "rerank_threshold": [0.0002, 0.01],
     "qa_score_threshold": [0.05, 0.20],
     "min_answer_words": [1, 5],
@@ -99,15 +114,22 @@ GRID = {
 # copy of the model name to drift.
 HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader")
 
-RECALL_K = 10
+# The protocol names recall@1 the primary retrieval metric, so the sweep can
+# not report k=10 alone: at k=10 a config that merely drags gold evidence from
+# rank 9 to rank 2 looks identical to one that does nothing, and that is exactly
+# the movement a reranker is bought for.
+RECALL_KS = (1, 3, 5, 10)
+RECALL_K = max(RECALL_KS)  # the cut the attributed-evidence metrics score at
 
 # Means written to the CSV; the per-question JSONL keeps everything.
-CSV_METRICS = [
-    "answer_f1", f"recall@{RECALL_K}", f"precision@{RECALL_K}", "mrr",
-    "evidence_precision", "evidence_recall", "evidence_f1",
-    f"recall@{RECALL_K}_reranked", "mrr_reranked",
-]
-CI_METRICS = ["answer_f1", f"recall@{RECALL_K}", "evidence_f1"]
+CSV_METRICS = (
+    ["answer_f1", "answer_em"]
+    + [f"recall@{k}" for k in RECALL_KS]
+    + [f"precision@{k}" for k in RECALL_KS]
+    + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
+       f"recall@{RECALL_K}_reranked", "mrr_reranked"]
+)
+CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
 
 
 def build_fieldnames() -> list[str]:
@@ -145,6 +167,7 @@ def load_completed_configs(out_path: Path) -> set[tuple[str, str]]:
 def build_configs(baseline: dict, grid: dict) -> list[dict]:
     """Baseline, oracle-context reference, then one config per (param, value)."""
     configs = [{"param": "baseline", "value": None, "config": dict(baseline)},
+               {"param": "oracle_paper", "value": None, "config": dict(baseline)},
                {"param": "oracle_context", "value": None, "config": dict(baseline)}]
     for param, values in grid.items():
         for value in values:
@@ -189,6 +212,20 @@ def answer_f1(predicted_answer: str, references: list[dict]) -> tuple[float, str
     return max(scored, key=lambda x: x[0])
 
 
+def answer_exact_match(predicted_answer: str, references: list[dict]) -> float:
+    """1.0 if the prediction equals any reference after QASPER normalisation.
+
+    Reported next to token F1 because the two disagree in a way that matters
+    here: a span reader that returns the right sentence around a one-word answer
+    earns most of the F1 and none of the EM, so EM is what separates "found the
+    answer" from "found the neighbourhood of the answer".
+    """
+    if not references:
+        return 0.0
+    predicted = normalize_answer(predicted_answer)
+    return float(any(predicted == normalize_answer(ref["answer"]) for ref in references))
+
+
 def attributed_ids(answers, reranked) -> set[tuple[str, int]]:
     """Chunk ids the system surfaced as evidence for its answers.
 
@@ -199,6 +236,30 @@ def attributed_ids(answers, reranked) -> set[tuple[str, int]]:
     by_text = {c.chunk.text: (c.chunk.pdf_hash, c.chunk.chunk_index)
                for c in reranked}
     return {by_text[a.context] for a in answers if a.context in by_text}
+
+
+TRACE_DEPTH = 30  # deepest k anyone can recompute offline; the sweep cuts at 10
+
+
+def retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids) -> dict:
+    """The ranked lists themselves, so the sweep never has to be re-run for a metric.
+
+    The first campaign could not report recall@1 - the protocol's own primary
+    metric - because only the k=10 *scores* were kept, and a mean cannot be
+    un-aggregated. Storing the ids costs a few hundred KB and makes every
+    rank-based metric (any k, MAP, nDCG) recomputable from the dump.
+
+    ``gold_paper`` is what separates the two ways retrieval fails: picking the
+    wrong paper out of the corpus, or the wrong chunk inside the right one.
+    """
+    gold_papers = {pdf_hash for pdf_hash, _ in gold_ids}
+    return {
+        "ranked_ids": [list(i) for i in ranked_ids[:TRACE_DEPTH]],
+        "reranked_ids": [list(i) for i in reranked_ids[:TRACE_DEPTH]],
+        "predicted_ids": [list(i) for i in sorted(predicted_ids)],
+        "gold_ids": [list(i) for i in sorted(gold_ids)],
+        "gold_paper_in_top10": any(h in gold_papers for h, _ in ranked_ids[:10]),
+    }
 
 
 def score_question(question: dict, answers, rag, gold_chunks: dict,
@@ -215,15 +276,24 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     ranked = sorted(rag.last_candidates, key=lambda c: c["retrieval_score"], reverse=True)
     ranked_ids = [(c["chunk"].pdf_hash, c["chunk"].chunk_index) for c in ranked]
     reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in rag.last_reranked]
+    predicted_ids = attributed_ids(answers, rag.last_reranked)
 
-    row = {"answer_f1": f1}
-    row.update(per_question_scores(
-        ranked_ids, gold_ids, RECALL_K,
-        predicted_ids=attributed_ids(answers, rag.last_reranked)))
+    row = {"answer_f1": f1,
+           "answer_em": answer_exact_match(predicted_answer,
+                                           gold_answers.get(question["question_id"], []))}
+    row.update(per_question_scores(ranked_ids, gold_ids, RECALL_K,
+                                   predicted_ids=predicted_ids))
+    for k in RECALL_KS:
+        if k == RECALL_K:
+            continue
+        scores = per_question_scores(ranked_ids, gold_ids, k)
+        row[f"recall@{k}"] = scores[f"recall@{k}"]
+        row[f"precision@{k}"] = scores[f"precision@{k}"]
     reranked_scores = per_question_scores(reranked_ids, gold_ids, RECALL_K)
     row[f"recall@{RECALL_K}_reranked"] = reranked_scores[f"recall@{RECALL_K}"]
     row["mrr_reranked"] = reranked_scores["mrr"]
-    row["record"] = dict(question, answer_type=answer_type)
+    row["record"] = dict(question, answer_type=answer_type, **retrieval_trace(
+        ranked_ids, reranked_ids, predicted_ids, gold_ids))
     return row
 
 
@@ -281,14 +351,27 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
 
 
 def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
-               gold_answers: dict) -> list[dict]:
-    """Answer every question under ``config``; return one metric row per question."""
+               gold_answers: dict, scope_to_gold_paper: bool = False) -> list[dict]:
+    """Answer every question under ``config``; return one metric row per question.
+
+    With ``scope_to_gold_paper``, retrieval is filtered to the paper the question
+    was written about. The full pipeline still runs - the same ranking, the same
+    reranker, the same reader - so the gap against the unscoped baseline is the
+    cost of having to find the right document among the other 98, isolated from
+    everything else. That gap is not visible in the baseline/oracle pair, where a
+    failure to rank the right paper and a failure to rank the right paragraph
+    land in the same number.
+    """
     pipeline_config, harness = split_harness_params(config)
     rows = []
     for q in questions:
+        pdf_hashes = None
+        if scope_to_gold_paper:
+            pdf_hashes = sorted({h for h, _ in gold_chunks[q["question_id"]]})
         answers = rag.answer_question(
             q["question"], question_type="general", overrides=pipeline_config,
-            num_paraphrases=harness.get("num_paraphrases", 0))
+            num_paraphrases=harness.get("num_paraphrases", 0),
+            pdf_hashes=pdf_hashes)
         row = score_question(q, answers, rag, gold_chunks, gold_answers)
         if row is not None:
             rows.append(row)
@@ -319,9 +402,13 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
                           for p in chunks]
             answers = rag.qa_engine.extract_answers(
                 q["question"], candidates, config, question_variations=[q["question"]])
-            f1, answer_type = answer_f1(answers[0].text if answers else "",
-                                        gold_answers.get(q["question_id"], []))
-            rows.append({"answer_f1": f1, "record": dict(q, answer_type=answer_type)})
+            predicted = answers[0].text if answers else ""
+            references = gold_answers.get(q["question_id"], [])
+            f1, answer_type = answer_f1(predicted, references)
+            rows.append({"answer_f1": f1,
+                         "answer_em": answer_exact_match(predicted, references),
+                         "record": dict(q, answer_type=answer_type,
+                                        gold_ids=[list(i) for i in sorted(gold_ids)])})
     finally:
         rag.qdrant_manager.close_connection()
     return rows
@@ -339,6 +426,18 @@ def csv_row(entry: dict, rows: list[dict]) -> dict:
             out[f"{metric}_ci_low"] = summary.get(f"{metric}_ci_low", "")
             out[f"{metric}_ci_high"] = summary.get(f"{metric}_ci_high", "")
     return out
+
+
+def config_label(param: str, value) -> str:
+    """Filename-safe label for one grid entry.
+
+    Values reach here straight from GRID, and some are model ids that carry a
+    slash ("deepset/roberta-base-squad2"). Left raw, that turns the per-question
+    filename into a subdirectory - and a value containing ".." would write
+    outside the output tree entirely.
+    """
+    label = param if value is None else f"{param}_{value}"
+    return label.replace("/", "_").replace("..", "_")
 
 
 def write_per_question(rows: list[dict], path: Path) -> None:
@@ -441,13 +540,16 @@ def main():
             # once its dependency is there; the rest of the sweep still lands.
             print(f"skipped: {entry['param']}={entry['value']} - {exc}")
             continue
-        runner = run_oracle if entry["param"] == "oracle_context" else run_config
-        rows = runner(rag, questions, entry["config"], gold_chunks, gold_answers)
+        if entry["param"] == "oracle_context":
+            rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
+        else:
+            rows = run_config(rag, questions, entry["config"], gold_chunks, gold_answers,
+                              scope_to_gold_paper=entry["param"] == "oracle_paper")
         if not rows:
             print(f"skipped: {entry['param']}={entry['value']} scored no questions")
             continue
 
-        label = entry["param"] if entry["value"] is None else f"{entry['param']}_{entry['value']}"
+        label = config_label(entry["param"], entry["value"])
         write_per_question(rows, out_path.parent / "per_question" / f"{label}.jsonl")
         if entry["param"] == "baseline":
             Path(args.strata_file).write_text(to_markdown(

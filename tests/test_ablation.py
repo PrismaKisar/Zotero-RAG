@@ -7,6 +7,8 @@ from benchmark.ablation import (
     CI_METRICS,
     HARNESS_PARAMS,
     RECALL_K,
+    RECALL_KS,
+    answer_exact_match,
     answer_f1,
     apply_reader,
     attributed_ids,
@@ -18,6 +20,7 @@ from benchmark.ablation import (
     load_completed_configs,
     load_gold_chunks,
     reader_key,
+    retrieval_trace,
     run_config,
     run_oracle,
     sample_questions,
@@ -58,8 +61,10 @@ class _FakeRag:
         ]
         self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
 
-    def answer_question(self, question, question_type, overrides, num_paraphrases):
-        self.seen_call = {"overrides": overrides, "num_paraphrases": num_paraphrases}
+    def answer_question(self, question, question_type, overrides, num_paraphrases,
+                        pdf_hashes=None):
+        self.seen_call = {"overrides": overrides, "num_paraphrases": num_paraphrases,
+                          "pdf_hashes": pdf_hashes}
         return self._answers
 
 
@@ -74,10 +79,10 @@ def test_build_configs_includes_baseline_oracle_and_one_variant_per_grid_value()
     configs = build_configs(baseline, grid)
 
     assert configs[0] == {"param": "baseline", "value": None, "config": {"a": 1, "b": 2}}
-    assert configs[1]["param"] == "oracle_context"
+    assert [c["param"] for c in configs[:3]] == ["baseline", "oracle_paper", "oracle_context"]
     assert {"param": "a", "value": 10, "config": {"a": 10, "b": 2}} in configs
     assert {"param": "b", "value": 99, "config": {"a": 1, "b": 99}} in configs
-    assert len(configs) == 5
+    assert len(configs) == 6
 
 
 def test_build_configs_never_mutates_baseline():
@@ -419,3 +424,49 @@ def test_check_corpus_indexed_rejects_empty_collection():
     rag = types.SimpleNamespace(qdrant_manager=_FakeManager(count=0))
     with pytest.raises(SystemExit, match="is empty"):
         check_corpus_indexed(rag)
+
+
+def test_run_config_searches_the_whole_corpus_by_default():
+    rag = _FakeRag()
+    run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)
+    assert rag.seen_call["pdf_hashes"] is None
+
+
+def test_oracle_paper_scopes_retrieval_to_the_questions_own_papers():
+    rag = _FakeRag()
+    run_config(rag, QUESTIONS, {}, {"q1": {("h", 1), ("h", 4)}}, GOLD_ANSWERS,
+               scope_to_gold_paper=True)
+    assert rag.seen_call["pdf_hashes"] == ["h"]
+
+
+def test_run_config_reports_every_protocol_k_not_just_the_deepest():
+    """The first campaign could only report k=10; recall@1 is the primary metric."""
+    row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    for k in RECALL_KS:
+        assert f"recall@{k}" in row and f"precision@{k}" in row
+    # gold (h,1) sits second in the pre-rerank order, so it is missed at k=1
+    assert row["recall@1"] == 0.0
+    assert row["recall@3"] == 1.0
+
+
+def test_run_config_stores_the_ranked_ids_so_new_metrics_need_no_rerun():
+    row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["record"]["ranked_ids"] == [["h", 2], ["h", 1]]
+    assert row["record"]["gold_ids"] == [["h", 1]]
+
+
+def test_retrieval_trace_separates_wrong_paper_from_wrong_chunk():
+    right_paper = retrieval_trace([("h", 9)], [], set(), {("h", 1)})
+    wrong_paper = retrieval_trace([("other", 9)], [], set(), {("h", 1)})
+    assert right_paper["gold_paper_in_top10"]
+    assert not wrong_paper["gold_paper_in_top10"]
+
+
+def test_answer_exact_match_ignores_articles_case_and_punctuation():
+    refs = [{"answer": "The BERT model.", "type": "extractive"}]
+    assert answer_exact_match("bert model", refs) == 1.0
+    assert answer_exact_match("a bert model variant", refs) == 0.0
+
+
+def test_answer_exact_match_without_references():
+    assert answer_exact_match("anything", []) == 0.0

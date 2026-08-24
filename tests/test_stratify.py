@@ -10,10 +10,17 @@ from benchmark.stratify import (
 
 
 def record(question="What is the model?", n_evidence=1, chunk_indices=(0,)):
+    """A record shaped the way ablation.py actually writes one.
+
+    This fixture used to carry an ``aligned_chunks`` key instead, which only
+    exists on the alignment file and never on a scored record - so the spread
+    stratum passed its test while silently bucketing the entire golden set as
+    "single-chunk" in every real run.
+    """
     return {
         "question": question,
         "evidence": ["e"] * n_evidence,
-        "aligned_chunks": {"e": [{"chunk_index": i, "overlap": 1.0} for i in chunk_indices]},
+        "gold_ids": [["hash", i] for i in chunk_indices],
     }
 
 
@@ -76,3 +83,23 @@ def test_to_markdown_handles_metric_missing_from_one_dataset():
     b = stratify([{"record": record(), "answer_f1": 0.5}])
     md = to_markdown({"QASPER": a, "QASA": b}, ["recall@10"])
     assert "n/a" in md
+
+
+def test_every_stratum_reads_keys_the_scored_record_actually_carries():
+    """Guard against the fixture-only key that made evidence_spread degenerate.
+
+    A stratum keyed on an absent field does not raise - it buckets all 120
+    questions into one value and reads as a property of the dataset.
+    """
+    from benchmark.ablation import retrieval_trace
+    from benchmark.stratify import STRATA
+
+    scored = {"question_id": "q1", "question": "What is the model?",
+              "evidence": ["e"], "answer_type": "extractive",
+              **retrieval_trace([("h", 4), ("h", 5)], [], set(), {("h", 4), ("h", 5)})}
+
+    assert {name: fn(scored) for name, fn in STRATA.items()} == {
+        "question_form": "what/which (factual)",
+        "evidence_count": "single-evidence",
+        "evidence_spread": "adjacent",
+    }

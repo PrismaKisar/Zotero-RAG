@@ -26,10 +26,15 @@ def evidence_count_stratum(record: dict) -> str:
 
 
 def evidence_spread_stratum(record: dict) -> str:
-    """Adjacent gold chunks vs scattered ones - a proxy for retrieval difficulty."""
-    idx = sorted({hit["chunk_index"]
-                  for hits in record.get("aligned_chunks", {}).values()
-                  for hit in hits})
+    """Adjacent gold chunks vs scattered ones - a proxy for retrieval difficulty.
+
+    Reads ``gold_ids``, the aligned targets ablation.py stores on the record.
+    It used to read an ``aligned_chunks`` key that only exists on the alignment
+    file and never on the scored record, so ``.get`` returned {} every time and
+    the whole golden set collapsed into "single-chunk" - a stratum that looked
+    degenerate in the data when it was only degenerate in the lookup.
+    """
+    idx = sorted({chunk_index for _, chunk_index in record.get("gold_ids", [])})
     if len(idx) < 2:
         return "single-chunk"
     return "adjacent" if idx[-1] - idx[0] <= len(idx) else "scattered"

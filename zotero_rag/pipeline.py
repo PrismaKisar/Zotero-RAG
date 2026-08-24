@@ -604,7 +604,8 @@ class ZoteroRAG:
                     rerank_callback=None,
                     num_paraphrases: int = 2,
                     highlight_color: tuple[float, float, float] | None = None,
-                    question_variations: list[str] | None = None) -> list[Answer]:
+                    question_variations: list[str] | None = None,
+                    pdf_hashes: list[str] | None = None) -> list[Answer]:
         """Answer a question using the full RAG pipeline.
 
         Pipeline stages:
@@ -623,6 +624,10 @@ class ZoteroRAG:
             num_paraphrases: Number of question paraphrases to generate (0 = disabled).
             highlight_color: RGB tuple (0-1) for highlighting. If None, use query-based color.
             question_variations: Pre-generated question variations to use. If None, generate them.
+            pdf_hashes: Restrict retrieval to these documents. None searches the
+                whole library, which is the product's default; scoping it is what
+                the benchmark needs to separate picking the right paper from
+                picking the right chunk inside it.
 
         Returns:
             List of Answer objects, deduplicated and sorted by score.
@@ -656,6 +661,7 @@ class ZoteroRAG:
                 config['retrieval_threshold'],
                 result_limit=config['result_limit'],
                 mode=config['retrieval_mode'],
+                pdf_hashes=pdf_hashes,
             )
 
             for i, q_var in enumerate(question_variations):
@@ -669,10 +675,12 @@ class ZoteroRAG:
                         seen_chunks.add(chunk_id)
                         all_candidates.append((chunk, score))
             
-            # Sort by retrieval score
-            all_candidates.sort(key=lambda x: x[1])
+            # Deliberately unsorted: every consumer re-sorts by the score it
+            # cares about (the reranker rescores, the bypass branch sorts
+            # descending), so ordering the merged list here is dead work - and
+            # the ascending sort that used to be here read as "best last".
             candidates = all_candidates
-            
+
             logger.debug(f"Question: {question}")
             logger.debug(f"Retrieved {len(candidates)} unique chunks from {len(question_variations)} variations")
             

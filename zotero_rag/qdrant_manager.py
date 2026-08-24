@@ -128,7 +128,12 @@ class QdrantManager:
                 field_name="pdf_hash",
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
-                    enable_hnsw=False, # No need for HNSW index because there are no vector search with filter on pdf_hash
+                    # ponytail: search_batch(pdf_hashes=...) *is* a filtered vector
+                    # search, so this is no longer free - without the filterable
+                    # sub-index Qdrant falls back to exact search on the filtered
+                    # set. At benchmark scale (~5k chunks) that is fine; flip to
+                    # True and reindex if a scoped search ever gets slow.
+                    enable_hnsw=False,
                     on_disk=True
                 ),
             )
@@ -588,22 +593,37 @@ class QdrantManager:
         return deleted_entries
 
     @staticmethod
+    def _pdf_hash_filter(pdf_hashes: list[str] | None):
+        """Restrict a search to the given documents, or None for the whole corpus."""
+        if not pdf_hashes:
+            return None
+        return qmodels.Filter(must=[qmodels.FieldCondition(
+            key="pdf_hash", match=qmodels.MatchAny(any=list(pdf_hashes)))])
+
+    @staticmethod
     def _build_query_request(dense_query, sparse_query, threshold: float,
-                            result_limit: int, mode: str) -> qmodels.QueryRequest:
+                            result_limit: int, mode: str,
+                            pdf_hashes: list[str] | None = None) -> qmodels.QueryRequest:
         """One Qdrant query request for ``mode`` ('hybrid', 'dense' or 'sparse').
 
         'hybrid' RRF-fuses both prefetches; the single-vector modes query that
         vector directly, which is what makes retrieval_mode an ablation knob
         that genuinely reorders results rather than just filtering them.
+
+        ``pdf_hashes`` scopes the search to those documents. In hybrid mode the
+        filter goes on each prefetch, not only on the fused query: filtering
+        after fusion would let both prefetches spend their whole ``limit`` on
+        out-of-scope documents and fuse down to nothing.
         """
+        flt = QdrantManager._pdf_hash_filter(pdf_hashes)
         if mode == "dense":
             return qmodels.QueryRequest(
                 query=dense_query, using="", score_threshold=threshold,
-                limit=result_limit, with_payload=True)
+                limit=result_limit, with_payload=True, filter=flt)
         if mode == "sparse":
             return qmodels.QueryRequest(
                 query=sparse_query, using="text-sparse",
-                limit=result_limit, with_payload=True)
+                limit=result_limit, with_payload=True, filter=flt)
         if mode != "hybrid":
             raise ValueError(f"unknown retrieval_mode: {mode!r}")
         return qmodels.QueryRequest(
@@ -613,16 +633,19 @@ class QdrantManager:
                     using="",
                     score_threshold=threshold,
                     limit=result_limit,
+                    filter=flt,
                 ),
                 qmodels.Prefetch(
                     query=sparse_query,
                     using="text-sparse",
-                    limit=result_limit
+                    limit=result_limit,
+                    filter=flt,
                 ),
             ],
             query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
             limit=result_limit,
             with_payload=True,
+            filter=flt,
         )
 
     @staticmethod
@@ -657,7 +680,8 @@ class QdrantManager:
                     query_embeddings: list[dict[str, list[float]]],
                     threshold: float = 0.45,
                     result_limit: int = 30,
-                    mode: str = "hybrid") -> list[list[Chunk]]:
+                    mode: str = "hybrid",
+                    pdf_hashes: list[str] | None = None) -> list[list[Chunk]]:
         """Batch search for relevant chunks using Hybrid Search (Dense + Sparse BM25).
 
         Args:
@@ -665,6 +689,7 @@ class QdrantManager:
             threshold: Score threshold for dense prefetch filtering.
             result_limit: Max results per query (the ``result_limit`` preset field).
             mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
+            pdf_hashes: Restrict the search to these documents (None = whole corpus).
 
         Returns:
             List of lists of (Chunk, score) tuples, aligned to query order.
@@ -682,7 +707,7 @@ class QdrantManager:
             if dense_query is None or sparse_query is None:
                 raise ValueError("Each query embedding must include 'dense' and 'sparse' keys.")
             requests.append(QdrantManager._build_query_request(
-                dense_query, sparse_query, threshold, result_limit, mode))
+                dense_query, sparse_query, threshold, result_limit, mode, pdf_hashes))
 
         search_results = self.client.query_batch_points(
             collection_name=self.chunk_collection,

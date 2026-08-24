@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zotero_rag"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from zotero_db import ZoteroDatabase
 
