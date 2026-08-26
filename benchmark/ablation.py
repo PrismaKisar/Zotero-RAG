@@ -5,11 +5,16 @@ parameter except one at the fixed baseline, sweep that one parameter, repeat
 per parameter. This is deliberately NOT the adaptive per-question-type preset
 in zotero_rag/question_presets.py (that's a separate, out-of-scope experiment).
 
-Runs on the QASPER dev golden set (output_qasper/), same dataset the frozen
-alignment protocol designates for ablation (see benchmark/README.md). Scores:
+Runs on either golden set. QASPER (output_qasper/) is the one the frozen
+alignment protocol designates for the ablation proper; QASA (output_qasa/)
+carries evidence annotations but no short answers, so it scores retrieval and
+attribution only and the answer columns are dropped rather than zeroed - the
+switch is whether golden_gold.json is present. The two are never pooled: see
+benchmark/compare_datasets.py for how far apart their question populations are.
+Scores:
 
 - Answer F1, per question, via qasper_evaluator.token_f1_score (the official
-  QASPER scorer's own token F1, max over annotator references).
+  QASPER scorer's own token F1, max over annotator references). QASPER only.
 - Recall@k / precision@k / MRR via benchmark/retrieval_metrics.py, against the
   (pdf_hash, chunk_index) pairs benchmark/align_evidence.py matched.
 - Evidence precision/recall/F1 over the chunks the system actually attributed
@@ -74,6 +79,10 @@ axis additionally requires Ollama.
 Usage:
   python -m benchmark.ablation --work-dir output_qasper/grobid \
       --hash-map output_qasper/pdf_hash_map.json --out-file output_qasper/ablation_results.csv
+
+  python -m benchmark.ablation --golden-dir output_qasa --work-dir output_qasa/grobid \
+      --hash-map output_qasa/pdf_hash_map.json --out-file output_qasa/ablation_results.csv \
+      --strata-file output_qasa/ablation_by_stratum.md --collection-suffix _qasa
 """
 
 import argparse
@@ -139,9 +148,16 @@ HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader")
 RECALL_KS = (1, 3, 5, 10)
 RECALL_K = max(RECALL_KS)  # the cut the attributed-evidence metrics score at
 
+# The metrics that need short reference answers. QASA annotates evidence but no
+# short answers, so on that set these are not computed at all rather than
+# computed against an empty reference list - which token_f1_score would score as
+# a clean 0.0 for every configuration, and a column of zeros reads as a system
+# that answers nothing rather than as a metric that was never applicable.
+ANSWER_METRICS = ["answer_f1", "answer_em"]
+
 # Means written to the CSV; the per-question JSONL keeps everything.
 CSV_METRICS = (
-    ["answer_f1", "answer_em"]
+    ANSWER_METRICS
     + [f"recall@{k}" for k in RECALL_KS]
     + [f"precision@{k}" for k in RECALL_KS]
     + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
@@ -157,9 +173,16 @@ LATENCY_STAGES = ("expansion", "retrieval", "rerank", "read")
 CSV_METRICS += [f"latency_{stage}_s" for stage in LATENCY_STAGES]
 
 
-def build_fieldnames() -> list[str]:
+def csv_metrics(score_answers: bool = True) -> list[str]:
+    """The CSV's metric columns, minus the answer ones on a set without answers."""
+    if score_answers:
+        return list(CSV_METRICS)
+    return [m for m in CSV_METRICS if m not in ANSWER_METRICS]
+
+
+def build_fieldnames(metrics: list[str] | None = None) -> list[str]:
     fields = ["param", "value", "n_questions"]
-    for metric in CSV_METRICS:
+    for metric in CSV_METRICS if metrics is None else metrics:
         fields.append(metric)
         if metric in CI_METRICS:
             fields += [f"{metric}_ci_low", f"{metric}_ci_high"]
@@ -189,17 +212,25 @@ def load_completed_configs(out_path: Path) -> set[tuple[str, str]]:
         return {(row["param"], row["value"]) for row in csv.DictReader(f)}
 
 
-def build_configs(baseline: dict, grid: dict) -> list[dict]:
-    """Baseline, oracle-context reference, then one config per (param, value)."""
+def build_configs(baseline: dict, grid: dict, score_answers: bool = True) -> list[dict]:
+    """Baseline, oracle-context reference, then one config per (param, value).
+
+    The oracle-context rows are dropped when ``score_answers`` is False. They
+    bypass retrieval and hand the reader the gold chunks, so Answer F1 is the
+    only thing they measure; without it they would run the reader over every
+    question to produce a row of blanks.
+    """
     configs = [{"param": "baseline", "value": None, "config": dict(baseline)},
-               {"param": "oracle_paper", "value": None, "config": dict(baseline)},
-               {"param": "oracle_context", "value": None, "config": dict(baseline)},
-               # The reader ceiling has to be measured once per reader, and the
-               # one-at-a-time grid cannot express it: it varies the reader
-               # against the *baseline*, which answers "how does this reader do
-               # with real retrieval", not "how far can this reader get at all".
-               {"param": "oracle_context_generative", "value": None,
-                "config": dict(baseline, reader="generative")}]
+               {"param": "oracle_paper", "value": None, "config": dict(baseline)}]
+    if score_answers:
+        configs += [
+            {"param": "oracle_context", "value": None, "config": dict(baseline)},
+            # The reader ceiling has to be measured once per reader, and the
+            # one-at-a-time grid cannot express it: it varies the reader
+            # against the *baseline*, which answers "how does this reader do
+            # with real retrieval", not "how far can this reader get at all".
+            {"param": "oracle_context_generative", "value": None,
+             "config": dict(baseline, reader="generative")}]
     for param, values in grid.items():
         for value in values:
             config = dict(baseline)
@@ -309,24 +340,30 @@ def retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids) -> dict:
 
 
 def score_question(question: dict, answers, rag, gold_chunks: dict,
-                   gold_answers: dict) -> dict | None:
-    """Per-question metric row, or None if the question has no gold chunks."""
+                   gold_answers: dict, score_answers: bool = True) -> dict | None:
+    """Per-question metric row, or None if the question has no gold chunks.
+
+    With ``score_answers`` False the answer columns are absent from the row
+    rather than zero, which is what a set carrying evidence but no reference
+    answers supports. Retrieval and attribution are scored exactly as usual.
+    """
     gold_ids = gold_chunks.get(question["question_id"])
     if gold_ids is None:
         return None
 
     predicted_answer = answers[0].text if answers else ""
-    f1, answer_type = answer_f1(predicted_answer,
-                                gold_answers.get(question["question_id"], []))
+    references = gold_answers.get(question["question_id"], [])
+    f1, answer_type = answer_f1(predicted_answer, references)
 
     ranked = sorted(rag.last_candidates, key=lambda c: c["retrieval_score"], reverse=True)
     ranked_ids = [(c["chunk"].pdf_hash, c["chunk"].chunk_index) for c in ranked]
     reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in rag.last_reranked]
     predicted_ids = attributed_ids(answers, rag.last_reranked)
 
-    row = {"answer_f1": f1,
-           "answer_em": answer_exact_match(predicted_answer,
-                                           gold_answers.get(question["question_id"], []))}
+    row = {}
+    if score_answers:
+        row = {"answer_f1": f1,
+               "answer_em": answer_exact_match(predicted_answer, references)}
     row.update(per_question_scores(ranked_ids, gold_ids, RECALL_K,
                                    predicted_ids=predicted_ids))
     for k in RECALL_KS:
@@ -397,7 +434,8 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
 
 
 def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
-               gold_answers: dict, scope_to_gold_paper: bool = False) -> list[dict]:
+               gold_answers: dict, scope_to_gold_paper: bool = False,
+               score_answers: bool = True) -> list[dict]:
     """Answer every question under ``config``; return one metric row per question.
 
     With ``scope_to_gold_paper``, retrieval is filtered to the paper the question
@@ -420,7 +458,8 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
             num_paraphrases=harness.get("num_paraphrases", 0),
             pdf_hashes=pdf_hashes)
         elapsed = time.perf_counter() - started
-        row = score_question(q, answers, rag, gold_chunks, gold_answers)
+        row = score_question(q, answers, rag, gold_chunks, gold_answers,
+                             score_answers=score_answers)
         if row is not None:
             row["latency_s"] = elapsed
             for stage in LATENCY_STAGES:
@@ -473,18 +512,28 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
     return rows
 
 
-def csv_row(entry: dict, rows: list[dict]) -> dict:
+def csv_row(entry: dict, rows: list[dict], metrics: list[str] | None = None) -> dict:
     """Mean of every CSV metric present in ``rows``, with CIs where configured."""
     summary = summarize([{k: v for k, v in r.items() if k != "record"} for r in rows],
                         with_ci=True)
     out = {"param": entry["param"], "value": entry["value"],
            "n_questions": summary["n_questions"]}
-    for metric in CSV_METRICS:
+    for metric in CSV_METRICS if metrics is None else metrics:
         out[metric] = summary.get(metric, "")
         if metric in CI_METRICS:
             out[f"{metric}_ci_low"] = summary.get(f"{metric}_ci_low", "")
             out[f"{metric}_ci_high"] = summary.get(f"{metric}_ci_high", "")
     return out
+
+
+def dataset_name(golden_dir: Path) -> str:
+    """Heading the stratified table carries, taken from the golden-set directory.
+
+    The two sets are never pooled (see benchmark/stratify.py), so the table has
+    to say which one it is; deriving it beats a flag nobody would remember to
+    pass, which is how a QASA run would end up labelled QASPER.
+    """
+    return golden_dir.name.removeprefix("output_").upper() or golden_dir.name
 
 
 def config_label(param: str, value) -> str:
@@ -548,7 +597,7 @@ def main():
                              "Written for the latency pass, which needs four rows out of "
                              "twenty-two and would otherwise pay for eighteen it discards.")
     parser.add_argument("--sample", type=int, default=None,
-                        help="subsample this many questions (default: all 218)")
+                        help="subsample this many questions (default: the whole golden set)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -558,18 +607,31 @@ def main():
 
     golden_dir = Path(args.golden_dir)
     questions = load_jsonl(golden_dir / "golden_set.jsonl")
-    if args.sample is not None:
-        questions = sample_questions(questions, args.sample, args.seed)
-    sampled_ids = {q["question_id"] for q in questions}
-
-    gold_answers = get_answers_and_evidence(
-        json.loads((golden_dir / "golden_gold.json").read_text()), text_evidence_only=True)
-    gold_answers = {qid: refs for qid, refs in gold_answers.items() if qid in sampled_ids}
     pdf_hash_map = json.loads(Path(args.hash_map).read_text())
     gold_chunks = load_gold_chunks(golden_dir / "golden_set_aligned.jsonl", pdf_hash_map)
     # Only aligned questions are scorable, so every metric shares one denominator.
+    # Sampling happens after this filter, not before: --sample is a budget on
+    # questions actually scored, and drawing from the full set instead would make
+    # the reported n a function of the alignment rate rather than of the request.
     questions = [q for q in questions if q["question_id"] in gold_chunks]
+    if args.sample is not None:
+        questions = sample_questions(questions, args.sample, args.seed)
+    sampled_ids = {q["question_id"] for q in questions}
     print(f"scoring {len(questions)} aligned questions")
+
+    # QASA annotates evidence but no short answers, so it ships no golden_gold.json
+    # and the answer columns are dropped for the whole sweep rather than scored
+    # against nothing. Presence of the file is the switch: a set either has
+    # reference answers or it does not, and there is no third case to configure.
+    gold_path = golden_dir / "golden_gold.json"
+    score_answers = gold_path.exists()
+    gold_answers = {}
+    if score_answers:
+        gold_answers = {qid: refs for qid, refs in get_answers_and_evidence(
+            json.loads(gold_path.read_text()), text_evidence_only=True).items()
+            if qid in sampled_ids}
+    else:
+        print(f"{gold_path} absent: scoring retrieval and attribution only")
 
     rag = ZoteroRAG(grobid_url=args.grobid_url, qdrant_url=args.qdrant_url,
                     output_base_dir=args.work_dir,
@@ -584,13 +646,14 @@ def main():
     baseline_engine = rag.qa_engine
 
     out_path = Path(args.out_file)
-    fieldnames = build_fieldnames()
+    metrics = csv_metrics(score_answers)
+    fieldnames = build_fieldnames(metrics)
     check_schema_compatible(out_path, fieldnames)
     done = load_completed_configs(out_path)
     if done:
         print(f"resuming: {len(done)} configs already in {out_path}")
 
-    for entry in select_configs(build_configs(BASELINE, GRID), args.only):
+    for entry in select_configs(build_configs(BASELINE, GRID, score_answers), args.only):
         key = (entry["param"], "" if entry["value"] is None else str(entry["value"]))
         if key in done:
             continue
@@ -607,7 +670,8 @@ def main():
             rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
         else:
             rows = run_config(rag, questions, entry["config"], gold_chunks, gold_answers,
-                              scope_to_gold_paper=entry["param"] == "oracle_paper")
+                              scope_to_gold_paper=entry["param"] == "oracle_paper",
+                              score_answers=score_answers)
         if not rows:
             print(f"skipped: {entry['param']}={entry['value']} scored no questions")
             continue
@@ -616,15 +680,15 @@ def main():
         write_per_question(rows, out_path.parent / "per_question" / f"{label}.jsonl")
         if entry["param"] == "baseline":
             Path(args.strata_file).write_text(to_markdown(
-                {"QASPER": stratify(rows)},
-                [m for m in CSV_METRICS if m in rows[0]]))
+                {dataset_name(golden_dir): stratify(rows)},
+                [m for m in metrics if m in rows[0]]))
 
         write_header = not out_path.exists()
         with out_path.open("a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
-            writer.writerow(csv_row(entry, rows))
+            writer.writerow(csv_row(entry, rows, metrics))
         print(f"wrote: {entry['param']}={entry['value']} -> {out_path}")
 
 

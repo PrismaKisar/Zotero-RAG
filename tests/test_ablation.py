@@ -1,6 +1,7 @@
 import json
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +18,9 @@ from benchmark.ablation import (
     build_fieldnames,
     check_corpus_indexed,
     check_schema_compatible,
+    csv_metrics,
     csv_row,
+    dataset_name,
     load_completed_configs,
     load_gold_chunks,
     reader_key,
@@ -556,3 +559,50 @@ def test_select_configs_rejects_a_param_no_config_carries():
     """A typo must not look like a run that legitimately had nothing to do."""
     with pytest.raises(SystemExit):
         select_configs(build_configs({"a": 1}, {}), "raeder")
+
+
+# A set with evidence annotations but no reference answers - QASA. The answer
+# metrics have to be absent rather than zero: token F1 against no reference is
+# a clean 0.0, which reads as a system that never answers correctly.
+
+def test_a_set_without_reference_answers_drops_the_answer_columns():
+    metrics = csv_metrics(score_answers=False)
+    assert "answer_f1" not in metrics and "answer_em" not in metrics
+    assert f"recall@{RECALL_K}" in metrics and "evidence_f1" in metrics
+    assert "answer_f1_ci_low" not in build_fieldnames(metrics)
+
+
+def test_scoring_without_answers_still_scores_retrieval_and_attribution():
+    rows = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, {},
+                      score_answers=False)
+
+    assert "answer_f1" not in rows[0] and "answer_em" not in rows[0]
+    assert rows[0][f"recall@{RECALL_K}"] == 1.0
+    assert "evidence_f1" in rows[0] and "latency_s" in rows[0]
+
+
+def test_scoring_with_answers_is_unchanged_by_the_new_flag():
+    rows = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)
+    assert rows[0]["answer_f1"] == 1.0
+
+
+def test_the_oracle_context_rows_are_dropped_without_reference_answers():
+    """They bypass retrieval, so Answer F1 is the only thing they measure."""
+    configs = build_configs({"a": 1}, {"a": [2]}, score_answers=False)
+    assert [c["param"] for c in configs] == ["baseline", "oracle_paper", "a"]
+
+
+def test_csv_row_written_without_answers_matches_its_own_header():
+    metrics = csv_metrics(score_answers=False)
+    rows = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, {},
+                      score_answers=False) * 3
+    row = csv_row({"param": "baseline", "value": None}, rows, metrics)
+
+    assert set(row) == set(build_fieldnames(metrics))
+    assert row["n_questions"] == 3
+
+
+def test_dataset_name_comes_from_the_golden_directory():
+    """The two sets are never pooled, so a mislabelled strata table is a real error."""
+    assert dataset_name(Path("output_qasa")) == "QASA"
+    assert dataset_name(Path("output_qasper")) == "QASPER"

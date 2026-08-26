@@ -8,13 +8,21 @@ probability, using logits directly so no model is loaded.
 """
 
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
+import torch
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from qa_engine import MAX_ANSWER_TOKENS, _best_span, _softmax
+from qa_engine import (
+    MAX_ANSWER_TOKENS,
+    MAX_WINDOWS_PER_FORWARD,
+    QAEngine,
+    _best_span,
+    _softmax,
+)
 
 
 def context_ids(length, context_slice):
@@ -72,3 +80,57 @@ def test_score_is_a_probability_and_ranks_confidence():
 
 def test_no_context_token_yields_no_span():
     assert _best_span(np.zeros(4), np.zeros(4), [0, 0, None, None]) is None
+
+
+# Windowed inference: batch_size caps the (question, context) pairs handed to the
+# tokenizer, not the windows a long context expands into, so the tensor reaching
+# the model was unbounded. These pin that splitting it changes memory and nothing
+# else - the logits must match a single pass row for row.
+
+class _CountingModel:
+    """Returns logits derived from the input ids, so order and content are checkable."""
+
+    def __init__(self):
+        self.forward_sizes = []
+
+    def __call__(self, **window):
+        ids = window["input_ids"]
+        self.forward_sizes.append(ids.shape[0])
+        return types.SimpleNamespace(start_logits=ids.float(), end_logits=ids.float() * 2)
+
+
+def _engine_with(model):
+    engine = QAEngine.__new__(QAEngine)
+    engine.model = model
+    return engine
+
+
+def _inputs(rows, width=3):
+    ids = torch.arange(rows * width, dtype=torch.long).reshape(rows, width)
+    return {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
+
+
+def test_windowed_inference_matches_a_single_forward_pass():
+    inputs = _inputs(MAX_WINDOWS_PER_FORWARD * 2 + 3)
+
+    split_start, split_end = _engine_with(_CountingModel())._logits_in_windows(inputs)
+    whole = _CountingModel()(**inputs)
+
+    assert np.array_equal(split_start, whole.start_logits.numpy())
+    assert np.array_equal(split_end, whole.end_logits.numpy())
+
+
+def test_no_forward_pass_exceeds_the_window_cap():
+    model = _CountingModel()
+    rows = MAX_WINDOWS_PER_FORWARD * 2 + 3
+
+    _engine_with(model)._logits_in_windows(_inputs(rows))
+
+    assert max(model.forward_sizes) <= MAX_WINDOWS_PER_FORWARD
+    assert sum(model.forward_sizes) == rows
+
+
+def test_a_batch_below_the_cap_still_runs_in_one_pass():
+    model = _CountingModel()
+    _engine_with(model)._logits_in_windows(_inputs(MAX_WINDOWS_PER_FORWARD - 1))
+    assert model.forward_sizes == [MAX_WINDOWS_PER_FORWARD - 1]

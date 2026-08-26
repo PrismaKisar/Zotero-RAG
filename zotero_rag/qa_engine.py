@@ -15,6 +15,18 @@ MAX_SEQUENCE_TOKENS = 512
 MAX_ANSWER_TOKENS = 60
 CONTEXT_STRIDE = 128
 
+# Windows per forward pass. batch_size bounds the (question, context) pairs given
+# to the tokenizer, not the sequences that reach the model: with overflowing
+# windows enabled a long context expands into several, so one "batch of 16" can
+# arrive at the model as many times that. On a 16GB machine the QASA sweep was
+# killed outright on the configs that expand the most - three query variations
+# over long chunks - and the number in the log ("N total sequences") counted the
+# pairs, so nothing in the output said how much was actually being allocated.
+# ponytail: fixed cap, not a memory-aware one. Slicing an already-padded batch
+# leaves each window's logits bit-identical, so this bounds peak memory without
+# changing a single score; raise it on a machine with room.
+MAX_WINDOWS_PER_FORWARD = 16
+
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
     """Return the softmax of ``logits``, shifted for numerical stability."""
@@ -287,6 +299,23 @@ class QAEngine:
             sentence_coords=sentence_coords,
         )
     
+    def _logits_in_windows(self, inputs) -> tuple[np.ndarray, np.ndarray]:
+        """Start/end logits for every window, at most MAX_WINDOWS_PER_FORWARD at a time.
+
+        ``inputs`` is already padded to one common length, so a row slice is the
+        same tensor the model would have seen in the full batch, and attention
+        masks make padding inert. The concatenated result is therefore identical
+        to one forward pass over everything - this bounds memory, not behaviour.
+        """
+        starts, ends = [], []
+        for first in range(0, inputs["input_ids"].shape[0], MAX_WINDOWS_PER_FORWARD):
+            window = {k: v[first:first + MAX_WINDOWS_PER_FORWARD] for k, v in inputs.items()}
+            with torch.no_grad():
+                outputs = self.model(**window)
+            starts.append(outputs.start_logits.float().cpu().numpy())
+            ends.append(outputs.end_logits.float().cpu().numpy())
+        return np.concatenate(starts), np.concatenate(ends)
+
     def extract_answers(self,
                     question: str,
                     candidates: list[RerankedChunk],
@@ -388,11 +417,7 @@ class QAEngine:
                 sequence_ids = [encoded.sequence_ids(k) for k in range(len(sample_mapping))]
                 inputs = encoded.to(self.device)
 
-                with torch.no_grad():
-                    outputs = self.model(**inputs)
-
-                start_logits = outputs.start_logits.float().cpu().numpy()
-                end_logits = outputs.end_logits.float().cpu().numpy()
+                start_logits, end_logits = self._logits_in_windows(inputs)
 
                 # Extract spans from logits
                 for k, (start_logit, end_logit, offsets) in enumerate(zip(start_logits, end_logits, offset_mapping)):
