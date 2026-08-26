@@ -1,4 +1,5 @@
 import json
+import time
 import types
 
 import pytest
@@ -24,6 +25,7 @@ from benchmark.ablation import (
     run_config,
     run_oracle,
     sample_questions,
+    select_configs,
     split_harness_params,
     wanted_reader,
     write_per_question,
@@ -52,9 +54,12 @@ class _FakeRag:
     """Stubs the two stages scoring reads: last_candidates (pre-rerank) and
     last_reranked (post-rerank), which can carry different orderings."""
 
-    def __init__(self, answers=None):
+    def __init__(self, answers=None, stage_times=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
         self.seen_call = None
+        self.last_stage_times = {"expansion": 0.1, "retrieval": 0.2,
+                                 "rerank": 0.3, "read": 0.4} \
+            if stage_times is None else stage_times
         self.last_candidates = [
             {"chunk": _FakeChunk("h", 2, "ctx-2"), "retrieval_score": 0.9},
             {"chunk": _FakeChunk("h", 1, "ctx-1"), "retrieval_score": 0.5},
@@ -79,10 +84,19 @@ def test_build_configs_includes_baseline_oracle_and_one_variant_per_grid_value()
     configs = build_configs(baseline, grid)
 
     assert configs[0] == {"param": "baseline", "value": None, "config": {"a": 1, "b": 2}}
-    assert [c["param"] for c in configs[:3]] == ["baseline", "oracle_paper", "oracle_context"]
+    assert [c["param"] for c in configs[:4]] == [
+        "baseline", "oracle_paper", "oracle_context", "oracle_context_generative"]
     assert {"param": "a", "value": 10, "config": {"a": 10, "b": 2}} in configs
     assert {"param": "b", "value": 99, "config": {"a": 1, "b": 99}} in configs
-    assert len(configs) == 6
+    assert len(configs) == 7
+
+
+def test_the_generative_ceiling_row_asks_for_the_generative_reader():
+    """Without the reader override it would silently re-measure the extractive ceiling."""
+    configs = build_configs({"a": 1}, {})
+    generative = next(c for c in configs if c["param"] == "oracle_context_generative")
+    assert generative["config"]["reader"] == "generative"
+    assert wanted_reader(split_harness_params(generative["config"])[1], "any-model") == "generative"
 
 
 def test_build_configs_never_mutates_baseline():
@@ -470,3 +484,75 @@ def test_answer_exact_match_ignores_articles_case_and_punctuation():
 
 def test_answer_exact_match_without_references():
     assert answer_exact_match("anything", []) == 0.0
+
+
+SLOW = 0.02  # long enough to clear perf_counter noise, short enough to not matter
+
+
+def test_run_config_times_the_whole_pipeline_call():
+    rag = _FakeRag()
+    slow_answer = rag.answer_question
+
+    def answer_question(*args, **kwargs):
+        time.sleep(SLOW)
+        return slow_answer(*args, **kwargs)
+
+    rag.answer_question = answer_question
+    row = run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["latency_s"] >= SLOW
+
+
+def test_run_oracle_times_the_reader_alone_not_the_gold_chunk_fetch():
+    """The oracle latency is only useful if it excludes everything but the reader.
+
+    Fetching the gold chunks is scaffolding the real pipeline never does - charging
+    it to the reader would make the extractive/generative comparison, which is the
+    whole reason this number exists, read against whatever Qdrant happened to cost.
+    """
+    from models import Chunk
+
+    gold_chunk = Chunk(text="gold text", page_number=1, chunk_index=1, title="T", pdf_hash="h")
+    rag = _OracleRag([gold_chunk], [_FakeAnswer(text="some answer")])
+    fetch = rag.qdrant_manager.fetch_chunks
+    rag.qdrant_manager.fetch_chunks = lambda ids: (time.sleep(SLOW), fetch(ids))[1]
+
+    row = run_oracle(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+
+    assert row["latency_s"] < SLOW
+
+
+def test_run_config_records_the_pipelines_stage_timings():
+    row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["latency_retrieval_s"] == 0.2
+    assert row["latency_read_s"] == 0.4
+
+
+def test_a_stage_the_call_never_reached_scores_zero_not_a_missing_column():
+    """Every row must carry every stage column, or the CSV means stop comparing.
+
+    summarize() reads its metric list off the first row, so a config whose first
+    question short-circuited would silently drop the stage columns for the whole
+    config rather than for that one question.
+    """
+    rag = _FakeRag(stage_times={"expansion": 0.1, "retrieval": 0.2})
+    row = run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["latency_rerank_s"] == 0.0
+    assert row["latency_read_s"] == 0.0
+
+
+def test_select_configs_keeps_everything_when_unfiltered():
+    configs = build_configs({"a": 1}, {"a": [2]})
+    assert select_configs(configs, None) == configs
+    assert select_configs(configs, "") == configs
+
+
+def test_select_configs_keeps_only_the_named_params():
+    configs = build_configs({"a": 1}, {"a": [2]})
+    picked = select_configs(configs, "baseline, a")
+    assert [c["param"] for c in picked] == ["baseline", "a"]
+
+
+def test_select_configs_rejects_a_param_no_config_carries():
+    """A typo must not look like a run that legitimately had nothing to do."""
+    with pytest.raises(SystemExit):
+        select_configs(build_configs({"a": 1}, {}), "raeder")

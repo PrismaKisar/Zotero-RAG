@@ -24,6 +24,19 @@ cut), so a threshold-only grid is unfalsifiable by construction; thresholds are
 kept in the grid but are now read through precision@k and evidence F1, which do
 see the cut.
 
+Wall-clock latency is recorded per question, end to end and broken down by
+pipeline stage (LATENCY_STAGES). The breakdown is what makes the number
+actionable: a slow retriever and a slow reader produce the same total and take
+opposite fixes. The reader cannot be read off the oracle rows instead - those
+hand it only the gold chunks, roughly a fifteenth of what the pipeline hands it,
+and the generative reader's cost is strongly sublinear in context size.
+
+The CSV carries the mean, which is the wrong summary for a skewed quantity; the
+per-question JSONL carries every value, so median and tail are recomputable
+without re-running anything. Model loading happens between configs, outside the
+timer, but the first call of a config still warms caches - which is the other
+reason to read the median.
+
 Three reference rows bracket every configuration, and together they split the
 end-to-end score into the three things that can go wrong:
 
@@ -36,6 +49,10 @@ end-to-end score into the three things that can go wrong:
 - ``oracle_context``: the reader fed the *gold* chunks directly, bypassing
   retrieval. oracle_paper -> oracle_context is the cost of passage selection,
   and oracle_context itself is the reader's ceiling.
+- ``oracle_context_generative``: the same ceiling for the generative reader.
+  Without it the extractive ceiling reads as a property of the system when it
+  is a property of span extraction, which is the distinction the whole reader
+  axis exists to draw.
 
 Three axes are applied by the harness rather than by the pipeline config, since
 they are not question-preset fields (see HARNESS_PARAMS):
@@ -64,6 +81,7 @@ import csv
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 # appended, never prepended: the repo root must keep priority over this directory
@@ -127,9 +145,16 @@ CSV_METRICS = (
     + [f"recall@{k}" for k in RECALL_KS]
     + [f"precision@{k}" for k in RECALL_KS]
     + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
-       f"recall@{RECALL_K}_reranked", "mrr_reranked"]
+       f"recall@{RECALL_K}_reranked", "mrr_reranked", "latency_s"]
 )
 CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
+
+# Stages ZoteroRAG.answer_question times, in the order it runs them. Recorded as
+# a fixed list rather than whatever keys the call happened to set: a stage the
+# call never reached scores 0.0, so every row has the same columns and the means
+# stay comparable across configs.
+LATENCY_STAGES = ("expansion", "retrieval", "rerank", "read")
+CSV_METRICS += [f"latency_{stage}_s" for stage in LATENCY_STAGES]
 
 
 def build_fieldnames() -> list[str]:
@@ -168,13 +193,34 @@ def build_configs(baseline: dict, grid: dict) -> list[dict]:
     """Baseline, oracle-context reference, then one config per (param, value)."""
     configs = [{"param": "baseline", "value": None, "config": dict(baseline)},
                {"param": "oracle_paper", "value": None, "config": dict(baseline)},
-               {"param": "oracle_context", "value": None, "config": dict(baseline)}]
+               {"param": "oracle_context", "value": None, "config": dict(baseline)},
+               # The reader ceiling has to be measured once per reader, and the
+               # one-at-a-time grid cannot express it: it varies the reader
+               # against the *baseline*, which answers "how does this reader do
+               # with real retrieval", not "how far can this reader get at all".
+               {"param": "oracle_context_generative", "value": None,
+                "config": dict(baseline, reader="generative")}]
     for param, values in grid.items():
         for value in values:
             config = dict(baseline)
             config[param] = value
             configs.append({"param": param, "value": value, "config": config})
     return configs
+
+
+def select_configs(configs: list[dict], only: str | None) -> list[dict]:
+    """Keep only the named params, or everything when ``only`` is None.
+
+    Raises on a name no config carries, rather than silently running a shorter
+    sweep than asked for - a typo would otherwise look like a finished run.
+    """
+    if not only:
+        return configs
+    wanted = {name.strip() for name in only.split(",") if name.strip()}
+    unknown = wanted - {c["param"] for c in configs}
+    if unknown:
+        raise SystemExit(f"--only names no such param: {sorted(unknown)}")
+    return [c for c in configs if c["param"] in wanted]
 
 
 def sample_questions(questions: list[dict], n: int, seed: int) -> list[dict]:
@@ -368,12 +414,17 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
         pdf_hashes = None
         if scope_to_gold_paper:
             pdf_hashes = sorted({h for h, _ in gold_chunks[q["question_id"]]})
+        started = time.perf_counter()
         answers = rag.answer_question(
             q["question"], question_type="general", overrides=pipeline_config,
             num_paraphrases=harness.get("num_paraphrases", 0),
             pdf_hashes=pdf_hashes)
+        elapsed = time.perf_counter() - started
         row = score_question(q, answers, rag, gold_chunks, gold_answers)
         if row is not None:
+            row["latency_s"] = elapsed
+            for stage in LATENCY_STAGES:
+                row[f"latency_{stage}_s"] = rag.last_stage_times.get(stage, 0.0)
             rows.append(row)
     return rows
 
@@ -384,6 +435,11 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
 
     Retrieval metrics are perfect by construction and therefore omitted: the
     only meaningful number here is Answer F1, the reader's ceiling.
+
+    ``latency_s`` here times the reader alone - the gold chunks are already in
+    hand, so nothing else is running. Against the same number from ``run_config``
+    (which times the whole pipeline) it separates what the reader costs from what
+    retrieval costs, without instrumenting the pipeline's internals.
     """
     from models import RerankedChunk
 
@@ -400,13 +456,16 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
                 continue
             candidates = [RerankedChunk(chunk=p, retrieval_score=1.0, rerank_score=1.0)
                           for p in chunks]
+            started = time.perf_counter()
             answers = rag.qa_engine.extract_answers(
                 q["question"], candidates, config, question_variations=[q["question"]])
+            elapsed = time.perf_counter() - started
             predicted = answers[0].text if answers else ""
             references = gold_answers.get(q["question_id"], [])
             f1, answer_type = answer_f1(predicted, references)
             rows.append({"answer_f1": f1,
                          "answer_em": answer_exact_match(predicted, references),
+                         "latency_s": elapsed,
                          "record": dict(q, answer_type=answer_type,
                                         gold_ids=[list(i) for i in sorted(gold_ids)])})
     finally:
@@ -484,6 +543,10 @@ def main():
                         help="only used by the generative reader axis")
     parser.add_argument("--collection-suffix", default="_qasper",
                         help="the Qdrant collection this corpus was indexed into")
+    parser.add_argument("--only", default=None,
+                        help="comma-separated param names to run (default: the whole grid). "
+                             "Written for the latency pass, which needs four rows out of "
+                             "twenty-two and would otherwise pay for eighteen it discards.")
     parser.add_argument("--sample", type=int, default=None,
                         help="subsample this many questions (default: all 218)")
     parser.add_argument("--seed", type=int, default=42)
@@ -527,7 +590,7 @@ def main():
     if done:
         print(f"resuming: {len(done)} configs already in {out_path}")
 
-    for entry in build_configs(BASELINE, GRID):
+    for entry in select_configs(build_configs(BASELINE, GRID), args.only):
         key = (entry["param"], "" if entry["value"] is None else str(entry["value"]))
         if key in done:
             continue
@@ -540,7 +603,7 @@ def main():
             # once its dependency is there; the rest of the sweep still lands.
             print(f"skipped: {entry['param']}={entry['value']} - {exc}")
             continue
-        if entry["param"] == "oracle_context":
+        if entry["param"].startswith("oracle_context"):
             rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
         else:
             rows = run_config(rag, questions, entry["config"], gold_chunks, gold_answers,

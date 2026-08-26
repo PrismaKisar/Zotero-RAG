@@ -8,6 +8,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 import logging
+import time
 import warnings
 
 from embedding_manager import EmbeddingManager
@@ -149,6 +150,10 @@ class ZoteroRAG:
         # For debugging/inspection
         self.last_candidates = []
         self.last_reranked = []
+        # Wall-clock seconds per stage of the last answer_question call. Total
+        # latency alone cannot say whether a slow reader or a slow retriever is
+        # responsible, and the two carry opposite fixes.
+        self.last_stage_times = {}
     
     def get_query_color(self, query: str) -> tuple[float, float, float]:
         """Get a consistent color for a query string.
@@ -634,6 +639,17 @@ class ZoteroRAG:
         """
         config = resolve(question_type, overrides)
 
+        # Stage timings: a stage absent from the dict is one this call never
+        # reached, which is the honest record when retrieval comes back empty.
+        self.last_stage_times = {}
+        stage_started = time.perf_counter()
+
+        def mark(stage: str) -> None:
+            nonlocal stage_started
+            now = time.perf_counter()
+            self.last_stage_times[stage] = now - stage_started
+            stage_started = now
+
         # Stage 0: Expand question if enabled and variations not provided
         if question_variations is None:
             question_variations = [question]  # Always include original
@@ -644,7 +660,9 @@ class ZoteroRAG:
                 logger.info("Question paraphrasing disabled by user")
         else:
             logger.info(f"Using {len(question_variations)} pre-selected question variations")
-        
+
+        mark("expansion")
+
         # Stage 1: Retrieve candidate chunks (Qdrant)
         # Search with all question variations and merge results
         try:
@@ -700,7 +718,8 @@ class ZoteroRAG:
             ]
         finally:
             self.qdrant_manager.close_connection()
-        
+            mark("retrieval")
+
         # Stage 2: Rerank and Filter (CrossEncoder)
         if config['rerank_enabled']:
             reranked = self.reranker.rerank(
@@ -723,6 +742,7 @@ class ZoteroRAG:
         for c in self.last_candidates:
             c['kept'] = c['chunk'].text in reranked_texts
         self.last_reranked = reranked  # already sorted by rerank_score desc
+        mark("rerank")
 
         if not reranked:
             return []
@@ -742,7 +762,8 @@ class ZoteroRAG:
             progress_callback=progress_callback,
             question_variations=question_variations
         )
-        
+        mark("read")
+
         return self._attach_pdf_paths(answers)
     
     def _attach_pdf_paths(self, answers: list[Answer]) -> list[Answer]:
