@@ -727,7 +727,11 @@ class ZoteroRAG:
                 candidates,
                 config['rerank_threshold'],
                 progress_callback=rerank_callback,
-                query_variations=question_variations
+                query_variations=question_variations,
+                # Read with a default rather than added to every preset: this is
+                # a phase-two intervention, and a preset field would ship it as a
+                # default before it has been accepted as one.
+                order_by_retrieval=config.get('rerank_order_by_retrieval', False)
             )
         else:
             # ponytail: bypass keeps the retrieval order (best first) so the

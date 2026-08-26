@@ -130,6 +130,10 @@ GRID = {
     "qa_score_threshold": [0.05, 0.20],
     "min_answer_words": [1, 5],
     "section_diversity_enabled": [True],
+    # Phase-two intervention, not a preset field: keep the cross-encoder's
+    # threshold and drop its ordering. Read through the attribution metrics and
+    # recall@k, which is where the two uses of that score disagree.
+    "rerank_order_by_retrieval": [True],
     "num_paraphrases": [2],
     "qa_model": ["deepset/deberta-v3-base-squad2", "deepset/roberta-base-squad2"],
     "reader": ["generative"],

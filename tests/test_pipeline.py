@@ -51,7 +51,7 @@ def _rag(results, answers=None):
         extract_answers=lambda *a, **k: answers or [])
     rag.reranker = types.SimpleNamespace(
         rerank=lambda question, candidates, threshold, progress_callback=None,
-        query_variations=None: [
+        query_variations=None, order_by_retrieval=False: [
             RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
             for c, s in candidates])
     rag.pdf_cache = types.SimpleNamespace(get_pdf_path=lambda h: None)

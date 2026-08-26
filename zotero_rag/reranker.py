@@ -38,7 +38,8 @@ class Reranker:
             candidates: list[tuple[Chunk, float]],
             threshold: float = 0.45,
             progress_callback=None,
-            query_variations: list[str] | None = None) -> list[RerankedChunk]:
+            query_variations: list[str] | None = None,
+            order_by_retrieval: bool = False) -> list[RerankedChunk]:
         """Rerank candidates using cross-encoder scores.
         
         Args:
@@ -48,10 +49,18 @@ class Reranker:
                 model is conservative: see ``question_presets`` for the scale.
             progress_callback: Function(current, total, message) for progress updates.
             query_variations: List of query paraphrases to average scores over.
-            
+            order_by_retrieval: Keep the cross-encoder's threshold but leave the
+                survivors in retrieval's order. The two uses of the rerank score
+                are separable and the benchmarks disagree about them: as a filter
+                it roughly doubles attribution precision, while as a ranking it
+                puts gold evidence below where reciprocal-rank fusion had it on
+                every row where retrieval found enough to judge. Off by default,
+                since it is an intervention and not yet an accepted default.
+
         Returns:
-            List of (Chunk, retrieval_score, rerank_score) tuples,
-            filtered and sorted by rerank_score descending.
+            List of (Chunk, retrieval_score, rerank_score) tuples, filtered by
+            rerank_score and sorted by rerank_score descending, or by
+            retrieval_score when ``order_by_retrieval``.
         """
         if not candidates:
             return []
@@ -124,8 +133,9 @@ class Reranker:
             if item.rerank_score >= threshold
         ]
         
-        # Sort by rerank score descending
-        filtered_candidates.sort(key=lambda x: x.rerank_score, reverse=True)
+        # Sort by rerank score descending, or keep retrieval's order if asked
+        sort_key = "retrieval_score" if order_by_retrieval else "rerank_score"
+        filtered_candidates.sort(key=lambda x: getattr(x, sort_key), reverse=True)
         
         if progress_callback:
             progress_callback(
