@@ -69,7 +69,7 @@ they are not question-preset fields (see HARNESS_PARAMS):
   capacity from retrieval quality.
 - ``reader``: extractive vs generative. QASPER answers are frequently
   abstractive, which no span extractor can reach; the generative arm needs
-  Ollama (``ollama pull llama3.2:3b``) and is skipped with a clear error if it
+  Ollama (``ollama pull qwen3.5:2b``) and is skipped with a clear error if it
   is not there.
 
 Requires: GROBID + Qdrant running, and the corpus already indexed via
@@ -134,6 +134,7 @@ GRID = {
     # threshold and drop its ordering. Read through the attribution metrics and
     # recall@k, which is where the two uses of that score disagree.
     "rerank_order_by_retrieval": [True],
+    "retrieval_neighbours": [1, 2],
     "num_paraphrases": [2],
     "qa_model": ["deepset/deberta-v3-base-squad2", "deepset/roberta-base-squad2"],
     "reader": ["generative"],
@@ -165,6 +166,7 @@ CSV_METRICS = (
     + [f"recall@{k}" for k in RECALL_KS]
     + [f"precision@{k}" for k in RECALL_KS]
     + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
+       "highlighted_chars", "highlight_precision",
        f"recall@{RECALL_K}_reranked", "mrr_reranked", "latency_s"]
 )
 CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
@@ -319,6 +321,34 @@ def attributed_ids(answers, reranked) -> set[tuple[str, int]]:
     return {by_text[a.context] for a in answers if a.context in by_text}
 
 
+def highlight_scores(answers, reranked, gold_ids) -> dict:
+    """How much text the highlighter marks, and how much of it lands on gold.
+
+    evidence_precision counts chunk *identifiers*, so a reader marking one
+    sentence and a reader marking the whole paragraph score identically on it.
+    Highlighting is this system's deliverable and is judged by what appears on
+    the page, so the metric that decides it cannot be blind to how much appears.
+    These two columns are not: the extractive reader marks the sentences its
+    span falls in, the generative one marks whole chunks, and that difference is
+    now visible.
+
+    Marks are deduplicated by (chunk, start, end) because two answers extracted
+    from the same sentences put one highlight on the page, not two.
+
+    ponytail: gold is known per chunk, not per sentence, so a mark inside a gold
+    chunk counts wholly on-gold. This measures ink wasted on the wrong chunks,
+    not ink wasted inside the right one; sub-chunk gold would be needed for that.
+    """
+    by_text = {c.chunk.text: (c.chunk.pdf_hash, c.chunk.chunk_index)
+               for c in reranked}
+    marks = {(by_text[a.context], a.start_char, a.end_char)
+             for a in answers if a.context in by_text}
+    total = sum(end - start for _, start, end in marks)
+    on_gold = sum(end - start for chunk_id, start, end in marks if chunk_id in gold_ids)
+    return {"highlighted_chars": float(total),
+            "highlight_precision": on_gold / total if total else 0.0}
+
+
 TRACE_DEPTH = 30  # deepest k anyone can recompute offline; the sweep cuts at 10
 
 
@@ -376,6 +406,7 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
         scores = per_question_scores(ranked_ids, gold_ids, k)
         row[f"recall@{k}"] = scores[f"recall@{k}"]
         row[f"precision@{k}"] = scores[f"precision@{k}"]
+    row.update(highlight_scores(answers, rag.last_reranked, gold_ids))
     reranked_scores = per_question_scores(reranked_ids, gold_ids, RECALL_K)
     row[f"recall@{RECALL_K}_reranked"] = reranked_scores[f"recall@{RECALL_K}"]
     row["mrr_reranked"] = reranked_scores["mrr"]

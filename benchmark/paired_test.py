@@ -29,7 +29,8 @@ from benchmark.retrieval_metrics import bootstrap_ci
 # nothing. The deeper k's are left out - they move together with these two, and
 # every extra metric widens the uncorrected multiple-comparison problem.
 DEFAULT_METRICS = ("answer_f1", "answer_em", "recall@1", "recall@10",
-                   "evidence_precision", "evidence_recall", "evidence_f1")
+                   "evidence_precision", "evidence_recall", "evidence_f1",
+                   "highlighted_chars", "highlight_precision")
 
 
 def load_per_question(path: Path) -> dict[str, dict]:

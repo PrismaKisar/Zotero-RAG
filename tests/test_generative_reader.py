@@ -21,19 +21,24 @@ from models import Chunk, RerankedChunk
 class FakeClient:
     """Serves a canned reply and records the prompt it was asked to complete."""
 
-    def __init__(self, host=None, reply="", models=("llama3.2:3b",), fail=False):
+    def __init__(self, host=None, reply="", models=None, fail=False):
         self.host = host
         self.reply = reply
-        self.models = models
+        # Tracks the default rather than naming a model: the reader refuses to
+        # start against a model Ollama does not serve, so a hardcoded name here
+        # turns every test in this file red the next time the default changes.
+        self.models = (gr.DEFAULT_GENERATIVE_MODEL,) if models is None else models
         self.fail = fail
         self.prompt = None
+        self.think = None
 
     def list(self):
         entries = [type("Entry", (), {"model": name})() for name in self.models]
         return type("Listing", (), {"models": entries})()
 
-    def generate(self, model, prompt, options=None, keep_alive=None):
+    def generate(self, model, prompt, think=None, options=None, keep_alive=None):
         self.prompt = prompt
+        self.think = think
         if self.fail:
             raise ConnectionError("ollama went away")
         return {"response": self.reply}
@@ -122,6 +127,19 @@ def test_the_prompt_carries_only_the_top_chunks_numbered_from_one(reader):
     assert "[1] passage 0" in prompt
     assert "[2] passage 1" in prompt
     assert "passage 2" not in prompt
+
+
+def test_the_reasoning_mode_is_pinned_off(reader):
+    """Left to the server's default, Qwen3.5 may deliberate before answering.
+
+    That would multiply latency and make the reader a different component from
+    the one measured, so the flag is sent explicitly on every call rather than
+    left unset - and unset is what this test would catch.
+    """
+    engine = reader(reply="Answer [1].")
+    engine.extract_answers("Which datasets?", candidates(3), {})
+
+    assert engine.client.think is False
 
 
 def test_a_missing_ollama_model_fails_fast_with_the_pull_command(monkeypatch):

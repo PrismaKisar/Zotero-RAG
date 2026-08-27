@@ -22,6 +22,7 @@ from benchmark.ablation import (
     csv_row,
     dataset_name,
     load_completed_configs,
+    highlight_scores,
     load_gold_chunks,
     reader_key,
     retrieval_trace,
@@ -48,9 +49,12 @@ class _FakeReranked:
 
 
 class _FakeAnswer:
-    def __init__(self, text="some answer", context="ctx-1"):
+    def __init__(self, text="some answer", context="ctx-1",
+                 start_char=0, end_char=None):
         self.text = text
         self.context = context
+        self.start_char = start_char
+        self.end_char = len(context) if end_char is None else end_char
 
 
 class _FakeRag:
@@ -157,7 +161,7 @@ def test_run_config_defaults_the_paraphrase_axis_to_off():
 
 def test_reader_key_tells_the_two_reader_kinds_apart():
     extractive = types.SimpleNamespace(model_name="deepset/roberta-base-squad2")
-    generative = types.SimpleNamespace(reader_kind="generative", model_name="llama3.2:3b")
+    generative = types.SimpleNamespace(reader_kind="generative", model_name="qwen3.5:2b")
 
     assert reader_key(extractive) == "deepset/roberta-base-squad2"
     assert reader_key(generative) == "generative"
@@ -243,6 +247,50 @@ def test_attributed_ids_maps_answers_back_to_chunks():
     # an answer whose context is not among the reranked chunks is not attributable
     assert attributed_ids([_FakeAnswer(context="unknown")], reranked) == set()
     assert attributed_ids([], reranked) == set()
+
+
+def test_highlight_scores_count_the_marked_characters():
+    reranked = [_FakeReranked("h", 1, "a" * 100), _FakeReranked("h", 2, "b" * 100)]
+    # one sentence-sized mark on a gold chunk, one whole-chunk mark on a non-gold one
+    answers = [_FakeAnswer(context="a" * 100, start_char=0, end_char=20),
+               _FakeAnswer(context="b" * 100)]
+
+    scores = highlight_scores(answers, reranked, {("h", 1)})
+
+    assert scores["highlighted_chars"] == 120.0
+    assert scores["highlight_precision"] == 20 / 120
+
+
+def test_highlight_scores_separate_two_readers_that_evidence_precision_cannot():
+    """The point of the metric: same chunk cited, very different mark.
+
+    Both readers attribute to the one gold chunk, so evidence_precision is 1.0
+    for each. Only the character count tells them apart.
+    """
+    reranked = [_FakeReranked("h", 1, "c" * 400)]
+    gold = {("h", 1)}
+    extractive = [_FakeAnswer(context="c" * 400, start_char=100, end_char=180)]
+    generative = [_FakeAnswer(context="c" * 400)]
+
+    assert attributed_ids(extractive, reranked) == attributed_ids(generative, reranked)
+    assert highlight_scores(extractive, reranked, gold)["highlighted_chars"] == 80.0
+    assert highlight_scores(generative, reranked, gold)["highlighted_chars"] == 400.0
+
+
+def test_highlight_scores_count_one_mark_once():
+    """Two answers over the same span are one highlight on the page."""
+    reranked = [_FakeReranked("h", 1, "d" * 50)]
+    twice = [_FakeAnswer(text="first", context="d" * 50, start_char=0, end_char=10),
+             _FakeAnswer(text="second", context="d" * 50, start_char=0, end_char=10)]
+
+    assert highlight_scores(twice, reranked, {("h", 1)})["highlighted_chars"] == 10.0
+
+
+def test_highlight_scores_without_any_mark():
+    """No answers means no ink, and precision is 0.0 rather than a ZeroDivision."""
+    scores = highlight_scores([], [_FakeReranked("h", 1, "e" * 30)], {("h", 1)})
+
+    assert scores == {"highlighted_chars": 0.0, "highlight_precision": 0.0}
 
 
 def test_run_config_scores_retrieval_and_rerank_orderings_independently():

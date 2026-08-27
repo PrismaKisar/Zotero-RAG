@@ -18,8 +18,15 @@ from models import Answer, RerankedChunk
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GENERATIVE_MODEL = "llama3.2:3b"
+DEFAULT_GENERATIVE_MODEL = "qwen3.5:2b"
 DEFAULT_CONTEXT_CHUNKS = 8
+
+# Qwen3.5 ships a reasoning mode that is on by default on some paths. It is
+# pinned off here rather than left to the server's default: it would multiply
+# latency, and a model that deliberates before answering is a different
+# component, not the same one better configured. Ollama ignores the flag on
+# models without the capability, so this stays correct if the model changes.
+THINKING = False
 
 CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 SOURCES_LINE_PATTERN = re.compile(r"(?im)^\s*sources?\s*:.*$")
@@ -184,6 +191,7 @@ class GenerativeReader:
             response = self.client.generate(
                 model=self.model_name,
                 prompt=prompt,
+                think=THINKING,
                 options={
                     "temperature": 0.1,
                     "num_predict": 256,
