@@ -601,6 +601,61 @@ class ZoteroRAG:
         finally:
             self.qdrant_manager.close_connection()
 
+    def _neighbour_candidates(self, retrieved: list, seen: set, span: int) -> list:
+        """Chunks adjacent to the retrieved ones, for evidence spread over paragraphs.
+
+        Retrieval scores whole paragraphs independently, so evidence that runs
+        across two consecutive paragraphs is only found when both happen to
+        score well on their own. Scattered-evidence questions are retrieved far
+        worse than single-chunk ones, and nothing else in the pipeline addresses
+        that. Pulling in each hit's neighbours does, for the case where the
+        continuation is the next paragraph rather than a distant one.
+
+        A neighbour inherits the score of the hit that pulled it in: it was
+        never scored against the query, and inventing a score for it would put
+        a fabricated number into the ordering the retrieval metrics read. The
+        reranker rescores everything anyway, so the inherited value only decides
+        pre-rerank order. Note that neighbours bypass the retrieval threshold,
+        which is what makes them neighbours rather than hits.
+
+        Args:
+            retrieved: (chunk, score) pairs already found, in any order.
+            seen: chunk ids already present; mutated so neighbours stay unique.
+            span: how many paragraphs either side; 0 disables the whole thing.
+
+        Returns:
+            The (chunk, score) pairs to append, empty when ``span`` is 0.
+        """
+        if span <= 0 or not retrieved:
+            return []
+
+        wanted = {}
+        for chunk, score in retrieved:
+            for offset in range(-span, span + 1):
+                index = chunk.chunk_index + offset
+                # ponytail: no upper bound per document is known here, so a
+                # neighbour past the last paragraph simply misses in Qdrant.
+                if offset == 0 or index < 0:
+                    continue
+                neighbour_id = (chunk.pdf_hash, index)
+                if neighbour_id not in seen and neighbour_id not in wanted:
+                    wanted[neighbour_id] = score
+
+        if not wanted:
+            return []
+
+        ids = list(wanted)
+        chunks = self.qdrant_manager.fetch_chunks(ids)
+        found = []
+        for chunk in chunks:
+            chunk_id = (chunk.pdf_hash, chunk.chunk_index)
+            seen.add(chunk_id)
+            found.append((chunk, wanted[chunk_id]))
+
+        logger.debug(f"Neighbour expansion (span {span}): "
+                     f"{len(found)} added to {len(retrieved)} retrieved")
+        return found
+
     def answer_question(self,
                     question: str,
                     question_type: str = 'general',
@@ -693,6 +748,9 @@ class ZoteroRAG:
                         seen_chunks.add(chunk_id)
                         all_candidates.append((chunk, score))
             
+            all_candidates += self._neighbour_candidates(
+                all_candidates, seen_chunks, config.get('retrieval_neighbours', 0))
+
             # Deliberately unsorted: every consumer re-sorts by the score it
             # cares about (the reranker rescores, the bypass branch sorts
             # descending), so ordering the merged list here is dead work - and
