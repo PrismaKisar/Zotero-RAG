@@ -128,12 +128,23 @@ def aggregate(per_question: Sequence[tuple[Sequence[Hashable], Iterable[Hashable
 
 
 def summarize(rows: Sequence[dict], with_ci: bool = False) -> dict:
-    """Mean (and optional bootstrap CI) of every metric across per-question rows."""
+    """Mean (and optional bootstrap CI) of every metric across per-question rows.
+
+    A metric only some rows carry is averaged over the rows that carry it, and
+    the keys are the union across rows rather than the first row's - a metric
+    the first question happened not to produce is still reported.
+
+    That case is deliberate, not accidental: ``quote_match_rate`` is undefined
+    for a question the reader declined to answer, because no citation was
+    claimed there, and scoring it zero would report fabrication where there was
+    nothing to verify. The denominator behind such a mean is therefore smaller
+    than ``n_questions``; the per-question dump is what recovers it.
+    """
     if not rows:
         raise ValueError("rows cannot be empty")
     result = {}
-    for metric in rows[0]:
-        values = [row[metric] for row in rows]
+    for metric in dict.fromkeys(metric for row in rows for metric in row):
+        values = [row[metric] for row in rows if metric in row]
         result[metric] = sum(values) / len(values)
         if with_ci:
             lo, hi = bootstrap_ci(values)

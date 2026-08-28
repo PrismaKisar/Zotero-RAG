@@ -132,3 +132,20 @@ def test_aggregate_rejects_empty_batch():
 def test_summarize_rejects_empty_rows():
     with pytest.raises(ValueError):
         summarize([])
+
+
+def test_summarize_averages_a_partial_metric_over_the_rows_that_have_it():
+    """quote_match_rate is undefined for a question that claimed no citation."""
+    summary = summarize([{"f1": 1.0, "quote_match_rate": 0.5},
+                         {"f1": 0.0},
+                         {"f1": 0.5, "quote_match_rate": 1.0}])
+
+    assert summary["f1"] == 0.5
+    assert summary["quote_match_rate"] == 0.75  # not 0.5, which counts the gap as a zero
+    assert summary["n_questions"] == 3
+
+
+def test_summarize_reports_a_metric_the_first_row_happens_to_lack():
+    """Keying off row zero would drop it entirely, and silently."""
+    summary = summarize([{"f1": 1.0}, {"f1": 0.0, "quote_match_rate": 0.25}])
+    assert summary["quote_match_rate"] == 0.25
