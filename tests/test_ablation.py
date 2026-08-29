@@ -24,6 +24,7 @@ from benchmark.ablation import (
     load_completed_configs,
     highlight_scores,
     load_gold_chunks,
+    quote_scores,
     reader_key,
     retrieval_trace,
     run_config,
@@ -63,6 +64,8 @@ class _FakeRag:
 
     def __init__(self, answers=None, stage_times=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
+        # An extractive reader, which is never asked to quote anything.
+        self.qa_engine = types.SimpleNamespace()
         self.seen_call = None
         self.last_stage_times = {"expansion": 0.1, "retrieval": 0.2,
                                  "rerank": 0.3, "read": 0.4} \
@@ -103,7 +106,8 @@ def test_the_generative_ceiling_row_asks_for_the_generative_reader():
     configs = build_configs({"a": 1}, {})
     generative = next(c for c in configs if c["param"] == "oracle_context_generative")
     assert generative["config"]["reader"] == "generative"
-    assert wanted_reader(split_harness_params(generative["config"])[1], "any-model") == "generative"
+    assert wanted_reader(split_harness_params(generative["config"])[1],
+                         "any-model") == "generative:off:two_sentences:8"
 
 
 def test_build_configs_never_mutates_baseline():
@@ -121,7 +125,7 @@ def test_grid_ablates_parameters_that_reorder_results():
 def test_grid_ablates_the_reader_as_well_as_retrieval():
     """The reader axes answer a different question than the retrieval ones."""
     from benchmark.ablation import GRID
-    assert {"num_paraphrases", "qa_model", "reader"} <= set(GRID)
+    assert {"num_paraphrases", "qa_model", "reader", "citation_quote"} <= set(GRID)
 
 
 def test_split_harness_params_keeps_harness_axes_out_of_the_pipeline_config():
@@ -161,10 +165,11 @@ def test_run_config_defaults_the_paraphrase_axis_to_off():
 
 def test_reader_key_tells_the_two_reader_kinds_apart():
     extractive = types.SimpleNamespace(model_name="deepset/roberta-base-squad2")
-    generative = types.SimpleNamespace(reader_kind="generative", model_name="qwen3.5:2b")
+    generative = types.SimpleNamespace(reader_kind="generative:off",
+                                       model_name="qwen3.5:2b")
 
     assert reader_key(extractive) == "deepset/roberta-base-squad2"
-    assert reader_key(generative) == "generative"
+    assert reader_key(generative) == "generative:off"
 
 
 BASELINE_MODEL = "deepset/deberta-v3-large-squad2"
@@ -181,7 +186,79 @@ def test_wanted_reader_follows_the_qa_model_axis():
 
 def test_wanted_reader_lets_the_generative_arm_override_the_model_axis():
     assert wanted_reader({"reader": "generative", "qa_model": BASELINE_MODEL},
-                         BASELINE_MODEL) == "generative"
+                         BASELINE_MODEL) == "generative:off:two_sentences:8"
+
+
+def test_wanted_reader_treats_a_quote_mode_as_a_reader_of_its_own():
+    """Sharing one load across quote modes would score the first mode twice."""
+    assert wanted_reader({"citation_quote": "lenient"}, BASELINE_MODEL) == "generative:lenient:two_sentences:8"
+    assert wanted_reader({"citation_quote": "strict"}, BASELINE_MODEL) == "generative:strict:two_sentences:8"
+
+
+def test_wanted_reader_treats_an_answer_style_as_a_reader_of_its_own():
+    assert wanted_reader({"answer_style": "phrase"},
+                         BASELINE_MODEL) == "generative:off:phrase:8"
+
+
+def test_wanted_reader_treats_a_context_size_as_a_reader_of_its_own():
+    """Two context sizes are two readers: sharing a load would score one twice."""
+    assert wanted_reader({"max_context_chunks": 30},
+                         BASELINE_MODEL) == "generative:off:two_sentences:30"
+
+
+def test_a_context_size_implies_the_generative_reader():
+    """The extractive reader truncates nothing, so the axis has no meaning there."""
+    assert wanted_reader({"max_context_chunks": 4},
+                         BASELINE_MODEL).startswith("generative")
+
+
+def test_the_default_context_size_does_not_imply_the_generative_reader():
+    """Stating the default explicitly must not silently switch readers."""
+    from benchmark.ablation import CONTEXT_CHUNKS_DEFAULT
+
+    assert wanted_reader({"max_context_chunks": CONTEXT_CHUNKS_DEFAULT},
+                         BASELINE_MODEL) == BASELINE_MODEL
+
+
+def test_the_context_axis_is_applied_by_the_harness():
+    """Otherwise it reaches answer_question as an unknown preset field."""
+    from benchmark.ablation import HARNESS_PARAMS, split_harness_params
+
+    assert "max_context_chunks" in HARNESS_PARAMS
+    pipeline, harness = split_harness_params({"max_context_chunks": 16,
+                                              "result_limit": 30})
+    assert harness == {"max_context_chunks": 16}
+    assert pipeline == {"result_limit": 30}
+
+
+def test_the_harness_reader_defaults_match_the_readers_own():
+    """wanted_reader() rebuilds the identity string the reader assigns itself.
+
+    These constants are duplicated rather than imported, to keep the Ollama
+    client out of this module's import path. Duplicated means they can drift,
+    and drifting means every generative config reloads the model on every pass
+    while still scoring correctly - a silent, purely-cost failure.
+    """
+    from benchmark.ablation import (
+        ANSWER_STYLE_DEFAULT,
+        CONTEXT_CHUNKS_DEFAULT,
+        QUOTE_DEFAULT,
+    )
+    from generative_reader import (
+        DEFAULT_ANSWER_STYLE,
+        DEFAULT_CONTEXT_CHUNKS,
+        QUOTE_OFF,
+    )
+
+    assert QUOTE_DEFAULT == QUOTE_OFF
+    assert ANSWER_STYLE_DEFAULT == DEFAULT_ANSWER_STYLE
+    assert CONTEXT_CHUNKS_DEFAULT == DEFAULT_CONTEXT_CHUNKS
+
+
+def test_a_quote_mode_implies_the_generative_reader():
+    """The grid sets citation_quote alone; nothing else switches the reader."""
+    assert wanted_reader({"citation_quote": "lenient"},
+                         BASELINE_MODEL).startswith("generative")
 
 
 def test_apply_reader_is_a_no_op_when_the_loaded_reader_already_matches():
@@ -284,6 +361,26 @@ def test_highlight_scores_count_one_mark_once():
              _FakeAnswer(text="second", context="d" * 50, start_char=0, end_char=10)]
 
     assert highlight_scores(twice, reranked, {("h", 1)})["highlighted_chars"] == 10.0
+
+
+def _rag_with_quote_stats(stats):
+    return types.SimpleNamespace(qa_engine=types.SimpleNamespace(last_quote_stats=stats))
+
+
+def test_quote_match_rate_is_the_share_of_citations_that_check_out():
+    rag = _rag_with_quote_stats({"cited": 4, "matched": 3})
+    assert quote_scores(rag) == {"quote_match_rate": 0.75}
+
+
+def test_quote_match_rate_is_absent_for_a_reader_never_asked_to_quote():
+    """Zero here would read as a model that fabricates every citation."""
+    extractive = types.SimpleNamespace(qa_engine=types.SimpleNamespace())
+    assert quote_scores(extractive) == {}
+
+
+def test_quote_match_rate_is_absent_when_the_question_produced_no_citation():
+    """Nothing was claimed, so nothing was verified - and 0/0 is not 0."""
+    assert quote_scores(_rag_with_quote_stats({"cited": 0, "matched": 0})) == {}
 
 
 def test_highlight_scores_without_any_mark():

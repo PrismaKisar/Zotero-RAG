@@ -59,7 +59,7 @@ end-to-end score into the three things that can go wrong:
   is a property of span extraction, which is the distinction the whole reader
   axis exists to draw.
 
-Three axes are applied by the harness rather than by the pipeline config, since
+Six axes are applied by the harness rather than by the pipeline config, since
 they are not question-preset fields (see HARNESS_PARAMS):
 
 - ``num_paraphrases``: question expansion is a kwarg of answer_question, and it
@@ -71,6 +71,24 @@ they are not question-preset fields (see HARNESS_PARAMS):
   abstractive, which no span extractor can reach; the generative arm needs
   Ollama (``ollama pull qwen3.5:2b``) and is skipped with a clear error if it
   is not there.
+- ``citation_quote``: makes the generative reader reproduce the sentence it
+  used and looks that sentence up in the chunk, so the citation becomes
+  checkable rather than asserted. ``lenient`` narrows the highlight when the
+  lookup succeeds and falls back to the whole chunk when it does not;
+  ``strict`` discards the citation instead. ``quote_match_rate`` reports how
+  often the lookup succeeded, and is absent for readers never asked to quote.
+- ``answer_style``: how long the generative reader is asked to answer. Exact
+  Match is 0.000 under every configuration measured so far, and a two-sentence
+  answer cannot match a noun-phrase reference however correct it is, so the
+  prompt rule is an axis in its own right rather than a fixed part of the
+  reader.
+- ``max_context_chunks``: how many top-ranked chunks reach the generative
+  prompt. The extractive reader truncates nothing, so the two readers were
+  never compared at equal context; this axis is what separates a difference in
+  model from a difference in how much each was shown.
+
+The last three imply the generative reader and are ignored by the extractive
+one, which has no prompt and no context limit of its own.
 
 Requires: GROBID + Qdrant running, and the corpus already indexed via
 benchmark/index_pdfs.py (same output_base_dir passed here). The ``reader``
@@ -138,13 +156,45 @@ GRID = {
     "num_paraphrases": [2],
     "qa_model": ["deepset/deberta-v3-base-squad2", "deepset/roberta-base-squad2"],
     "reader": ["generative"],
+    # Phase-two intervention on the generative reader: ask it to reproduce the
+    # sentence it used and look that sentence up in the chunk. Implies the
+    # generative reader, since there is no citation to verify without one.
+    # Only the lenient policy is swept. Strict is the same citations with the
+    # unverifiable ones dropped, so running it here would generate a second time
+    # and make the two policies differ by sampling as well as by policy; it is
+    # measured exactly, from one generation, by benchmark/quote_policies.py.
+    "citation_quote": ["lenient"],
+    # Phase-two intervention on the prompt rather than on any component: Exact
+    # Match is 0.000 everywhere, and a two-sentence answer cannot match a
+    # noun-phrase reference however correct it is. Implies the generative
+    # reader, which is the only one with a prompt to vary.
+    "answer_style": ["one_sentence", "phrase"],
+    # How many top-ranked chunks reach the prompt. Implies the generative reader,
+    # which is the only one that truncates: the extractive reader scores every
+    # candidate the retrieval stage passes it. That asymmetry is the point - the
+    # reader comparison was never run at constant context, so a difference
+    # attributed to the model could be a difference in how much each was shown,
+    # and this axis is what tells the two apart. 8 is the shipped default and is
+    # already measured by the reader row, so it is not repeated here.
+    "max_context_chunks": [4, 16, 30],
 }
 
 # Axes the harness applies itself: not question-preset fields, so they are split
 # out before the merged config reaches answer_question. Absent from BASELINE on
 # purpose - each default is read off the pipeline as built, so there is no second
 # copy of the model name to drift.
-HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader")
+HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader", "citation_quote",
+                  "answer_style", "max_context_chunks")
+
+# The generative reader's own defaults, restated here rather than imported:
+# generative_reader pulls in the Ollama client, and this module is imported by
+# tests that must not need it. wanted_reader() builds the same identity string
+# the reader assigns itself, so these three must agree with QUOTE_OFF,
+# DEFAULT_ANSWER_STYLE and DEFAULT_CONTEXT_CHUNKS - the reader-axis tests check
+# that they do.
+QUOTE_DEFAULT = "off"
+ANSWER_STYLE_DEFAULT = "two_sentences"
+CONTEXT_CHUNKS_DEFAULT = 8
 
 # The protocol names recall@1 the primary retrieval metric, so the sweep can
 # not report k=10 alone: at k=10 a config that merely drags gold evidence from
@@ -166,7 +216,7 @@ CSV_METRICS = (
     + [f"recall@{k}" for k in RECALL_KS]
     + [f"precision@{k}" for k in RECALL_KS]
     + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
-       "highlighted_chars", "highlight_precision",
+       "highlighted_chars", "highlight_precision", "quote_match_rate",
        f"recall@{RECALL_K}_reranked", "mrr_reranked", "latency_s"]
 )
 CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
@@ -349,6 +399,21 @@ def highlight_scores(answers, reranked, gold_ids) -> dict:
             "highlight_precision": on_gold / total if total else 0.0}
 
 
+def quote_scores(rag) -> dict:
+    """Share of this question's citations whose quoted sentence is really there.
+
+    This is the verifiability number: with a generative reader the citation is
+    an assertion, and until it is looked up in the chunk nothing distinguishes a
+    faithful one from a fabricated one. Absent - not zero - for any reader that
+    was never asked to quote, so a column of zeros never reads as a model that
+    fabricates everything when it is a metric that did not apply.
+    """
+    stats = getattr(rag.qa_engine, "last_quote_stats", None)
+    if not stats or not stats["cited"]:
+        return {}
+    return {"quote_match_rate": stats["matched"] / stats["cited"]}
+
+
 TRACE_DEPTH = 30  # deepest k anyone can recompute offline; the sweep cuts at 10
 
 
@@ -407,6 +472,7 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
         row[f"recall@{k}"] = scores[f"recall@{k}"]
         row[f"precision@{k}"] = scores[f"precision@{k}"]
     row.update(highlight_scores(answers, rag.last_reranked, gold_ids))
+    row.update(quote_scores(rag))
     reranked_scores = per_question_scores(reranked_ids, gold_ids, RECALL_K)
     row[f"recall@{RECALL_K}_reranked"] = reranked_scores[f"recall@{RECALL_K}"]
     row["mrr_reranked"] = reranked_scores["mrr"]
@@ -433,9 +499,20 @@ def reader_key(reader) -> str:
 
 
 def wanted_reader(harness: dict, baseline_model: str) -> str:
-    """Which reader this config asks for, in ``reader_key`` terms."""
-    if harness.get("reader", "extractive") == "generative":
-        return "generative"
+    """Which reader this config asks for, in ``reader_key`` terms.
+
+    Any of the three generative-only axes implies the generative reader: the
+    extractive one returns a verbatim span already, so there is nothing to
+    verify, no prompt to vary, and no context window to size - it scores every
+    candidate retrieval passes it.
+    """
+    quote = harness.get("citation_quote", QUOTE_DEFAULT)
+    style = harness.get("answer_style", ANSWER_STYLE_DEFAULT)
+    chunks = harness.get("max_context_chunks", CONTEXT_CHUNKS_DEFAULT)
+    if (harness.get("reader", "extractive") == "generative"
+            or quote != QUOTE_DEFAULT or style != ANSWER_STYLE_DEFAULT
+            or chunks != CONTEXT_CHUNKS_DEFAULT):
+        return f"generative:{quote}:{style}:{chunks}"
     return harness.get("qa_model", baseline_model)
 
 
@@ -455,8 +532,13 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
     from qa_engine import QAEngine
 
     qa_model = harness.get("qa_model", baseline_engine.model_name)
-    if wanted == "generative":
-        rag.qa_engine = GenerativeReader(ollama_url=ollama_url)
+    if wanted.startswith("generative"):
+        rag.qa_engine = GenerativeReader(
+            ollama_url=ollama_url,
+            citation_quote=harness.get("citation_quote", QUOTE_DEFAULT),
+            answer_style=harness.get("answer_style", ANSWER_STYLE_DEFAULT),
+            max_context_chunks=harness.get("max_context_chunks",
+                                           CONTEXT_CHUNKS_DEFAULT))
     elif qa_model == baseline_engine.model_name:
         rag.qa_engine = baseline_engine
     else:
@@ -701,12 +783,24 @@ def main():
             # once its dependency is there; the rest of the sweep still lands.
             print(f"skipped: {entry['param']}={entry['value']} - {exc}")
             continue
+        # Reset per config, not per reader: apply_reader reuses a loaded reader
+        # whose identity already matches, so a counter left alone would carry
+        # one config's failures into the next one's report.
+        if hasattr(rag.qa_engine, "generation_failures"):
+            rag.qa_engine.generation_failures = 0
         if entry["param"].startswith("oracle_context"):
             rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
         else:
             rows = run_config(rag, questions, entry["config"], gold_chunks, gold_answers,
                               scope_to_gold_paper=entry["param"] == "oracle_paper",
                               score_answers=score_answers)
+        # Loud, because these are scored as unanswered questions: an arm with
+        # failures is measuring the service as well as the configuration.
+        lost = getattr(rag.qa_engine, "generation_failures", 0)
+        if lost:
+            print(f"WARNING: {entry['param']}={entry['value']} lost {lost} of "
+                  f"{len(questions)} questions to failed generation; "
+                  f"they are scored as unanswered")
         if not rows:
             print(f"skipped: {entry['param']}={entry['value']} scored no questions")
             continue
