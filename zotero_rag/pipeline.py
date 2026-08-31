@@ -614,9 +614,13 @@ class ZoteroRAG:
         A neighbour inherits the score of the hit that pulled it in: it was
         never scored against the query, and inventing a score for it would put
         a fabricated number into the ordering the retrieval metrics read. The
-        reranker rescores everything anyway, so the inherited value only decides
-        pre-rerank order. Note that neighbours bypass the retrieval threshold,
-        which is what makes them neighbours rather than hits.
+        reranker rescores everything anyway, so the inherited value only feeds
+        the rerank input. It does NOT decide rank: the caller ranks every
+        neighbour below every hit, because a chunk carrying a borrowed 0.9
+        would otherwise outrank a hit that genuinely scored 0.4 and push it out
+        of the top ten the retrieval metrics read. Note that neighbours bypass
+        the retrieval threshold, which is what makes them neighbours rather
+        than hits.
 
         Args:
             retrieved: (chunk, score) pairs already found, in any order.
@@ -748,6 +752,7 @@ class ZoteroRAG:
                         seen_chunks.add(chunk_id)
                         all_candidates.append((chunk, score))
             
+            hit_count = len(all_candidates)
             all_candidates += self._neighbour_candidates(
                 all_candidates, seen_chunks, config.get('retrieval_neighbours', 0))
 
@@ -756,6 +761,7 @@ class ZoteroRAG:
             # descending), so ordering the merged list here is dead work - and
             # the ascending sort that used to be here read as "best last".
             candidates = all_candidates
+            neighbour_flags = [i >= hit_count for i in range(len(candidates))]
 
             logger.debug(f"Question: {question}")
             logger.debug(f"Retrieved {len(candidates)} unique chunks from {len(question_variations)} variations")
@@ -770,9 +776,15 @@ class ZoteroRAG:
                 {
                     'chunk': c[0],
                     'retrieval_score': c[1],
-                    'kept': True
+                    'kept': True,
+                    # A neighbour inherits its parent's score, so a chunk
+                    # nothing scored can outrank a hit that scored lower.
+                    # Consumers reading a retrieval order must be able to put
+                    # every neighbour after every hit; the score alone cannot
+                    # say which is which.
+                    'is_neighbour': flag,
                 }
-                for c in candidates
+                for c, flag in zip(candidates, neighbour_flags)
             ]
         finally:
             self.qdrant_manager.close_connection()
@@ -795,9 +807,12 @@ class ZoteroRAG:
             # ponytail: bypass keeps the retrieval order (best first) so the
             # ablation can attribute the reranker's contribution; rerank_score
             # mirrors retrieval_score because nothing rescored the candidates.
+            bypass_order = sorted(
+                zip(candidates, neighbour_flags),
+                key=lambda pair: (pair[1], -pair[0][1]))
             reranked = [RerankedChunk(chunk=chunk, retrieval_score=score,
                                           rerank_score=score)
-                        for chunk, score in sorted(candidates, key=lambda c: c[1], reverse=True)]
+                        for (chunk, score), _ in bypass_order]
         
         # Update debug info with rerank results
         reranked_texts = {c.chunk.text for c in reranked}

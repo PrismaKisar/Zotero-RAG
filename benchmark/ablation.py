@@ -454,7 +454,12 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     references = gold_answers.get(question["question_id"], [])
     f1, answer_type = answer_f1(predicted_answer, references)
 
-    ranked = sorted(rag.last_candidates, key=lambda c: c["retrieval_score"], reverse=True)
+    # Neighbours after hits, then best first inside each group: a neighbour
+    # carries its parent's score, so ranking on the score alone would credit
+    # retrieval with a position it never assigned.
+    ranked = sorted(rag.last_candidates,
+                    key=lambda c: (c.get("is_neighbour", False),
+                                   -c["retrieval_score"]))
     ranked_ids = [(c["chunk"].pdf_hash, c["chunk"].chunk_index) for c in ranked]
     reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in rag.last_reranked]
     predicted_ids = attributed_ids(answers, rag.last_reranked)

@@ -132,6 +132,46 @@ def test_a_neighbour_already_retrieved_is_not_added_twice():
     assert by_index[6] == 0.4
 
 
+def test_a_neighbour_never_outranks_a_genuine_hit():
+    """The defect the first neighbour campaign measured with, now fixed.
+
+    Chunk 6 was retrieved and scored 0.4. Chunk 4 was never scored at all and
+    inherits 0.9 from chunk 5. Ranking on the score alone put the unscored
+    chunk above the scored one and pushed real hits out of the top ten, so the
+    recall the campaign reported was partly an artefact of the ordering.
+    """
+    hits = [(_chunk(5), 0.9), (_chunk(6), 0.4)]
+    indexed = {("h", 4): _chunk(4), ("h", 7): _chunk(7)}
+    rag = _rag(hits)
+    rag.qdrant_manager = _Qdrant(hits, indexed=indexed)
+    rag.answer_question("q", num_paraphrases=0, overrides={"retrieval_neighbours": 1})
+
+    order = sorted(rag.last_candidates,
+                   key=lambda c: (c["is_neighbour"], -c["retrieval_score"]))
+    assert [c["chunk"].chunk_index for c in order] == [5, 6, 4, 7]
+
+
+def test_without_neighbours_nothing_is_flagged():
+    """The flag must not perturb the rows the campaign already measured."""
+    rag = _rag([(_chunk(5), 0.9), (_chunk(6), 0.4)])
+    rag.answer_question("q", num_paraphrases=0)
+
+    assert [c["is_neighbour"] for c in rag.last_candidates] == [False, False]
+
+
+def test_the_rerank_bypass_also_puts_neighbours_last():
+    """With reranking off nothing rescores, so the bypass order is the order."""
+    hits = [(_chunk(5), 0.9), (_chunk(6), 0.4)]
+    indexed = {("h", 4): _chunk(4), ("h", 7): _chunk(7)}
+    rag = _rag(hits)
+    rag.qdrant_manager = _Qdrant(hits, indexed=indexed)
+    rag.answer_question("q", num_paraphrases=0,
+                        overrides={"retrieval_neighbours": 1,
+                                   "rerank_enabled": False})
+
+    assert [c.chunk.chunk_index for c in rag.last_reranked] == [5, 6, 4, 7]
+
+
 def test_a_full_call_times_every_stage():
     rag = _rag([(_chunk(1), 0.9)], answers=[
         Answer(text="a", context="text-1", page_number=1, score=1.0,
