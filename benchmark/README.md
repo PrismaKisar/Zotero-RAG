@@ -81,6 +81,39 @@ i nostri chunk, quindi misura i soli falsi negativi del criterio):
 QASPER_DEV=qasper-dev-v0.3.json pytest tests/test_align_evidence.py
 ```
 
+## Golden set di test (held-out)
+
+La run finale gira sul test split ufficiale, mai toccato dalle scelte di fase due.
+Stessi criteri, stessa soglia di allineamento, collection Qdrant separata.
+
+```
+python -m benchmark.build_qasper_golden_set qasper-test-v0.3.json \
+    --out-dir output_qasper_test --papers 350 --seed 42 --pdf-dir output_qasper_test/pdfs
+python -m benchmark.extract_chunks --pdf-dir output_qasper_test/pdfs --out-dir output_qasper_test/chunks
+python -m benchmark.align_evidence output_qasper_test/golden_set.jsonl \
+    --chunks-dir output_qasper_test/chunks --out-dir output_qasper_test --sample 30 --seed 42
+python -m benchmark.index_pdfs --pdf-dir output_qasper_test/pdfs \
+    --out-file output_qasper_test/pdf_hash_map.json --work-dir output_qasper_test/grobid \
+    --qdrant-collection-suffix _qasper_test
+python -m benchmark.ablation --golden-dir output_qasper_test \
+    --hash-map output_qasper_test/pdf_hash_map.json --work-dir output_qasper_test/grobid \
+    --out-file output_qasper_test/ablation_results.csv \
+    --strata-file output_qasper_test/ablation_by_stratum.md \
+    --collection-suffix _qasper_test --only baseline,reader,answer_style
+```
+
+Risultato: **350 paper, 740 domande, 340 allineate** (46,0%; paragrafi 56,0%).
+348/350 PDF scaricati. Zero sovrapposizione coi 100 paper del dev, verificata sui
+`paper_id`. Il set è preso per intero anziché campionato: a 100 paper rendeva 82
+domande, meno del dev, perché il test split ha più domande multi-evidenza (56,6%
+contro 41,3%) e il criterio richiede che tutti i paragrafi si allineino. La
+decisione è stata presa sulla resa dell'allineamento, prima di eseguire qualsiasi
+configurazione contro il set.
+
+**Va usato una volta sola.** Un set held-out vale finché nessuna decisione lo ha
+visto; rifarlo dopo aver guardato i risultati lo trasforma in un secondo set di
+sviluppo.
+
 ## Golden set QASA
 
 Secondo dataset passage-level, stessa infrastruttura di allineamento. Richiede
@@ -137,7 +170,10 @@ irriproducibile.
 
 ## Scoring
 
-`qasper_evaluator.py` è lo script ufficiale, copiato senza modifiche. Va usato
+`qasper_evaluator.py` è lo script ufficiale. Rispetto al rilascio ha solo
+riordino degli import e due riscritture equivalenti (`max(...)` al posto di
+`sorted(..., reverse=True)[0]`, che su ex aequo restituisce lo stesso elemento, e
+`with open`): la semantica di punteggio è invariata. Va usato
 sul `golden_gold.json` prodotto dal builder, non sul rilascio completo, altrimenti
 conta come predizioni mancanti tutte le domande escluse dal golden set.
 

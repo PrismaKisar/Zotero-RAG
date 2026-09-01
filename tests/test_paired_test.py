@@ -80,6 +80,19 @@ def test_compare_all_skips_baseline_and_covers_every_other_config(tmp_path):
     assert [r["delta"] for r in rows] == [pytest.approx(0.2), pytest.approx(-0.1)]
 
 
+def test_compare_all_measures_against_the_named_reference(tmp_path):
+    write_jsonl(tmp_path / "baseline.jsonl", [row("q1", answer_f1=0.2)])
+    write_jsonl(tmp_path / "generative.jsonl", [row("q1", answer_f1=0.5)])
+    write_jsonl(tmp_path / "variant_a.jsonl", [row("q1", answer_f1=0.4)])
+
+    rows = compare_all(tmp_path, metrics=("answer_f1",), reference="generative.jsonl")
+
+    # The reference drops out of the comparison and the shipped baseline becomes
+    # just another config, so the delta is read against 0.5 and not against 0.2.
+    assert {r["config"] for r in rows} == {"baseline", "variant_a"}
+    assert {r["config"]: r["delta"] for r in rows}["variant_a"] == pytest.approx(-0.1)
+
+
 def test_compare_all_rejects_a_directory_without_a_baseline(tmp_path):
     write_jsonl(tmp_path / "variant_a.jsonl", [row("q1", answer_f1=0.4)])
     with pytest.raises(SystemExit):

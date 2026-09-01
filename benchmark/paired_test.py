@@ -69,11 +69,17 @@ def compare(baseline: dict[str, dict], other: dict[str, dict],
 
 
 def compare_all(per_question_dir: Path,
-                metrics: tuple[str, ...] = DEFAULT_METRICS) -> list[dict]:
-    """Every config in the directory against baseline.jsonl, one row per metric."""
-    baseline_path = per_question_dir / "baseline.jsonl"
+                metrics: tuple[str, ...] = DEFAULT_METRICS,
+                reference: str = "baseline.jsonl") -> list[dict]:
+    """Every config in the directory against ``reference``, one row per metric.
+
+    The reference is nameable because the shipped baseline is not always the
+    right comparison: an intervention layered on the generative reader has to be
+    read against that reader, or the reader's own effect is counted as its own.
+    """
+    baseline_path = per_question_dir / reference
     if not baseline_path.exists():
-        raise SystemExit(f"no baseline.jsonl in {per_question_dir} - "
+        raise SystemExit(f"no {reference} in {per_question_dir} - "
                          "point --per-question at a finished ablation run")
     baseline = load_per_question(baseline_path)
 
@@ -105,9 +111,11 @@ def main():
     parser.add_argument("--per-question", default="output_qasper/per_question",
                         help="directory of per-question JSONL written by ablation.py")
     parser.add_argument("--out-file", default="output_qasper/paired_test.md")
+    parser.add_argument("--reference", default="baseline.jsonl",
+                        help="file in --per-question every config is compared against")
     args = parser.parse_args()
 
-    rows = compare_all(Path(args.per_question))
+    rows = compare_all(Path(args.per_question), reference=args.reference)
     text = to_markdown(rows)
     Path(args.out_file).write_text(text)
     print(text)
