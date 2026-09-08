@@ -5,7 +5,6 @@ from benchmark.retrieval_metrics import (
     bootstrap_ci,
     evidence_prf,
     per_question_scores,
-    precision_at_k,
     recall_at_k,
     reciprocal_rank,
     summarize,
@@ -26,19 +25,15 @@ def test_recall_at_k_rejects_empty_gold():
         recall_at_k(["a"], set(), k=1)
 
 
-def test_precision_at_k_divides_by_what_was_returned():
-    assert precision_at_k(["a", "b", "c", "d"], {"a", "c"}, k=4) == 0.5
-    assert precision_at_k(["a", "b"], {"a"}, k=1) == 1.0
-    # fewer results than k: denominator is the short list, not k
-    assert precision_at_k(["a"], {"a"}, k=10) == 1.0
-    assert precision_at_k([], {"a"}, k=10) == 0.0
+def test_attribution_not_recall_is_what_sees_over_returning():
+    """Pins which metric carries the job precision@k was removed from.
 
-
-def test_precision_and_recall_disagree_when_returning_extra_chunks():
-    """The point of adding precision@k: recall alone cannot see over-returning."""
+    Recall@k cannot fall when extra non-gold chunks are returned; the
+    attribution metrics can, because they score what the system committed to.
+    """
     ranked, gold = ["a", "x", "y", "z"], {"a"}
     assert recall_at_k(ranked, gold, k=4) == 1.0
-    assert precision_at_k(ranked, gold, k=4) == 0.25
+    assert evidence_prf(ranked, gold)["evidence_precision"] == 0.25
 
 
 def test_reciprocal_rank_of_first_hit():
@@ -99,7 +94,6 @@ def test_bootstrap_ci_degenerate_cases():
 def test_per_question_scores_defaults_predicted_to_top_k():
     scores = per_question_scores(["a", "x"], {"a"}, k=2)
     assert scores["recall@2"] == 1.0
-    assert scores["precision@2"] == 0.5
     assert scores["mrr"] == 1.0
     assert scores["evidence_precision"] == 0.5
 

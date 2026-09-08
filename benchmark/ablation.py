@@ -15,7 +15,7 @@ Scores:
 
 - Answer F1, per question, via qasper_evaluator.token_f1_score (the official
   QASPER scorer's own token F1, max over annotator references). QASPER only.
-- Recall@k / precision@k / MRR via benchmark/retrieval_metrics.py, against the
+- Recall@k / MRR via benchmark/retrieval_metrics.py, against the
   (pdf_hash, chunk_index) pairs benchmark/align_evidence.py matched.
 - Evidence precision/recall/F1 over the chunks the system actually attributed
   (the ones the highlighter would mark). This replaces QASPER's official
@@ -26,8 +26,10 @@ Scores:
 The grid ablates parameters that *reorder* results, not just filter them.
 Thresholds alone cannot move recall@k (which scores the ranked list before the
 cut), so a threshold-only grid is unfalsifiable by construction; thresholds are
-kept in the grid but are now read through precision@k and evidence F1, which do
-see the cut.
+kept in the grid but are read through the attribution metrics, which score what
+the system committed to and therefore do see the cut. precision@k was added for
+that role first and removed once it turned out to score the same pre-cut list as
+recall@k - see benchmark/retrieval_metrics.py.
 
 Wall-clock latency is recorded per question, end to end and broken down by
 pipeline stage (LATENCY_STAGES). The breakdown is what makes the number
@@ -59,11 +61,9 @@ end-to-end score into the three things that can go wrong:
   is a property of span extraction, which is the distinction the whole reader
   axis exists to draw.
 
-Six axes are applied by the harness rather than by the pipeline config, since
+Five axes are applied by the harness rather than by the pipeline config, since
 they are not question-preset fields (see HARNESS_PARAMS):
 
-- ``num_paraphrases``: question expansion is a kwarg of answer_question, and it
-  costs a T5 generation plus one extra retrieval per variation. Baseline 0.
 - ``qa_model``: swaps the extractive reader. deberta-v3-large is 24 layers
   against 12 for the two base-sized alternatives, so this axis separates reader
   capacity from retrieval quality.
@@ -133,9 +133,10 @@ BASELINE = PRESETS["general"]
 # on its *own* stage's score scale, measured rather than guessed - a pair outside
 # the observed range is a no-op row that reads as a null result. rerank_threshold
 # is on the cross-encoder's probability scale, where gold evidence sits around
-# p50 0.007. retrieval_threshold is dense cosine, where the top-30 measured
-# 0.63-0.82: the former 0.35/0.55 pair never cut a single candidate, so 0.65/0.72
-# straddle the observed median instead. qa_score_threshold spans 0.006-0.97 since
+# p50 0.007. retrieval_threshold was swept at 0.65/0.72, inside the band where a
+# dense cosine cut acts; it has since been removed from the pipeline (see
+# question_presets.py), and its rows in existing results are the evidence for
+# that. qa_score_threshold spans 0.006-0.97 since
 # span scoring became a real softmax product. The ranking knobs get their full
 # discrete range (3 modes, reranker on/off) plus a narrow/wide result_limit. Not
 # exhaustively tuned - the point is which stage moves the needle, not the optimum.
@@ -143,7 +144,6 @@ GRID = {
     "retrieval_mode": ["dense", "sparse"],
     "rerank_enabled": [False],
     "result_limit": [10, 60],
-    "retrieval_threshold": [0.65, 0.72],
     "rerank_threshold": [0.0002, 0.01],
     "qa_score_threshold": [0.05, 0.20],
     "min_answer_words": [1, 5],
@@ -153,7 +153,6 @@ GRID = {
     # recall@k, which is where the two uses of that score disagree.
     "rerank_order_by_retrieval": [True],
     "retrieval_neighbours": [1, 2],
-    "num_paraphrases": [2],
     "qa_model": ["deepset/deberta-v3-base-squad2", "deepset/roberta-base-squad2"],
     "reader": ["generative"],
     # Phase-two intervention on the generative reader: ask it to reproduce the
@@ -183,8 +182,8 @@ GRID = {
 # out before the merged config reaches answer_question. Absent from BASELINE on
 # purpose - each default is read off the pipeline as built, so there is no second
 # copy of the model name to drift.
-HARNESS_PARAMS = ("num_paraphrases", "qa_model", "reader", "citation_quote",
-                  "answer_style", "max_context_chunks")
+HARNESS_PARAMS = ("qa_model", "reader", "citation_quote", "answer_style",
+                  "max_context_chunks")
 
 # The generative reader's own defaults, restated here rather than imported:
 # generative_reader pulls in the Ollama client, and this module is imported by
@@ -214,10 +213,10 @@ ANSWER_METRICS = ["answer_f1", "answer_em"]
 CSV_METRICS = (
     ANSWER_METRICS
     + [f"recall@{k}" for k in RECALL_KS]
-    + [f"precision@{k}" for k in RECALL_KS]
     + ["mrr", "evidence_precision", "evidence_recall", "evidence_f1",
-       "highlighted_chars", "highlight_precision", "quote_match_rate",
-       f"recall@{RECALL_K}_reranked", "mrr_reranked", "latency_s"]
+       "highlighted_chars", "highlight_precision", "quote_match_rate"]
+    + [f"recall@{k}_reranked" for k in RECALL_KS]
+    + ["mrr_reranked", "latency_s"]
 )
 CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
 
@@ -225,7 +224,7 @@ CI_METRICS = ["answer_f1", "recall@1", f"recall@{RECALL_K}", "evidence_f1"]
 # a fixed list rather than whatever keys the call happened to set: a stage the
 # call never reached scores 0.0, so every row has the same columns and the means
 # stay comparable across configs.
-LATENCY_STAGES = ("expansion", "retrieval", "rerank", "read")
+LATENCY_STAGES = ("retrieval", "rerank", "read")
 CSV_METRICS += [f"latency_{stage}_s" for stage in LATENCY_STAGES]
 
 
@@ -473,14 +472,20 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     for k in RECALL_KS:
         if k == RECALL_K:
             continue
-        scores = per_question_scores(ranked_ids, gold_ids, k)
-        row[f"recall@{k}"] = scores[f"recall@{k}"]
-        row[f"precision@{k}"] = scores[f"precision@{k}"]
+        row[f"recall@{k}"] = per_question_scores(ranked_ids, gold_ids, k)[f"recall@{k}"]
     row.update(highlight_scores(answers, rag.last_reranked, gold_ids))
     row.update(quote_scores(rag))
-    reranked_scores = per_question_scores(reranked_ids, gold_ids, RECALL_K)
-    row[f"recall@{RECALL_K}_reranked"] = reranked_scores[f"recall@{RECALL_K}"]
-    row["mrr_reranked"] = reranked_scores["mrr"]
+    # Every k, not just the deepest. The reranker is invisible to the plain
+    # recall columns, which score the pre-rerank list, so these are the only
+    # view of that stage - and at k=10 a reranker that lifts gold evidence from
+    # rank 9 to rank 2 scores the same as one that did nothing, which is the
+    # movement it is bought for. One k was a single observation on a whole
+    # pipeline stage; the protocol names recall@1 primary for this exact reason.
+    for k in RECALL_KS:
+        row[f"recall@{k}_reranked"] = per_question_scores(
+            reranked_ids, gold_ids, k)[f"recall@{k}"]
+    row["mrr_reranked"] = per_question_scores(
+        reranked_ids, gold_ids, RECALL_K)["mrr"]
     row["record"] = dict(question, answer_type=answer_type, **retrieval_trace(
         ranked_ids, reranked_ids, predicted_ids, gold_ids))
     return row
@@ -547,9 +552,7 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
     elif qa_model == baseline_engine.model_name:
         rag.qa_engine = baseline_engine
     else:
-        # The paraphraser belongs to the baseline engine; an alternative reader
-        # never needs it, since one-at-a-time never moves both axes together.
-        rag.qa_engine = QAEngine(model_name=qa_model, enable_question_expansion=False)
+        rag.qa_engine = QAEngine(model_name=qa_model)
 
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
@@ -577,7 +580,6 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
         started = time.perf_counter()
         answers = rag.answer_question(
             q["question"], question_type="general", overrides=pipeline_config,
-            num_paraphrases=harness.get("num_paraphrases", 0),
             pdf_hashes=pdf_hashes)
         elapsed = time.perf_counter() - started
         row = score_question(q, answers, rag, gold_chunks, gold_answers,
@@ -619,7 +621,7 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
                           for p in chunks]
             started = time.perf_counter()
             answers = rag.qa_engine.extract_answers(
-                q["question"], candidates, config, question_variations=[q["question"]])
+                q["question"], candidates, config)
             elapsed = time.perf_counter() - started
             predicted = answers[0].text if answers else ""
             references = gold_answers.get(q["question_id"], [])

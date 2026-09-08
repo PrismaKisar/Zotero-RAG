@@ -2,11 +2,20 @@
 
 Not covered by ``qasper_evaluator.py`` (see benchmark/README.md):
 
-- recall@k / precision@k / MRR isolate the retrieval stage, which acts before
-  QA extraction and is invisible to answer F1 alone. precision@k (and the
-  threshold-aware ``evidence_prf``) is what makes the filtering parameters
-  measurable at all: recall@k scores the ranked list *before* the cut, so a
-  threshold can never move it.
+- recall@k / MRR isolate the retrieval stage, which acts before QA extraction
+  and is invisible to answer F1 alone. Both score the ranked list *before* the
+  cut, so no threshold can move them; ``evidence_prf`` is what makes the
+  filtering parameters measurable.
+
+  precision@k was carried here for exactly that job and did not do it, so it is
+  gone. Two independent reasons, both checkable without running anything. It
+  scored the same ``ranked_ids`` recall@k scores, hence saw the same cuts and no
+  others. And with a median of one gold chunk per question (89 of 120 on
+  QASPER), precision@k = recall@k * |gold| / k: a rescaling, not a second
+  measurement. Empirically precision@10 was 0.042 in the 13 of 20 campaign rows
+  where recall@10 was 0.343, and moved only where recall@10 moved. A metric's
+  ceiling has to be checked against the data's own distribution before it is
+  adopted; |gold|/k here made it degenerate from the start.
 - ``evidence_prf`` is the attribution metric the thesis needs for the
   highlighting deliverable. It deliberately scores *chunk ids*, not strings:
   QASPER's official Evidence F1 matches evidence by exact string equality
@@ -30,22 +39,6 @@ def recall_at_k(ranked_ids: Sequence[Hashable], gold_ids: Iterable[Hashable], k:
         raise ValueError("gold_ids cannot be empty")
     top_k = set(ranked_ids[:k])
     return len(gold & top_k) / len(gold)
-
-
-def precision_at_k(ranked_ids: Sequence[Hashable], gold_ids: Iterable[Hashable], k: int) -> float:
-    """Fraction of the top ``k`` returned ids that are gold.
-
-    Denominator is what was actually returned (``min(k, len(ranked_ids))``), so
-    a configuration that returns fewer, better chunks scores higher - this is
-    the half of the picture recall@k structurally cannot see.
-    """
-    gold = set(gold_ids)
-    if not gold:
-        raise ValueError("gold_ids cannot be empty")
-    top_k = ranked_ids[:k]
-    if not top_k:
-        return 0.0
-    return len(gold & set(top_k)) / len(top_k)
 
 
 def reciprocal_rank(ranked_ids: Sequence[Hashable], gold_ids: Iterable[Hashable]) -> float:
@@ -107,7 +100,6 @@ def per_question_scores(ranked_ids: Sequence[Hashable], gold_ids: Iterable[Hasha
     """
     scores = {
         f"recall@{k}": recall_at_k(ranked_ids, gold_ids, k),
-        f"precision@{k}": precision_at_k(ranked_ids, gold_ids, k),
         "mrr": reciprocal_rank(ranked_ids, gold_ids),
     }
     scores.update(evidence_prf(

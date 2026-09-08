@@ -74,13 +74,6 @@ perché un retriever che recupera un chunk alla volta non li darebbe comunque
 per intero. Tasso d'errore sul campione di validazione a mano (n=30, seed
 42), col criterio definitivo: **0% (0/30)**.
 
-Validazione della soglia senza GROBID (usa i paragrafi di QASPER come se fossero
-i nostri chunk, quindi misura i soli falsi negativi del criterio):
-
-```
-QASPER_DEV=qasper-dev-v0.3.json pytest tests/test_align_evidence.py
-```
-
 ## Golden set di test (held-out)
 
 La run finale gira sul test split ufficiale, mai toccato dalle scelte di fase due.
@@ -195,10 +188,18 @@ sui risultati intermedi del retrieval.
 | Metrica | Cosa risponde | Perché non basta lo script ufficiale |
 |---|---|---|
 | `recall@k` | il retrieval trova i chunk gold? | assente dallo scorer QASPER |
-| `precision@k` | quanto rumore restituisce insieme? | recall@k valuta la lista *prima* del taglio: nessuna soglia può muoverla |
 | `mrr` | quanto in alto li mette? | assente |
 | `evidence_precision/recall/f1` | l'attribuzione (highlighting) è corretta? | l'Evidence F1 ufficiale confronta stringhe esatte contro testo LaTeX che i paragrafi GROBID non eguagliano mai: vale 0.0 per qualsiasi configurazione |
 | `bootstrap_ci` | la differenza tra due run è reale? | su 120 domande allineate un punto di differenza è rumore |
+
+`precision@k` è stata usata e poi rimossa. Era stata aggiunta per rendere
+misurabili i parametri di filtro, e non lo faceva: era calcolata sulla stessa
+lista `ranked_ids` di `recall@k`, quindi vedeva gli stessi tagli e nessun altro.
+In più, con mediana di un chunk gold per domanda (89 su 120 in QASPER), vale
+`recall@k * |gold| / k` — una riscalatura, non una seconda misura. Il ruolo per
+cui era stata introdotta lo svolgono le metriche di attribuzione, che valutano
+ciò a cui il sistema si è impegnato. Le colonne restano nei CSV e nei JSONL già
+prodotti, che non vengono riscritti.
 
 `evidence_*` valuta gli id `(pdf_hash, chunk_index)` che il sistema ha
 effettivamente attribuito alla risposta, non le stringhe: è la controparte

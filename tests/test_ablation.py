@@ -67,8 +67,7 @@ class _FakeRag:
         # An extractive reader, which is never asked to quote anything.
         self.qa_engine = types.SimpleNamespace()
         self.seen_call = None
-        self.last_stage_times = {"expansion": 0.1, "retrieval": 0.2,
-                                 "rerank": 0.3, "read": 0.4} \
+        self.last_stage_times = {"retrieval": 0.2, "rerank": 0.3, "read": 0.4} \
             if stage_times is None else stage_times
         self.last_candidates = [
             {"chunk": _FakeChunk("h", 2, "ctx-2"), "retrieval_score": 0.9},
@@ -76,10 +75,8 @@ class _FakeRag:
         ]
         self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
 
-    def answer_question(self, question, question_type, overrides, num_paraphrases,
-                        pdf_hashes=None):
-        self.seen_call = {"overrides": overrides, "num_paraphrases": num_paraphrases,
-                          "pdf_hashes": pdf_hashes}
+    def answer_question(self, question, question_type, overrides, pdf_hashes=None):
+        self.seen_call = {"overrides": overrides, "pdf_hashes": pdf_hashes}
         return self._answers
 
 
@@ -125,15 +122,15 @@ def test_grid_ablates_parameters_that_reorder_results():
 def test_grid_ablates_the_reader_as_well_as_retrieval():
     """The reader axes answer a different question than the retrieval ones."""
     from benchmark.ablation import GRID
-    assert {"num_paraphrases", "qa_model", "reader", "citation_quote"} <= set(GRID)
+    assert {"qa_model", "reader", "citation_quote"} <= set(GRID)
 
 
 def test_split_harness_params_keeps_harness_axes_out_of_the_pipeline_config():
-    config = {"retrieval_mode": "dense", "num_paraphrases": 2, "reader": "generative"}
+    config = {"retrieval_mode": "dense", "qa_model": "m", "reader": "generative"}
     pipeline_config, harness = split_harness_params(config)
 
     assert pipeline_config == {"retrieval_mode": "dense"}
-    assert harness == {"num_paraphrases": 2, "reader": "generative"}
+    assert harness == {"qa_model": "m", "reader": "generative"}
 
 
 def test_split_harness_params_omits_axes_the_config_leaves_at_baseline():
@@ -148,19 +145,12 @@ def test_harness_params_are_not_question_preset_fields():
     assert not set(HARNESS_PARAMS) & set(PRESETS["general"])
 
 
-def test_run_config_forwards_the_paraphrase_axis_without_leaking_it():
+def test_run_config_keeps_harness_axes_out_of_the_pipeline_overrides():
     rag = _FakeRag()
-    run_config(rag, QUESTIONS, {"retrieval_mode": "dense", "num_paraphrases": 2},
+    run_config(rag, QUESTIONS, {"retrieval_mode": "dense", "qa_model": "m"},
                {"q1": {("h", 1)}}, GOLD_ANSWERS)
 
-    assert rag.seen_call["num_paraphrases"] == 2
     assert rag.seen_call["overrides"] == {"retrieval_mode": "dense"}
-
-
-def test_run_config_defaults_the_paraphrase_axis_to_off():
-    rag = _FakeRag()
-    run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)
-    assert rag.seen_call["num_paraphrases"] == 0
 
 
 def test_reader_key_tells_the_two_reader_kinds_apart():
@@ -410,8 +400,9 @@ def test_run_config_evidence_prf_scores_only_attributed_chunks():
     # the answer came from ctx-1 = (h,1), which is exactly the gold chunk
     assert row["evidence_precision"] == 1.0
     assert row["evidence_f1"] == 1.0
-    # while precision@k is diluted by the second, non-gold retrieved chunk
-    assert row[f"precision@{RECALL_K}"] == 0.5
+    # recall@k, scoring the whole pre-cut list, cannot see the second
+    # non-gold retrieved chunk that attribution just scored around
+    assert row[f"recall@{RECALL_K}"] == 1.0
 
 
 def test_run_config_penalises_attributing_the_wrong_chunk():
@@ -445,7 +436,7 @@ class _FakeQaEngine:
         self._answers = answers
         self.seen_candidates = None
 
-    def extract_answers(self, question, candidates, config, question_variations=None):
+    def extract_answers(self, question, candidates, config):
         self.seen_candidates = candidates
         return self._answers
 
@@ -523,9 +514,9 @@ def test_load_completed_configs_reads_param_value_pairs(tmp_path):
     out = tmp_path / "results.csv"
     out.write_text("param,value,answer_f1\n"
                    "baseline,,0.5\n"
-                   "retrieval_threshold,0.35,0.4\n")
+                   "result_limit,10,0.4\n")
 
-    assert load_completed_configs(out) == {("baseline", ""), ("retrieval_threshold", "0.35")}
+    assert load_completed_configs(out) == {("baseline", ""), ("result_limit", "10")}
 
 
 def test_check_schema_compatible_allows_missing_file(tmp_path):
@@ -605,10 +596,24 @@ def test_run_config_reports_every_protocol_k_not_just_the_deepest():
     """The first campaign could only report k=10; recall@1 is the primary metric."""
     row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
     for k in RECALL_KS:
-        assert f"recall@{k}" in row and f"precision@{k}" in row
+        assert f"recall@{k}" in row
     # gold (h,1) sits second in the pre-rerank order, so it is missed at k=1
     assert row["recall@1"] == 0.0
     assert row["recall@3"] == 1.0
+
+
+def test_reranked_recall_is_reported_at_every_k_not_only_the_deepest():
+    """The reranker's whole effect can be invisible at the deepest k alone.
+
+    The fixture puts gold second before reranking and first after, which is the
+    rank 9 -> rank 2 movement a reranker is bought for. At k=10 both orders
+    score 1.0 and the stage looks inert; only k=1 separates them.
+    """
+    row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    for k in RECALL_KS:
+        assert f"recall@{k}_reranked" in row
+    assert row["recall@1"] == 0.0 and row["recall@1_reranked"] == 1.0
+    assert row["recall@10"] == row["recall@10_reranked"] == 1.0
 
 
 def test_run_config_stores_the_ranked_ids_so_new_metrics_need_no_rerun():
@@ -682,7 +687,7 @@ def test_a_stage_the_call_never_reached_scores_zero_not_a_missing_column():
     question short-circuited would silently drop the stage columns for the whole
     config rather than for that one question.
     """
-    rag = _FakeRag(stage_times={"expansion": 0.1, "retrieval": 0.2})
+    rag = _FakeRag(stage_times={"retrieval": 0.2})
     row = run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
     assert row["latency_rerank_s"] == 0.0
     assert row["latency_read_s"] == 0.0
