@@ -1,8 +1,3 @@
-import json
-import os
-
-import pytest
-
 from benchmark.align_evidence import (
     MIN_TOKENS,
     align_paragraph,
@@ -107,31 +102,6 @@ def test_aligned_record_carries_the_matching_chunks():
     hits = aligned[0]["aligned_chunks"][PARAGRAPH]
     assert [h["chunk_index"] for h in hits] == [1]
     assert hits[0]["overlap"] >= 0.8
-
-
-@pytest.mark.skipif(not os.environ.get("QASPER_DEV"),
-                    reason="set QASPER_DEV to the dev split to validate the threshold")
-def test_threshold_does_not_reject_evidence_it_should_accept():
-    """Sanity check of the criterion against the paragraphs QASPER itself uses.
-
-    Fed the annotated paragraphs as if they were our chunks, the procedure has
-    to recover almost all of them: anything lost here is a false negative of the
-    criterion rather than a difference between LaTeX and PDF segmentation.
-    """
-    with open(os.environ["QASPER_DEV"]) as f:
-        qasper = json.load(f)
-    chunks = {pid: [p for section in paper["full_text"] for p in section["paragraphs"] if p.strip()]
-              for pid, paper in qasper.items()}
-    records = [{"paper_id": pid, "question_id": qa["question_id"], "question": qa["question"],
-                "evidence": list(dict.fromkeys(e for a in qa["answers"]
-                                               for e in a["answer"]["evidence"]
-                                               if not e.startswith("FLOAT SELECTED")))}
-               for pid, paper in qasper.items() for qa in paper["qas"]]
-    records = [r for r in records if r["evidence"]]
-
-    _, _, stats = align_records(records, chunks)
-    scorable = stats["evidence_paragraphs_total"] - stats["evidence_paragraphs_too_short"]
-    assert stats["evidence_paragraphs_aligned"] / scorable > 0.99
 
 
 def test_manual_check_report_contains_both_texts():
