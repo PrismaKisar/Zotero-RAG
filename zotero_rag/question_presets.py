@@ -1,17 +1,16 @@
 """Single source of truth for question-type presets and config resolution.
 
 Each preset carries only the "live" hyperparameters actually consumed by the
-pipeline (retrieval_threshold, rerank_threshold, qa_score_threshold,
-min_answer_words, section_diversity_enabled, retrieval_mode, result_limit,
-rerank_enabled). Per-type tuning lives in each preset's literal default value;
-``resolve`` applies user overrides on top with no hidden per-type transform, so
+pipeline (rerank_threshold, qa_score_threshold, min_answer_words,
+section_diversity_enabled, retrieval_mode, result_limit, rerank_enabled).
+Per-type tuning lives in each preset's literal default value; ``resolve`` applies user overrides on top with no hidden per-type transform, so
 what you see is what runs.
 
 The QA pipeline (``ZoteroRAG.answer_question``) resolves its config through
-this module. Each live field is read by the pipeline: retrieval_mode,
-result_limit and retrieval_threshold in stage 1, rerank_enabled and
-rerank_threshold in stage 2, qa_score_threshold / min_answer_words /
-section_diversity_enabled in QA extraction.
+this module. Each live field is read by the pipeline: retrieval_mode and
+result_limit in stage 1, rerank_enabled and rerank_threshold in stage 2,
+qa_score_threshold / min_answer_words / section_diversity_enabled in QA
+extraction.
 
 retrieval_mode / result_limit / rerank_enabled exist because the thresholds
 alone cannot change the *ranking* the retrieval metrics score - they only
@@ -26,6 +25,16 @@ random chunks sit at p50 0.000; 0.001 keeps 70% of the evidence and 17% of the
 noise, where the old 0.40-0.45 kept only 11-13% of the evidence. It used to look
 safe because a second sigmoid squashed every score into [0.5, 0.73], so the
 filter passed everything.
+
+Stage 1 has no score threshold. A ``retrieval_threshold`` on the dense cosine
+used to sit there, and it was removed rather than re-tuned. Measured with exact
+search (benchmark/retrieval_score_distribution.py), the 30th candidate of every
+QASPER question scores 0.55 or more, so the shipped 0.35-0.45 never cut a
+thing; inside the band where a cut does act, gold evidence scores *below* the
+non-gold candidates it competes with, and the scale shifts between datasets.
+Its best measured value was the inert one. ``result_limit`` stays, as the
+reranker's budget: the cross-encoder pays per candidate, whereas retrieving
+over the whole corpus costs next to nothing.
 """
 
 from copy import deepcopy
@@ -33,7 +42,6 @@ from copy import deepcopy
 # ponytail: plain dict of scalars — five live fields don't warrant a dataclass.
 PRESETS = {
     "factoid": {
-        "retrieval_threshold": 0.45,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 2,
@@ -43,7 +51,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "methodology": {
-        "retrieval_threshold": 0.35,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.05,
         "min_answer_words": 5,
@@ -53,7 +60,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "explanation": {
-        "retrieval_threshold": 0.35,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.05,
         "min_answer_words": 3,
@@ -63,7 +69,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "comparison": {
-        "retrieval_threshold": 0.45,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.08,
         "min_answer_words": 3,
@@ -73,7 +78,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "definition": {
-        "retrieval_threshold": 0.45,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
@@ -83,7 +87,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "general": {
-        "retrieval_threshold": 0.45,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.10,
         "min_answer_words": 3,
@@ -93,7 +96,6 @@ PRESETS = {
         "rerank_enabled": True,
     },
     "custom": {
-        "retrieval_threshold": 0.45,
         "rerank_threshold": 0.001,
         "qa_score_threshold": 0.0,
         "min_answer_words": 3,

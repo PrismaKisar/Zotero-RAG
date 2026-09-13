@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from device import resolve_device
 from models import Answer, Chunk, ExpandedAnswerSpan, RerankedChunk
-from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,10 @@ CONTEXT_STRIDE = 128
 # to the tokenizer, not the sequences that reach the model: with overflowing
 # windows enabled a long context expands into several, so one "batch of 16" can
 # arrive at the model as many times that. On a 16GB machine the QASA sweep was
-# killed outright on the configs that expand the most - three query variations
-# over long chunks - and the number in the log ("N total sequences") counted the
-# pairs, so nothing in the output said how much was actually being allocated.
+# killed outright on the configs that expand the most - long chunks, under the
+# since-removed question paraphrasing - and the number in the log ("N total
+# sequences") counted the pairs, so nothing in the output said how much was
+# actually being allocated.
 # ponytail: fixed cap, not a memory-aware one. Slicing an already-padded batch
 # leaves each window's logits bit-identical, so this bounds peak memory without
 # changing a single score; raise it on a machine with room.
@@ -74,29 +75,23 @@ class QAEngine:
     def __init__(self, 
                 model_name: str = "deepset/deberta-v3-large-squad2", 
                 device: str | None = None,
-                enable_question_expansion: bool = True,
                 batch_size: int | None = None):
         """Initialize the QA engine.
 
         Args:
             model_name: Name of the HuggingFace QA model.
             device: Device to use ('cpu', 'cuda', 'mps'). Auto-detect if None.
-            enable_question_expansion: Generate question variations to improve retrieval.
             batch_size: Sequences per forward pass. Device default if None.
         """
         self.model_name = model_name
         self.device = resolve_device(device)
-        self.enable_question_expansion = enable_question_expansion
         self.model = None
         self.tokenizer = None
-        self.paraphraser = None
         # 512-token sequences through a large QA model: 128 only fits a dedicated GPU.
         # MPS shares its memory with the OS, and CPU OOMs outright (exit 137).
         self.batch_size = batch_size or DEFAULT_QA_BATCH_SIZE[self.device]
         
         self._load_model_direct()
-        if enable_question_expansion:
-            self._load_paraphraser()
 
     def _load_model_direct(self):
         """Load model and tokenizer directly for manual batching."""
@@ -128,109 +123,6 @@ class QAEngine:
         except Exception as e:
             logger.error(f"Could not load QA model {self.model_name}: {e}")
             raise
-    
-    def _load_paraphraser(self):
-        """Load paraphrasing model for question expansion."""
-        try:
-            self.paraphraser = pipeline(
-                "text2text-generation",
-                model="humarin/chatgpt_paraphraser_on_T5_base",
-                device=self.device
-            )
-            logger.info(f"Question paraphraser loaded on {self.device}")
-        except Exception as e:  # noqa: BLE001 - optional model: continue without the paraphraser
-            logger.warning(f"Could not load paraphraser: {e}")
-            self.paraphraser = None
-    
-    def expand_question(self, question: str, num_variations: int = 2) -> list[str]:
-        """Generate question variations to improve retrieval coverage.
-        
-        Args:
-            question: The original question.
-            num_variations: Number of paraphrases to generate.
-            
-        Returns:
-            List of question variations including the original.
-        """
-        variations = [question]  # Always include original
-        
-        if not self.paraphraser or not self.enable_question_expansion:
-            return variations
-        
-        try:
-            # Generate multiple candidates with higher diversity
-            all_candidates = []
-            
-            # Generate more candidates than needed to filter best ones
-            result = self.paraphraser(
-                f"paraphrase: {question}",  # Add explicit instruction
-                max_new_tokens=64,  # Use max_new_tokens instead of max_length
-                num_return_sequences=num_variations * 3,  # Generate 3x more for filtering
-                num_beams=num_variations * 3,
-                temperature=1.5,  # Higher temperature for more diversity
-                top_k=50,
-                top_p=0.95,
-                do_sample=True,
-                early_stopping=True
-            )
-            
-            # Collect and filter paraphrases
-            for res in result:
-                paraphrase = res['generated_text'].strip()
-                
-                # Remove common prefixes that might be added
-                paraphrase = paraphrase.replace('paraphrase:', '').strip()
-                
-                # Check if meaningfully different from original
-                if paraphrase and paraphrase != question:
-                    normalized = paraphrase.lower().strip()
-                    if normalized != question.lower():
-                        # Calculate similarity to original
-                        orig_words = set(question.lower().split())
-                        new_words = set(paraphrase.lower().split())
-                        
-                        intersection = len(orig_words & new_words)
-                        union = len(orig_words | new_words)
-                        similarity = intersection / union if union > 0 else 1.0
-                        
-                        # Keep if diverse enough from original (< 75% similar)
-                        if similarity < 0.75:
-                            all_candidates.append((similarity, paraphrase))
-            
-            # Sort by diversity from original (lower similarity = more diverse)
-            all_candidates.sort(key=lambda x: x[0])
-            
-            # Select candidates while checking diversity among variations themselves
-            for similarity, candidate in all_candidates:
-                if len(variations) - 1 >= num_variations:
-                    break
-                
-                # Check candidate is diverse from already-selected variations
-                is_diverse = True
-                candidate_words = set(candidate.lower().split())
-                
-                for existing_var in variations:
-                    existing_words = set(existing_var.lower().split())
-                    var_intersection = len(candidate_words & existing_words)
-                    var_union = len(candidate_words | existing_words)
-                    var_similarity = var_intersection / var_union if var_union > 0 else 1.0
-                    
-                    # Require < 70% similarity to all existing variations
-                    if var_similarity >= 0.70:
-                        is_diverse = False
-                        break
-                
-                if is_diverse:
-                    variations.append(candidate)
-            
-            logger.info(f"Generated {len(variations)-1} question variations from {len(all_candidates)} candidates")
-            for i, var in enumerate(variations):
-                logger.debug(f"  Q{i}: {var}")
-                
-        except Exception as e:  # noqa: BLE001 - expansion optional: keep the original question
-            logger.warning(f"Question expansion failed: {e}")
-        
-        return variations
     
     def _expand_to_sentences(self, 
                             chunk: Chunk, 
@@ -321,8 +213,7 @@ class QAEngine:
                     candidates: list[RerankedChunk],
                     config: dict,
                     color: tuple[float, float, float] = (1, 1, 0),
-                    progress_callback=None,
-                    question_variations: list[str] | None = None) -> list[Answer]:
+                    progress_callback=None) -> list[Answer]:
         """Extract answers for a given question from candidate chunks.
 
         Args:
@@ -333,7 +224,6 @@ class QAEngine:
                 ``section_diversity_enabled``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
-            question_variations: Optional list of question variations to use instead of generating them.
 
         Returns:
             List of Answer objects extracted from the candidates.
@@ -346,13 +236,11 @@ class QAEngine:
             return []
         
         # --- 0. INITIALIZE STATS & CONFIG ---
-        questions_to_use = question_variations if question_variations else [question]
-
         logger.info(f"QA Configuration -> Threshold: {config['qa_score_threshold']:.3f} | Min Words: {config['min_answer_words']}")
         
         # Initialize tracking dictionaries
         filter_stats = {
-            'total_inputs': 0,      # Total (candidates * variations)
+            'total_inputs': 0,      # Candidates scored
             'successful_raw': 0,    # Raw answers extracted from model
             'too_few_words': 0,     # Filtered: Answer too short
             'below_threshold': 0,   # Filtered: Confidence too low
@@ -369,21 +257,18 @@ class QAEngine:
             chunk = candidate.chunk
             combined_text = chunk.text
             
-            # Prepare variations
-            for q_var in questions_to_use:
-                batch_questions.append(q_var)
-                batch_contexts.append(combined_text)
-                metadata_map.append({
-                    'chunk': chunk,
-                    'retrieval_score': candidate.retrieval_score,
-                    'rerank_score': candidate.rerank_score,
-                    'q_var': q_var,
-                    'context_text': combined_text,
-                    'candidate_idx': i
-                })
+            batch_questions.append(question)
+            batch_contexts.append(combined_text)
+            metadata_map.append({
+                'chunk': chunk,
+                'retrieval_score': candidate.retrieval_score,
+                'rerank_score': candidate.rerank_score,
+                'context_text': combined_text,
+                'candidate_idx': i
+            })
         
         filter_stats['total_inputs'] = len(batch_questions)
-        logger.info(f"Preparing inference for {len(candidates)} candidates x {len(questions_to_use)} variations = {len(batch_questions)} total sequences.")
+        logger.info(f"Preparing inference for {len(candidates)} candidates.")
 
         # --- 2. BATCH TOKENIZATION & INFERENCE ---
         BATCH_SIZE = self.batch_size
@@ -459,7 +344,7 @@ class QAEngine:
             
         answers = []
         for c_idx, group in grouped_results.items():
-            # Pick best variation score
+            # Best of this candidate's windows
             best_res = max(group, key=lambda x: x['score'])
             
             # Filter: Word Count
@@ -491,7 +376,7 @@ class QAEngine:
                 start_char=expanded.start_char,
                 end_char=expanded.end_char,
                 score=best_res['score'],
-                query=meta['q_var'],
+                query=question,
                 color=color,
                 sentence_coords=expanded.sentence_coords,
                 retrieval_score=meta['retrieval_score'],

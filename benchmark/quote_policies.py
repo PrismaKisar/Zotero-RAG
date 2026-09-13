@@ -94,7 +94,7 @@ def main():
     for i, q in enumerate(questions, 1):
         started = time.perf_counter()
         answers = rag.answer_question(q["question"], question_type="general",
-                                      overrides=config, num_paraphrases=0)
+                                      overrides=config)
         elapsed = time.perf_counter() - started
         lenient, strict = split_policies(answers, rag.qa_engine.last_verified_contexts)
         for name, view in (("baseline", lenient), ("citation_quote_strict", strict)):

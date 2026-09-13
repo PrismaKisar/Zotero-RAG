@@ -21,8 +21,6 @@ LIVE_FIELDS = {key for preset in PRESETS.values() for key in preset}
 # The keys run_from_config actually reads out of the `defaults` block; anything
 # else there is a knob the runner silently ignores.
 RUNNER_DEFAULTS = {
-    "num_paraphrases",
-    "retrieval_threshold",
     "rerank_threshold",
     "highlight_color",
     "question_type",

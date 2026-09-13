@@ -16,7 +16,7 @@ SPARSE = qmodels.SparseVector(indices=[1], values=[1.0])
 
 def build(mode, pdf_hashes=None):
     return QdrantManager._build_query_request(
-        DENSE, SPARSE, threshold=0.5, result_limit=30, mode=mode, pdf_hashes=pdf_hashes)
+        DENSE, SPARSE, result_limit=30, mode=mode, pdf_hashes=pdf_hashes)
 
 
 def hashes_in(flt):
@@ -45,6 +45,21 @@ def test_hybrid_filters_inside_each_prefetch_not_only_after_fusion():
     request = build("hybrid", ["a"])
     assert len(request.prefetch) == 2
     assert all(hashes_in(p.filter) == ["a"] for p in request.prefetch)
+
+
+@pytest.mark.parametrize("mode", ["dense", "hybrid"])
+def test_no_request_cuts_by_cosine_score(mode):
+    """retrieval_threshold was removed: result_limit is the only stage-1 cut."""
+    request = build(mode)
+    assert request.score_threshold is None
+    assert all(p.score_threshold is None for p in request.prefetch or [])
+
+
+def test_dense_search_is_exact_not_approximate():
+    """A library past Qdrant's indexing threshold must not turn approximate."""
+    assert build("dense").params.exact is True
+    dense_prefetch = build("hybrid").prefetch[0]
+    assert dense_prefetch.using == "" and dense_prefetch.params.exact is True
 
 
 def test_unknown_mode_is_rejected():

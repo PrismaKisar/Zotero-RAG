@@ -58,12 +58,6 @@ def test_a_distractor_stays_below_a_threshold_the_double_sigmoid_would_have_clea
     assert [r.rerank_score for r in kept] == [0.02]
 
 
-def test_variations_take_the_per_candidate_maximum(reranker):
-    reranker.model.probabilities = [0.10, 0.80, 0.90, 0.20]
-    results = reranker.rerank("q", candidates(2), threshold=0.0, query_variations=["a", "b"])
-    assert sorted(r.rerank_score for r in results) == [0.80, 0.90]
-
-
 def test_scoring_respects_the_configured_batch_size(monkeypatch):
     monkeypatch.setattr(rr, "CrossEncoder", FakeCrossEncoder)
     reranker = rr.Reranker(device="cpu", batch_size=3)

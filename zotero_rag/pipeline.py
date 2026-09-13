@@ -618,9 +618,7 @@ class ZoteroRAG:
         the rerank input. It does NOT decide rank: the caller ranks every
         neighbour below every hit, because a chunk carrying a borrowed 0.9
         would otherwise outrank a hit that genuinely scored 0.4 and push it out
-        of the top ten the retrieval metrics read. Note that neighbours bypass
-        the retrieval threshold, which is what makes them neighbours rather
-        than hits.
+        of the top ten the retrieval metrics read.
 
         Args:
             retrieved: (chunk, score) pairs already found, in any order.
@@ -666,9 +664,7 @@ class ZoteroRAG:
                     overrides: dict | None = None,
                     progress_callback=None,
                     rerank_callback=None,
-                    num_paraphrases: int = 2,
                     highlight_color: tuple[float, float, float] | None = None,
-                    question_variations: list[str] | None = None,
                     pdf_hashes: list[str] | None = None) -> list[Answer]:
         """Answer a question using the full RAG pipeline.
 
@@ -681,13 +677,11 @@ class ZoteroRAG:
             question: The question to answer.
             question_type: Type of question (factoid, explanation, methodology, etc.).
             overrides: User overrides applied on top of the question-type preset.
-                The merged config drives every stage: retrieval_threshold,
-                rerank_threshold and qa_score_threshold are applied literally.
+                The merged config drives every stage: rerank_threshold and
+                qa_score_threshold are applied literally.
             progress_callback: Function(current, total, message) for QA progress.
             rerank_callback: Function(current, total, message) for rerank progress.
-            num_paraphrases: Number of question paraphrases to generate (0 = disabled).
             highlight_color: RGB tuple (0-1) for highlighting. If None, use query-based color.
-            question_variations: Pre-generated question variations to use. If None, generate them.
             pdf_hashes: Restrict retrieval to these documents. None searches the
                 whole library, which is the product's default; scoping it is what
                 the benchmark needs to separate picking the right paper from
@@ -709,62 +703,35 @@ class ZoteroRAG:
             self.last_stage_times[stage] = now - stage_started
             stage_started = now
 
-        # Stage 0: Expand question if enabled and variations not provided
-        if question_variations is None:
-            question_variations = [question]  # Always include original
-            if self.qa_engine.enable_question_expansion and num_paraphrases > 0:
-                question_variations = self.qa_engine.expand_question(question, num_variations=num_paraphrases)
-                logger.info(f"Question expansion: {len(question_variations)} variations generated")
-            elif num_paraphrases == 0:
-                logger.info("Question paraphrasing disabled by user")
-        else:
-            logger.info(f"Using {len(question_variations)} pre-selected question variations")
-
-        mark("expansion")
-
-        # Stage 1: Retrieve candidate chunks (Qdrant)
-        # Search with all question variations and merge results
+        # Stage 1: Retrieve candidate chunks (Qdrant). One query: expanding it
+        # with paraphrases was measured, never added recall, and was removed.
         try:
-            all_candidates = []
-            seen_chunks = set()
             self.qdrant_manager.open_connection()
-            
-            query_embeddings = []
-            for q_var in question_variations:
-                query_embeddings.append(self.embedding_manager.encode_query(q_var))
-
-            batch_results = self.qdrant_manager.search_batch(
-                query_embeddings,
-                config['retrieval_threshold'],
+            [hits] = self.qdrant_manager.search_batch(
+                [self.embedding_manager.encode_query(question)],
                 result_limit=config['result_limit'],
                 mode=config['retrieval_mode'],
                 pdf_hashes=pdf_hashes,
             )
+            all_candidates = list(hits)
+            seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in all_candidates}
 
-            for i, q_var in enumerate(question_variations):
-                var_candidates = batch_results[i] if i < len(batch_results) else []
-                logger.debug(f"Variation {i}: '{q_var}' -> {len(var_candidates)} candidates")
-
-                # Add unseen candidates
-                for chunk, score in var_candidates:
-                    chunk_id = (chunk.pdf_hash, chunk.chunk_index)  # Unique identifier
-                    if chunk_id not in seen_chunks:
-                        seen_chunks.add(chunk_id)
-                        all_candidates.append((chunk, score))
-            
+            # Best first, ties broken by chunk id. RRF gives equal scores to
+            # chunks at the same rank in different branches and Qdrant returns
+            # equals in no stable order: one config ranked 117 of 120 questions
+            # differently across campaigns, mostly by adjacent swaps. Every
+            # consumer re-sorts by its own score with a stable sort, so this is
+            # the tie order they all inherit.
+            all_candidates.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
             hit_count = len(all_candidates)
             all_candidates += self._neighbour_candidates(
                 all_candidates, seen_chunks, config.get('retrieval_neighbours', 0))
 
-            # Deliberately unsorted: every consumer re-sorts by the score it
-            # cares about (the reranker rescores, the bypass branch sorts
-            # descending), so ordering the merged list here is dead work - and
-            # the ascending sort that used to be here read as "best last".
             candidates = all_candidates
             neighbour_flags = [i >= hit_count for i in range(len(candidates))]
 
             logger.debug(f"Question: {question}")
-            logger.debug(f"Retrieved {len(candidates)} unique chunks from {len(question_variations)} variations")
+            logger.debug(f"Retrieved {len(candidates)} chunks")
             
             if not candidates:
                 self.last_candidates = []
@@ -797,7 +764,6 @@ class ZoteroRAG:
                 candidates,
                 config['rerank_threshold'],
                 progress_callback=rerank_callback,
-                query_variations=question_variations,
                 # Read with a default rather than added to every preset: this is
                 # a phase-two intervention, and a preset field would ship it as a
                 # default before it has been accepted as one.
@@ -837,7 +803,6 @@ class ZoteroRAG:
             config,
             color=color,
             progress_callback=progress_callback,
-            question_variations=question_variations
         )
         mark("read")
 

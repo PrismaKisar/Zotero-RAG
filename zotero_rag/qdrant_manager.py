@@ -601,8 +601,7 @@ class QdrantManager:
             key="pdf_hash", match=qmodels.MatchAny(any=list(pdf_hashes)))])
 
     @staticmethod
-    def _build_query_request(dense_query, sparse_query, threshold: float,
-                            result_limit: int, mode: str,
+    def _build_query_request(dense_query, sparse_query, result_limit: int, mode: str,
                             pdf_hashes: list[str] | None = None) -> qmodels.QueryRequest:
         """One Qdrant query request for ``mode`` ('hybrid', 'dense' or 'sparse').
 
@@ -614,12 +613,25 @@ class QdrantManager:
         filter goes on each prefetch, not only on the fused query: filtering
         after fusion would let both prefetches spend their whole ``limit`` on
         out-of-scope documents and fuse down to nothing.
+
+        No request carries a ``score_threshold``: ``result_limit`` is the only
+        cut. A cosine floor used to sit on the dense side and was removed - see
+        question_presets.py for the measurement behind that.
+
+        The dense side is searched exactly, not through HNSW. At benchmark
+        scale this changes nothing - below ``indexing_threshold_kb`` (10 MB of
+        vectors by default, ~6.7k chunks here) Qdrant builds no HNSW graph and
+        scans anyway - but a real library can outgrow that, and with no
+        threshold the retrieval stage is its ordering and nothing else. The
+        cost is linear in the chunk count: milliseconds up to ~1e5 chunks. The
+        sparse side needs no flag, its inverted index is exact already.
         """
         flt = QdrantManager._pdf_hash_filter(pdf_hashes)
+        exact = qmodels.SearchParams(exact=True)
         if mode == "dense":
             return qmodels.QueryRequest(
-                query=dense_query, using="", score_threshold=threshold,
-                limit=result_limit, with_payload=True, filter=flt)
+                query=dense_query, using="", limit=result_limit, params=exact,
+                with_payload=True, filter=flt)
         if mode == "sparse":
             return qmodels.QueryRequest(
                 query=sparse_query, using="text-sparse",
@@ -631,8 +643,8 @@ class QdrantManager:
                 qmodels.Prefetch(
                     query=dense_query,
                     using="",
-                    score_threshold=threshold,
                     limit=result_limit,
+                    params=exact,
                     filter=flt,
                 ),
                 qmodels.Prefetch(
@@ -678,7 +690,6 @@ class QdrantManager:
 
     def search_batch(self,
                     query_embeddings: list[dict[str, list[float]]],
-                    threshold: float = 0.45,
                     result_limit: int = 30,
                     mode: str = "hybrid",
                     pdf_hashes: list[str] | None = None) -> list[list[Chunk]]:
@@ -686,7 +697,6 @@ class QdrantManager:
 
         Args:
             query_embeddings: List of query embedding dicts with 'dense' and 'sparse' keys.
-            threshold: Score threshold for dense prefetch filtering.
             result_limit: Max results per query (the ``result_limit`` preset field).
             mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
             pdf_hashes: Restrict the search to these documents (None = whole corpus).
@@ -707,7 +717,7 @@ class QdrantManager:
             if dense_query is None or sparse_query is None:
                 raise ValueError("Each query embedding must include 'dense' and 'sparse' keys.")
             requests.append(QdrantManager._build_query_request(
-                dense_query, sparse_query, threshold, result_limit, mode, pdf_hashes))
+                dense_query, sparse_query, result_limit, mode, pdf_hashes))
 
         search_results = self.client.query_batch_points(
             collection_name=self.chunk_collection,

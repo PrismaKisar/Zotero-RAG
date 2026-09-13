@@ -3,7 +3,6 @@
 from zotero_rag.question_presets import PRESETS, resolve
 
 LIVE_FIELDS = {
-    "retrieval_threshold",
     "rerank_threshold",
     "qa_score_threshold",
     "min_answer_words",
@@ -34,7 +33,7 @@ def test_override_precedence():
     assert resolved["qa_score_threshold"] == 0.99
     assert resolved["min_answer_words"] == 7
     # untouched fields keep preset defaults
-    assert resolved["retrieval_threshold"] == PRESETS["general"]["retrieval_threshold"]
+    assert resolved["rerank_threshold"] == PRESETS["general"]["rerank_threshold"]
 
 
 def test_unknown_type_falls_back_to_general():

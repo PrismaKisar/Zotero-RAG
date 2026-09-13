@@ -38,8 +38,6 @@ def load_config(config_path: str) -> dict[str, Any]:
     
     # Set defaults
     config.setdefault('defaults', {})
-    config['defaults'].setdefault('num_paraphrases', 2)
-    config['defaults'].setdefault('retrieval_threshold', 0.7)
     config['defaults'].setdefault('rerank_threshold', 0.25)
     config['defaults'].setdefault('highlight_color', [1, 1, 0])
     config['defaults'].setdefault('question_type', 'general')
@@ -154,8 +152,6 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
         logger.info(f"Processing question {i+1}/{len(questions)}: {question}")
         
         # Get question-specific settings or use defaults
-        num_paraphrases = question_config.get('num_paraphrases', defaults['num_paraphrases'])
-        retrieval_threshold = question_config.get('retrieval_threshold', defaults['retrieval_threshold'])
         rerank_threshold = question_config.get('rerank_threshold', defaults['rerank_threshold'])
         highlight_color = question_config.get('highlight_color', defaults['highlight_color'])
         question_type = question_config.get('question_type', defaults.get('question_type', 'general'))
@@ -164,30 +160,18 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
         if highlight_color:
             highlight_color = tuple(highlight_color)
         
-        # Merge per-question thresholds and any extra overrides into the resolver config
-        overrides = {
-            'retrieval_threshold': retrieval_threshold,
-            'rerank_threshold': rerank_threshold,
-        }
+        # Merge the per-question threshold and any extra overrides into the resolver config
+        overrides = {'rerank_threshold': rerank_threshold}
         extra_overrides = question_config.get('overrides', defaults.get('overrides'))
         if extra_overrides:
             overrides.update(extra_overrides)
 
-        # Get pre-defined paraphrases if provided
-        paraphrases = question_config.get('paraphrases')
-        question_variations = None
-        if paraphrases:
-            question_variations = [question] + paraphrases
-            logger.info(f"Using {len(question_variations)} pre-defined question variations")
-        
         # Answer the question
         answers = rag.answer_question(
             question=question,
             question_type=question_type,
             overrides=overrides,
-            num_paraphrases=num_paraphrases,
             highlight_color=highlight_color,
-            question_variations=question_variations
         )
         
         all_results[question] = answers

@@ -15,7 +15,7 @@ from models import Answer, Chunk, RerankedChunk
 
 from zotero_rag.pipeline import ZoteroRAG
 
-STAGES = ("expansion", "retrieval", "rerank", "read")
+STAGES = ("retrieval", "rerank", "read")
 
 
 class _Qdrant:
@@ -31,7 +31,7 @@ class _Qdrant:
     def close_connection(self):
         pass
 
-    def search_batch(self, embeddings, threshold, result_limit, mode, pdf_hashes=None):
+    def search_batch(self, embeddings, result_limit, mode, pdf_hashes=None):
         return [self._results for _ in embeddings]
 
     def fetch_chunks(self, ids):
@@ -54,11 +54,10 @@ def _rag(results, answers=None):
     rag.qdrant_manager = _Qdrant(results)
     rag.embedding_manager = types.SimpleNamespace(encode_query=lambda q: [0.0])
     rag.qa_engine = types.SimpleNamespace(
-        enable_question_expansion=False,
         extract_answers=lambda *a, **k: answers or [])
     rag.reranker = types.SimpleNamespace(
         rerank=lambda question, candidates, threshold, progress_callback=None,
-        query_variations=None, order_by_retrieval=False: [
+        order_by_retrieval=False: [
             RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
             for c, s in candidates])
     rag.pdf_cache = types.SimpleNamespace(get_pdf_path=lambda h: None)
@@ -68,17 +67,25 @@ def _rag(results, answers=None):
 def _neighbour_rag(span, indexed):
     rag = _rag([(_chunk(5), 0.9)])
     rag.qdrant_manager = _Qdrant([(_chunk(5), 0.9)], indexed=indexed)
-    rag.answer_question("q", num_paraphrases=0, overrides={"retrieval_neighbours": span})
+    rag.answer_question("q", overrides={"retrieval_neighbours": span})
     return rag
 
 
 def test_neighbour_expansion_is_off_unless_asked_for():
     """The default must stay 0: an unaccepted intervention does not ship."""
     rag = _rag([(_chunk(5), 0.9)])
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
 
     assert rag.qdrant_manager.fetched is None
     assert [c["chunk"].chunk_index for c in rag.last_candidates] == [5]
+
+
+def test_tied_retrieval_scores_are_broken_by_chunk_id_not_by_arrival_order():
+    """Qdrant returns equal RRF scores in no stable order; the pipeline must not."""
+    rag = _rag([(_chunk(9), 0.5), (_chunk(2), 0.5), (_chunk(7), 0.8)])
+    rag.answer_question("q")
+
+    assert [c["chunk"].chunk_index for c in rag.last_candidates] == [7, 2, 9]
 
 
 def test_neighbour_expansion_adds_the_adjacent_chunks():
@@ -106,7 +113,7 @@ def test_a_neighbour_past_the_end_of_the_document_is_simply_missing():
 def test_neighbour_expansion_never_asks_for_a_negative_index():
     rag = _rag([(_chunk(0), 0.9)])
     rag.qdrant_manager = _Qdrant([(_chunk(0), 0.9)], indexed={("h", 1): _chunk(1)})
-    rag.answer_question("q", num_paraphrases=0, overrides={"retrieval_neighbours": 2})
+    rag.answer_question("q", overrides={"retrieval_neighbours": 2})
 
     assert all(index >= 0 for _, index in rag.qdrant_manager.fetched)
 
@@ -123,7 +130,7 @@ def test_a_neighbour_already_retrieved_is_not_added_twice():
     indexed = {("h", 4): _chunk(4), ("h", 6): _chunk(6), ("h", 7): _chunk(7)}
     rag = _rag(hits)
     rag.qdrant_manager = _Qdrant(hits, indexed=indexed)
-    rag.answer_question("q", num_paraphrases=0, overrides={"retrieval_neighbours": 1})
+    rag.answer_question("q", overrides={"retrieval_neighbours": 1})
 
     assert sorted(c["chunk"].chunk_index for c in rag.last_candidates) == [4, 5, 6, 7]
     assert ("h", 6) not in rag.qdrant_manager.fetched
@@ -144,7 +151,7 @@ def test_a_neighbour_never_outranks_a_genuine_hit():
     indexed = {("h", 4): _chunk(4), ("h", 7): _chunk(7)}
     rag = _rag(hits)
     rag.qdrant_manager = _Qdrant(hits, indexed=indexed)
-    rag.answer_question("q", num_paraphrases=0, overrides={"retrieval_neighbours": 1})
+    rag.answer_question("q", overrides={"retrieval_neighbours": 1})
 
     order = sorted(rag.last_candidates,
                    key=lambda c: (c["is_neighbour"], -c["retrieval_score"]))
@@ -154,7 +161,7 @@ def test_a_neighbour_never_outranks_a_genuine_hit():
 def test_without_neighbours_nothing_is_flagged():
     """The flag must not perturb the rows the campaign already measured."""
     rag = _rag([(_chunk(5), 0.9), (_chunk(6), 0.4)])
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
 
     assert [c["is_neighbour"] for c in rag.last_candidates] == [False, False]
 
@@ -165,7 +172,7 @@ def test_the_rerank_bypass_also_puts_neighbours_last():
     indexed = {("h", 4): _chunk(4), ("h", 7): _chunk(7)}
     rag = _rag(hits)
     rag.qdrant_manager = _Qdrant(hits, indexed=indexed)
-    rag.answer_question("q", num_paraphrases=0,
+    rag.answer_question("q",
                         overrides={"retrieval_neighbours": 1,
                                    "rerank_enabled": False})
 
@@ -177,7 +184,7 @@ def test_a_full_call_times_every_stage():
         Answer(text="a", context="text-1", page_number=1, score=1.0,
                title="T", pdf_hash="h")])
 
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
 
     assert set(rag.last_stage_times) == set(STAGES)
     assert all(v >= 0.0 for v in rag.last_stage_times.values())
@@ -192,17 +199,17 @@ def test_retrieval_is_timed_even_when_it_comes_back_empty():
     """
     rag = _rag([])
 
-    assert rag.answer_question("q", num_paraphrases=0) == []
-    assert set(rag.last_stage_times) == {"expansion", "retrieval"}
+    assert rag.answer_question("q") == []
+    assert set(rag.last_stage_times) == {"retrieval"}
 
 
 def test_stage_times_do_not_leak_from_the_previous_call():
     rag = _rag([(_chunk(1), 0.9)], answers=[])
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
     assert "rerank" in rag.last_stage_times
 
     rag.qdrant_manager = _Qdrant([])
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
     assert "rerank" not in rag.last_stage_times
 
 
@@ -212,7 +219,7 @@ def test_stage_times_sum_to_roughly_the_whole_call():
 
     rag = _rag([(_chunk(1), 0.9)], answers=[])
     started = time.perf_counter()
-    rag.answer_question("q", num_paraphrases=0)
+    rag.answer_question("q")
     total = time.perf_counter() - started
 
     assert sum(rag.last_stage_times.values()) <= total

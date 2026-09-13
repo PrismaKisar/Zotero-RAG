@@ -171,14 +171,10 @@ def span_sentence_coords(chunk, span: tuple[int, int] | None) -> list:
 class GenerativeReader:
     """Answers from the retrieved chunks with a local LLM, citing what it used.
 
-    Duck-types the two attributes ``ZoteroRAG.answer_question`` reads off its
-    reader — ``enable_question_expansion`` and ``extract_answers`` — so it drops
-    into the pipeline and the ablation harness with no special case. Expansion is
-    off because it belongs to the extractive engine's T5 paraphraser, which this
-    reader does not own.
+    Duck-types ``extract_answers``, the one method ``ZoteroRAG.answer_question``
+    calls on its reader, so it drops into the pipeline and the ablation harness
+    with no special case.
     """
-
-    enable_question_expansion = False
 
     def __init__(self,
                 ollama_url: str = "http://localhost:11434",
@@ -300,8 +296,7 @@ class GenerativeReader:
                     candidates: list[RerankedChunk],
                     config: dict,
                     color: tuple[float, float, float] = (1, 1, 0),
-                    progress_callback=None,
-                    question_variations: list[str] | None = None) -> list[Answer]:
+                    progress_callback=None) -> list[Answer]:
         """Generate one answer over the top candidates, attributed to its citations.
 
         Args:
@@ -311,7 +306,6 @@ class GenerativeReader:
                 to a generated answer, but the signature matches ``QAEngine``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Function(current, total, message) for progress updates.
-            question_variations: Unused; this reader always asks the original question.
 
         Returns:
             One Answer per cited chunk, or an empty list if the model declined.

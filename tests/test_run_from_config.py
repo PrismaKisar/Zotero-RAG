@@ -64,7 +64,6 @@ def test_load_config_fills_in_the_documented_defaults(tmp_path):
     config = load_config(str(_write_config(tmp_path)))
     assert config["dense_model_name"] == "BAAI/bge-base-en-v1.5"
     assert config["rebuild_index"] is False
-    assert config["defaults"]["num_paraphrases"] == 2
 
 
 def test_zotero_source_forwards_collection_and_data_dir(tmp_path):

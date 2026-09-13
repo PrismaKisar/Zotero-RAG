@@ -682,20 +682,11 @@ def show_search_tab():
     with col_adjust:
         # Always show configurable parameters (pre-filled with preset values)
         st.subheader("Adjust Parameters (optional)")
-        col_retrieval, col_rerank, col_qa = st.columns(3)
-
-        with col_retrieval:
-            retrieval_threshold = st.number_input(
-                "1. Retrieval Threshold",
-                min_value=0.0, max_value=1.0,
-                value=preset['retrieval_threshold'],
-                step=0.05,
-                help="Stage 1 (Cosine Similarity): Lower = more chunks retrieved (-1.0, 1.0)."
-            )
+        col_rerank, col_qa = st.columns(2)
 
         with col_rerank:
             rerank_threshold = st.number_input(
-                "2. Rerank Threshold",
+                "1. Rerank Threshold",
                 min_value=0.0, max_value=1.0,
                 value=preset['rerank_threshold'],
                 step=0.001,
@@ -706,37 +697,25 @@ def show_search_tab():
 
         with col_qa:
             qa_score_threshold = st.number_input(
-                "3. QA Confidence",
+                "2. QA Confidence",
                 min_value=0.0, max_value=1.0,
                 value=preset['qa_score_threshold'],
                 step=0.05,
                 help="Stage 3 (QA Model): Confidence threshold."
             )
 
-        col_min_words, col_paraphrases = st.columns(2)
-        with col_min_words:
-            min_answer_words = st.number_input(
-                "Min Answer Words",
-                min_value=1, max_value=20,
-                value=preset['min_answer_words'],
-                step=1,
-                help="Minimum words in an answer."
-            )
-
-        with col_paraphrases:
-            num_paraphrases = st.number_input(
-                "Question Paraphrases",
-                min_value=0, max_value=10,
-                value=2,
-                step=1,
-                help="Number of question paraphrases to generate (0 = disabled, uses only original question)."
-            )
+        min_answer_words = st.number_input(
+            "Min Answer Words",
+            min_value=1, max_value=20,
+            value=preset['min_answer_words'],
+            step=1,
+            help="Minimum words in an answer."
+        )
 
     # User overrides applied on top of the question-type preset by the resolver.
     # The number inputs are pre-filled with preset values, so unchanged fields
     # resolve back to the preset default.
     overrides = {
-        'retrieval_threshold': retrieval_threshold,
         'rerank_threshold': rerank_threshold,
         'qa_score_threshold': qa_score_threshold,
         'min_answer_words': min_answer_words,
@@ -767,106 +746,6 @@ def show_search_tab():
 
     st.markdown("---")
 
-    # Paraphrase management UI
-    if num_paraphrases > 0 and query:
-        st.subheader("Question Paraphrases")
-
-        # Initialize session state for paraphrases
-        if 'paraphrase_candidates' not in st.session_state:
-            st.session_state.paraphrase_candidates = []
-        if 'paraphrase_selected' not in st.session_state:
-            st.session_state.paraphrase_selected = set()
-        if 'paraphrase_query' not in st.session_state:
-            st.session_state.paraphrase_query = None
-
-        # Generate paraphrases button
-        col_gen, col_more = st.columns([1, 1])
-
-        with col_gen:
-            if st.button("Generate Paraphrases", width="stretch"):
-                if st.session_state.rag and st.session_state.rag.qa_engine.paraphraser:
-                    with st.spinner("Generating paraphrases..."):
-                        variations = st.session_state.rag.qa_engine.expand_question(
-                            query,
-                            num_variations=num_paraphrases * 2  # Generate more for selection
-                        )
-                        # Store candidates (excluding original)
-                        st.session_state.paraphrase_candidates = variations[1:]
-                        st.session_state.paraphrase_query = query
-                        # Auto-select first N paraphrases
-                        st.session_state.paraphrase_selected = set(range(min(num_paraphrases, len(variations) - 1)))
-                        st.rerun()
-                else:
-                    st.error("Paraphraser not available. Question expansion is disabled.")
-
-        with col_more:
-            if (st.session_state.paraphrase_candidates and st.button("Generate More", width="stretch")
-                    and st.session_state.rag and st.session_state.rag.qa_engine.paraphraser):
-                    with st.spinner("Generating more paraphrases..."):
-                        # Generate additional paraphrases
-                        more_variations = st.session_state.rag.qa_engine.expand_question(
-                            query,
-                            num_variations=num_paraphrases
-                        )
-                        # Add new ones to existing (avoid duplicates)
-                        existing_set = set(st.session_state.paraphrase_candidates)
-                        for var in more_variations[1:]:
-                            if var not in existing_set:
-                                st.session_state.paraphrase_candidates.append(var)
-                                existing_set.add(var)
-                        st.rerun()
-
-        # Show original question
-        st.markdown("**Original Question (always included):**")
-        st.info(f"{query}")
-
-        # Show and allow selection/editing of paraphrases
-        if st.session_state.paraphrase_candidates and st.session_state.paraphrase_query == query:
-            st.markdown(f"**Generated Paraphrases** ({len(st.session_state.paraphrase_candidates)} available):")
-            st.markdown("*Select which paraphrases to use and edit them if needed:*")
-
-            # Track which ones to keep
-            selected_indices = set()
-            edited_paraphrases = {}
-
-            for i, paraphrase in enumerate(st.session_state.paraphrase_candidates):
-                col_check, col_edit = st.columns([0.1, 0.9])
-
-                with col_check:
-                    is_selected = st.checkbox(
-                        "",
-                        value=i in st.session_state.paraphrase_selected,
-                        key=f"para_check_{i}",
-                        label_visibility="collapsed"
-                    )
-                    if is_selected:
-                        selected_indices.add(i)
-
-                with col_edit:
-                    edited = st.text_input(
-                        f"Paraphrase {i+1}",
-                        value=paraphrase,
-                        key=f"para_edit_{i}",
-                        label_visibility="collapsed",
-                        disabled=not is_selected
-                    )
-                    if is_selected and edited != paraphrase:
-                        edited_paraphrases[i] = edited
-
-            # Update session state
-            st.session_state.paraphrase_selected = selected_indices
-
-            # Apply edits
-            for i, new_text in edited_paraphrases.items():
-                st.session_state.paraphrase_candidates[i] = new_text
-
-            st.markdown(f"**Selected:** {len(selected_indices)} paraphrase(s) + original question")
-        elif not st.session_state.paraphrase_candidates:
-            st.info("Click 'Generate Paraphrases' to create question variations")
-        elif st.session_state.paraphrase_query != query:
-            st.warning("Question changed. Click 'Generate Paraphrases' to update.")
-
-    st.markdown("---")
     col_search, col_clear = st.columns([1, 4])
     with col_search:
         search_clicked = st.button("Search", type="primary", width="stretch")
@@ -914,7 +793,7 @@ def show_search_tab():
                 rerank_progress_bar.progress(0)
                 time_info = ""
 
-            rerank_status.text(f"Stage 1 - Reranking (merged candidates): {message} {time_info}")
+            rerank_status.text(f"Stage 1 - Reranking: {message} {time_info}")
 
         def qa_callback(current, total, message):
             if qa_start_time[0] is None:
@@ -941,26 +820,12 @@ def show_search_tab():
             qa_status.text(f"Stage 2 - QA Extraction: {message} {time_info}")
 
         try:
-            # Prepare selected paraphrases (if any)
-            selected_paraphrases = None
-            if (num_paraphrases > 0 and
-                st.session_state.get('paraphrase_candidates') and
-                st.session_state.get('paraphrase_query') == query):
-                # Get selected paraphrases
-                selected_paraphrases = [query]  # Always include original
-                for i in sorted(st.session_state.paraphrase_selected):
-                    if i < len(st.session_state.paraphrase_candidates):
-                        selected_paraphrases.append(st.session_state.paraphrase_candidates[i])
-
-            # Pass the selected question type, overrides, and paraphrases
             st.session_state.search_results = st.session_state.rag.answer_question(
                 question=query,
                 question_type=selected_question_type,
                 overrides=overrides,
                 progress_callback=qa_callback,
                 rerank_callback=rerank_callback,
-                num_paraphrases=num_paraphrases,
-                question_variations=selected_paraphrases
             )
 
             st.session_state.search_run_id = st.session_state.get('search_run_id', 0) + 1
@@ -971,7 +836,7 @@ def show_search_tab():
             # Mark completion
             rerank_progress_bar.progress(1.0)
             qa_progress_bar.progress(1.0)
-            rerank_status.text("Stage 1 - Reranking (merged candidates): Complete!")
+            rerank_status.text("Stage 1 - Reranking: Complete!")
             qa_status.text("Stage 2 - QA Extraction: Complete!")
 
             st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
@@ -1184,13 +1049,13 @@ def show_search_tab():
         st.info("""
         **Possible reasons:**
         - QA score threshold too high (try 0.0)
-        - Retrieval threshold too low (try increasing to 3.0-5.0)
+        - Rerank threshold too high (the cross-encoder is conservative)
         - No semantically similar chunks found
         - Question format doesn't match extractive QA style
 
         **Try:**
         - Lower the QA Score Threshold to 0.0
-        - Increase Retrieval Threshold to 3.0 or higher
+        - Lower the Rerank Threshold to 0.0001
         - Rephrase as a specific question (e.g., "What is X?" instead of "Tell me about X")
         """)
     elif not query and search_clicked:

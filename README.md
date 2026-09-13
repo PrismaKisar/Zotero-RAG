@@ -1,6 +1,6 @@
 # Zotero RAG Navigator
 
-A question-answering system for your uploaded PDFs or Zotero library featuring a multi-stage RAG pipeline with GROBID parsing, Qdrant hybrid search, contextualization, reranking, and extractive QA. Generate precise answers from your research papers with automatic highlighting and question expansion.
+A question-answering system for your uploaded PDFs or Zotero library featuring a multi-stage RAG pipeline with GROBID parsing, Qdrant hybrid search, contextualization, reranking, and extractive QA. Generate precise answers from your research papers with automatic highlighting.
 
 ## Features
 
@@ -10,7 +10,6 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - GROBID sentence-level parsing with coordinates for precise PDF highlighting
 - Dense + Sparse retrieval with Qdrant hybrid search
 - Chunk contextualization via Ollama before embedding (optional)
-- Question expansion via automatic paraphrasing for improved recall
 - Question type presets (factoid, methodology, explanation, comparison)
 - Sliding window QA for answers spanning chunk boundaries
 - Multi-color highlighting for multiple queries
@@ -38,7 +37,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── pdf_processor.py        # GROBID client and TEI parsing
 │   ├── pdf_utils.py            # PDF utilities
 │   ├── pipeline.py             # Main orchestration class
-│   ├── qa_engine.py            # Extractive QA with question expansion
+│   ├── qa_engine.py            # Extractive QA
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
@@ -46,7 +45,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │
 ├── example_configs/         # Example YAML configurations
 │   ├── basic.yaml           # Zotero source, every option documented
-│   ├── advanced.yaml        # Zotero source, custom paraphrases and per-question overrides
+│   ├── advanced.yaml        # Zotero source, per-question overrides
 │   ├── folder.yaml          # Folder source, for PDF upload workflows
 │   └── highlight_colors.html # Swatch reference for the highlight_color key
 │
@@ -171,30 +170,22 @@ Then navigate to `http://localhost:8501`
    - **General**: Balanced settings for mixed queries
 
 3. **Adjust Parameters** (Advanced)
-   - **Retrieval threshold**: Retrieval score ( (-1, 1), highier = stricter )
    - **Rerank threshold**: CrossEncoder score ( (0, 1), higher = stricter )
    - **QA threshold**: Answer confidence ( (0, 1), higher = more confident )
    - **Min words**: Minimum answer length filter
    - **Answer length**: Max characters per answer
-   - **Question Paraphrases**: Number of question variations automatically created
 
-
-4. **Question Expansion** (Optional)
-   - Generate paraphrases to improve retrieval
-   - Select/edit which variations to use
-   - Automatically merges results from all variations
-
-5. **Search & Navigate**
+4. **Search & Navigate**
    - View answers with context and scores
    - Navigate results with Previous/Next buttons
    - See PDF source, page number, and section
    - Click "Open PDF" to view in default viewer
 
-6. **Highlight Color**
+5. **Highlight Color**
    - Choose from presets (Yellow, Cyan, Orange, Green, Pink, Purple)
    - Or use custom RGB color picker
 
-7. **Highlight PDF**
+6. **Highlight PDF**
    - Select only the answers you like to highlight
    - Click "Highlight PDF" to add colored annotations
 
@@ -228,9 +219,7 @@ Qdrant Hybrid Index
 ```
 User Question
     ↓
-Question Expansion (optional paraphrasing)
-    ↓
-Qdrant Hybrid Retrieval (dense + sparse, all variations)
+Qdrant Hybrid Retrieval (dense + sparse)
     ↓
 CrossEncoder Reranking (probability threshold)
     ↓
