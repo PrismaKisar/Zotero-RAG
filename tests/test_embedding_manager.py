@@ -1,13 +1,12 @@
-"""Tests for EmbeddingManager runtime wiring: device flag and batch size.
+"""Tests for EmbeddingManager runtime wiring: device, prompts, and batch size.
 
-FastEmbed runs ONNX Runtime rather than torch, so the only accelerator switch it
-exposes is the CUDA flag; every other device lands on the CPU provider. These
-tests pin that mapping, and the batch size, without downloading any model.
+The dense model runs on sentence-transformers (torch), so it takes the resolved
+device directly; BM25 stays on FastEmbed, whose only accelerator switch is the
+CUDA flag. These tests pin that wiring without downloading any model.
 """
 
 import sys
 from pathlib import Path
-from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -16,24 +15,28 @@ sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 import embedding_manager as em
 
+DIM = 768
 
-class FakeEmbedding:
-    """Stand-in for TextEmbedding/SparseTextEmbedding that records its kwargs."""
 
-    instances: ClassVar[list["FakeEmbedding"]] = []
+class FakeDense:
+    """Stand-in for SentenceTransformer that records which encoder was called."""
 
-    def __init__(self, model_name, cuda=False, providers=None):
+    def __init__(self, model_name, device=None):
         self.model_name = model_name
-        self.cuda = cuda
-        self.providers = providers
-        FakeEmbedding.instances.append(self)
+        self.device = device
+        self.max_seq_length = None
+        self.calls = []
 
-    @staticmethod
-    def list_supported_models():
-        return [{"model": "BAAI/bge-base-en-v1.5", "dim": 768}]
+    def get_embedding_dimension(self):
+        return DIM
 
-    def embed(self, texts):
-        return iter([[0.0] * 768 for _ in texts])
+    def encode_document(self, texts, batch_size=32):
+        self.calls.append(("document", len(texts)))
+        return np.zeros((len(texts), DIM), dtype=np.float32)
+
+    def encode_query(self, text):
+        self.calls.append(("query", 1))
+        return np.zeros(DIM, dtype=np.float32)
 
 
 class FakeSparseVector:
@@ -44,57 +47,59 @@ class FakeSparseVector:
         self.values = np.array([1.0])
 
 
-@pytest.fixture
-def fake_fastembed(monkeypatch):
-    FakeEmbedding.instances = []
-    monkeypatch.setattr(em, "TextEmbedding", FakeEmbedding)
-    monkeypatch.setattr(em, "SparseTextEmbedding", FakeEmbedding)
-    return FakeEmbedding
+class FakeSparse:
+    """Stand-in for SparseTextEmbedding that records its CUDA flag."""
+
+    def __init__(self, model_name, cuda=False):
+        self.model_name = model_name
+        self.cuda = cuda
+
+    def embed(self, texts):
+        return iter([FakeSparseVector() for _ in texts])
 
 
-def _dense(fake):
-    return fake.instances[0]
+@pytest.fixture(autouse=True)
+def fake_models(monkeypatch):
+    monkeypatch.setattr(em, "SentenceTransformer", FakeDense)
+    monkeypatch.setattr(em, "SparseTextEmbedding", FakeSparse)
 
 
-def _sparse(fake):
-    return fake.instances[1]
+@pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])
+def test_dense_model_runs_on_the_resolved_device(device):
+    assert em.EmbeddingManager(device=device).dense_model.device == device
 
 
-def test_cuda_device_enables_the_cuda_flag(fake_fastembed):
-    em.EmbeddingManager(device="cuda")
-    assert _dense(fake_fastembed).cuda is True
-    assert _sparse(fake_fastembed).cuda is True
-
-
-@pytest.mark.parametrize("device", ["cpu", "mps"])
-def test_non_cuda_devices_leave_the_cuda_flag_off(fake_fastembed, device):
+@pytest.mark.parametrize(("device", "cuda"), [("cuda", True), ("cpu", False), ("mps", False)])
+def test_only_cuda_turns_on_the_sparse_cuda_flag(device, cuda):
     """'mps' is a torch device; FastEmbed has no MPS path, so it must not set cuda."""
-    em.EmbeddingManager(device=device)
-    assert _dense(fake_fastembed).cuda is False
+    assert em.EmbeddingManager(device=device).sparse_model.cuda is cuda
+
+
+def test_dense_model_reads_the_reranker_window_and_reports_its_size():
+    manager = em.EmbeddingManager(device="cpu")
+    assert manager.dense_model.max_seq_length == em.MAX_TOKENS
+    assert manager.vector_size == DIM
 
 
 @pytest.mark.parametrize("requested", [None, 0])
-def test_missing_batch_size_falls_back_to_the_default(fake_fastembed, requested):
+def test_missing_batch_size_falls_back_to_the_default(requested):
     manager = em.EmbeddingManager(device="cpu", encode_batch_size=requested)
     assert manager.encode_batch_size == em.DEFAULT_ENCODE_BATCH_SIZE
 
 
-def test_explicit_batch_size_is_honoured(fake_fastembed):
-    assert em.EmbeddingManager(device="cpu", encode_batch_size=7).encode_batch_size == 7
-
-
-def test_encode_chunks_respects_the_batch_size(fake_fastembed):
-    """No hidden probing run: the configured size is the size actually used."""
+def test_encode_chunks_uses_the_document_prompt_in_configured_batches():
     manager = em.EmbeddingManager(device="cpu", encode_batch_size=3)
-    seen_batches = []
 
-    def record_dense(texts):
-        seen_batches.append(len(texts))
-        return iter([[0.0] * 768 for _ in texts])
+    encoded = manager.encode_chunks(None, [f"chunk {i}" for i in range(7)])
 
-    manager.dense_model.embed = record_dense
-    manager.sparse_model.embed = lambda texts: iter([FakeSparseVector() for _ in texts])
+    assert manager.dense_model.calls == [("document", 3), ("document", 3), ("document", 1)]
+    assert len(encoded["dense"]) == len(encoded["sparse"]) == 7
 
-    manager.encode_chunks(None, [f"chunk {i}" for i in range(7)])
 
-    assert seen_batches == [3, 3, 1]
+def test_encode_query_uses_the_query_prompt():
+    manager = em.EmbeddingManager(device="cpu")
+
+    encoded = manager.encode_query("what is attention?")
+
+    assert manager.dense_model.calls == [("query", 1)]
+    assert len(encoded["dense"]) == DIM

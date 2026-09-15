@@ -5,18 +5,22 @@ import logging
 import numpy as np
 import ollama
 from device import resolve_device
-from fastembed import SparseTextEmbedding, TextEmbedding
+from fastembed import SparseTextEmbedding
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENCODE_BATCH_SIZE = 32
+# The reranker reads 512 tokens, and the dense comparison (benchmark/retrieval_models.py)
+# measured every model at this window, so the index embeds what the reranker sees.
+MAX_TOKENS = 512
 
 
 class EmbeddingManager:
     """Generate dense and sparse embeddings for indexing and retrieval."""
 
     def __init__(self,
-                dense_model_name: str = "BAAI/bge-base-en-v1.5",
+                dense_model_name: str = "google/embeddinggemma-300m",
                 ollama_url: str = "http://localhost:11434",
                 device: str | None = None,
                 encode_batch_size: int | None = None,
@@ -24,7 +28,7 @@ class EmbeddingManager:
         """Initialize embedding models and runtime options.
 
         Args:
-            dense_model_name: FastEmbed dense model name.
+            dense_model_name: sentence-transformers dense model name.
             device: Device for dense model ('cpu', 'cuda', 'mps'). Auto-detect if None.
             encode_batch_size: Batch size for chunk encoding. Defaults to
                 ``DEFAULT_ENCODE_BATCH_SIZE`` when None or 0.
@@ -38,43 +42,22 @@ class EmbeddingManager:
         self.encode_batch_size = encode_batch_size or DEFAULT_ENCODE_BATCH_SIZE
         self.use_chunk_contextualization = use_chunk_contextualization
 
-        # FastEmbed runs ONNX Runtime, not torch, so 'mps' means the CPU execution
-        # provider here. Measured on an M4: the CoreML provider is within noise of it
-        # for bge-base (median 6.6s vs 6.9s over 128 chunks), so it is not worth wiring.
-        use_cuda = self.device == "cuda"
-        self.dense_model = TextEmbedding(model_name=self.dense_model_name, cuda=use_cuda)
-        self.sparse_model = SparseTextEmbedding(model_name=self.sparse_model_name, cuda=use_cuda)
+        # Dense runs on torch, so it gets the accelerator: on an M4, EmbeddingGemma on
+        # MPS encodes QASA at 29 chunks/s against 16 for the old ONNX bge on CPU. The
+        # model's query/document prompts are applied by encode_query/encode_document.
+        # BM25 is a tokenizer plus IDF, so FastEmbed's CPU path is all it needs.
+        self.dense_model = SentenceTransformer(self.dense_model_name, device=self.device)
+        self.dense_model.max_seq_length = MAX_TOKENS
+        self.sparse_model = SparseTextEmbedding(model_name=self.sparse_model_name,
+                                                cuda=self.device == "cuda")
 
         if self.use_chunk_contextualization:
             self.ollama_client = ollama.Client(host=self.ollama_url)
-        self._vector_size = self._resolve_vector_size()
 
     @property
     def vector_size(self) -> int:
         """Return the dense embedding dimensionality."""
-        return self._vector_size
-
-    def _resolve_vector_size(self) -> int:
-        """Resolve dense vector size from supported-model metadata, then fallback to probing."""
-        try:
-            for metadata in TextEmbedding.list_supported_models():
-                metadata_name = (
-                    metadata.get("model")
-                    or metadata.get("model_name")
-                    or metadata.get("name")
-                )
-                if metadata_name == self.dense_model_name:
-                    dimension = metadata.get("dim") or metadata.get("dimensions") or metadata.get("size")
-                    if isinstance(dimension, (int, float)):
-                        return int(dimension)
-        except (AttributeError, TypeError, ValueError) as exc:
-            logger.debug("Unable to read FastEmbed model metadata for '%s': %s", self.dense_model_name, exc)
-
-        sample_vector = next(iter(self.dense_model.embed(["dimension probe"])), None)
-        if sample_vector is None:
-            raise ValueError(f"Unable to determine vector size for model '{self.dense_model_name}'")
-
-        return len(sample_vector)
+        return self.dense_model.get_embedding_dimension()
 
     def _generate_document_summary(self, document_text: str) -> str:
         """Generates a concise global summary of the given document.
@@ -219,10 +202,7 @@ class EmbeddingManager:
         for i in range(0, len(all_texts), effective_batch_size):
             batch = all_texts[i : i + effective_batch_size]
             try:
-                batch_dense = np.asarray(list(self.dense_model.embed(batch)), dtype=np.float32)
-                if batch_dense.ndim == 1:
-                    batch_dense = np.expand_dims(batch_dense, axis=0)
-
+                batch_dense = self.dense_model.encode_document(batch, batch_size=len(batch))
                 batch_sparse_gen = self.sparse_model.embed(batch)
                 batch_sparse = [
                     {"indices": res.indices.tolist(), "values": res.values.tolist()}
@@ -248,10 +228,8 @@ class EmbeddingManager:
                     for j in range(0, len(batch), fallback_size):
                         fallback_batch = batch[j : j + fallback_size]
 
-                        sub_dense = np.asarray(list(self.dense_model.embed(fallback_batch)), dtype=np.float32)
-                        if sub_dense.ndim == 1:
-                            sub_dense = np.expand_dims(sub_dense, axis=0)
-                        dense_chunks.append(sub_dense)
+                        dense_chunks.append(self.dense_model.encode_document(
+                            fallback_batch, batch_size=len(fallback_batch)))
 
                         sub_sparse_gen = self.sparse_model.embed(fallback_batch)
                         batch_sparse.extend(
@@ -289,7 +267,7 @@ class EmbeddingManager:
         Returns:
             Dictionary with 'dense' and 'sparse' keys containing the respective embeddings.
         """
-        query_dense_embedding = next(iter(self.dense_model.embed([query]))).tolist()
+        query_dense_embedding = self.dense_model.encode_query(query).tolist()
 
         query_sparse_obj = next(iter(self.sparse_model.embed([query])))
         query_sparse_embedding = {

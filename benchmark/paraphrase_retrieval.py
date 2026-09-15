@@ -164,6 +164,33 @@ def shipped_variants(question: str, candidates: list[str], n: int = NUM_VARIANTS
     return variations
 
 
+class HybridSearch:
+    """The index's hybrid search, replicated offline and exactly over ``chunks_dir``.
+
+    Every offline study needs the same thing: the corpus, its dense and BM25
+    encodings, and per question the RRF of the two branches.
+    """
+
+    def __init__(self, chunks_dir: Path):
+        from embedding_manager import EmbeddingManager  # heavy import (ONNX)
+
+        self.ids, texts = load_corpus(chunks_dir)
+        self.text_of = dict(zip(self.ids, texts, strict=True))
+        self.paper_of = np.array([paper for paper, _ in self.ids])
+        self.embedder = EmbeddingManager()
+        encoded = self.embedder.encode_chunks(None, texts)
+        self.vectors = unit_vectors(encoded["dense"])
+        self.index, self.idf = inverted_index(encoded["sparse"]), idf_table(encoded["sparse"])
+
+    def top(self, question: str, paper: str | None = None, limit: int = LIMIT) -> list:
+        """The hybrid top-``limit`` chunk ids, over the library or over one paper."""
+        query = self.embedder.encode_query(question)
+        dense = self.vectors @ unit_vectors(query["dense"])
+        sparse = bm25(query["sparse"], self.index, self.idf, len(self.ids))
+        keep = np.flatnonzero(self.paper_of == paper) if paper else np.arange(len(self.ids))
+        return [self.ids[keep[i]] for i, _ in retrieve("hybrid", dense[keep], sparse[keep], limit)]
+
+
 def faithful_variants(question: str, candidates: list[str], similarity,
                       n: int = NUM_VARIANTS) -> list[str]:
     """The ``n`` distinct candidates closest in meaning to ``question``.
