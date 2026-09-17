@@ -1,4 +1,12 @@
-"""Cross-encoder reranking model."""
+"""Cross-encoder reranking model.
+
+The default is gte-reranker-modernbert-base. The former bge-reranker-base
+ordered the hybrid top-30 *worse* than retrieval had: -0.070 recall@1 within the
+question's own paper on QASA. Measured offline on the same candidates
+(benchmark/reranker_diagnosis.py), gte lifts recall@1 over retrieval's order by
++0.147 on QASA and +0.115 on QASPER across the library, matching the larger
+bge-reranker-v2-m3 and jina-reranker-v3.5 at under half their latency on MPS.
+"""
 
 import logging
 
@@ -16,7 +24,7 @@ class Reranker:
     """Handles reranking of retrieved candidates using a cross-encoder model."""
     
     def __init__(self, 
-                model_name: str = 'BAAI/bge-reranker-base', 
+                model_name: str = 'Alibaba-NLP/gte-reranker-modernbert-base',
                 device: str | None = None,
                 batch_size: int | None = None):
         """Initialize the reranker.
@@ -35,16 +43,25 @@ class Reranker:
     def rerank(self,
             query: str,
             candidates: list[tuple[Chunk, float]],
-            threshold: float = 0.45,
+            gate: float = 0.0,
+            margin: float = 1.0,
             progress_callback=None,
             order_by_retrieval: bool = False) -> list[RerankedChunk]:
         """Rerank candidates using cross-encoder scores.
-        
+
         Args:
             query: The query string.
             candidates: List of (Chunk, retrieval_score) tuples.
-            threshold: Minimum cross-encoder probability to keep a candidate. The
-                model is conservative: see ``question_presets`` for the scale.
+            gate: Minimum probability the *best* candidate must reach for the
+                question to be answered at all. Below it nothing is returned,
+                however many middling candidates there are.
+            margin: How far below that best candidate a candidate may score and
+                still be kept. The cut is relative because gte's probabilities
+                crowd at a different height per question, so one absolute cut
+                lands mid-crowd on some questions and above it on others; see
+                ``settings`` for the values and benchmark/answer_gate.py for the
+                search behind them. The defaults keep everything: the benchmarks
+                that only want the scores pass no cut.
             progress_callback: Function(current, total, message) for progress updates.
             order_by_retrieval: Keep the cross-encoder's threshold but leave the
                 survivors in retrieval's order. The two uses of the rerank score
@@ -55,9 +72,10 @@ class Reranker:
                 since it is an intervention and not yet an accepted default.
 
         Returns:
-            List of (Chunk, retrieval_score, rerank_score) tuples, filtered by
-            rerank_score and sorted by rerank_score descending, or by
-            retrieval_score when ``order_by_retrieval``.
+            List of (Chunk, retrieval_score, rerank_score) tuples, empty when no
+            candidate clears ``gate``, otherwise those within ``margin`` of the
+            best one, sorted by rerank_score descending, or by retrieval_score
+            when ``order_by_retrieval``.
         """
         if not candidates:
             return []
@@ -87,11 +105,12 @@ class Reranker:
             for p, prob in zip(candidates, probs)
         ]
         
+        best = max(item.rerank_score for item in scored_candidates)
         filtered_candidates = [
             item for item in scored_candidates
-            if item.rerank_score >= threshold
+            if best >= gate and item.rerank_score >= best - margin
         ]
-        
+
         # Sort by rerank score descending, or keep retrieval's order if asked
         sort_key = "retrieval_score" if order_by_retrieval else "rerank_score"
         filtered_candidates.sort(key=lambda x: getattr(x, sort_key), reverse=True)
@@ -102,11 +121,11 @@ class Reranker:
                 len(candidates),
                 (
                     "Reranking complete: "
-                    f"{len(filtered_candidates)} of {len(candidates)} candidates passed threshold."
+                    f"{len(filtered_candidates)} of {len(candidates)} candidates kept."
                 ),
             )
         
-        logger.debug(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} "
-                    f"chunks passed threshold {threshold:.4f}")
+        logger.debug(f"Reranking: {len(candidates)} -> {len(filtered_candidates)} chunks; "
+                    f"best {best:.4f} against gate {gate:.2f}, margin {margin:.3f}")
 
         return filtered_candidates
