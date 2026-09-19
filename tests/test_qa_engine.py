@@ -78,6 +78,19 @@ def test_score_is_a_probability_and_ranks_confidence():
     assert 0.0 <= flat < confident <= 1.0
 
 
+def test_no_answer_mass_lowers_the_score_but_never_moves_the_span():
+    """[CLS] at position 0 is the model's "no answer": it counts, but is never a span."""
+    ids = [None, 0, None, 1, 1, None]
+    start = np.array([0.0, 0.0, 0.0, 4.0, 0.0, 0.0])
+    end = np.array([0.0, 0.0, 0.0, 0.0, 4.0, 0.0])
+    no_answer_start, no_answer_end = start.copy(), end.copy()
+    no_answer_start[0] = no_answer_end[0] = 8.0
+    answerable = _best_span(start, end, ids)
+    unanswerable = _best_span(no_answer_start, no_answer_end, ids)
+    assert answerable[:2] == unanswerable[:2] == (3, 4)
+    assert unanswerable[2] < 0.01 < answerable[2]
+
+
 def test_no_context_token_yields_no_span():
     assert _best_span(np.zeros(4), np.zeros(4), [0, 0, None, None]) is None
 

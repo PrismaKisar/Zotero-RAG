@@ -46,6 +46,16 @@ def _best_span(start_logits: np.ndarray,
     candidates. This scores every valid (start, end) pair instead and returns a
     real probability.
 
+    The probability keeps the model's "no answer" option in its normalisation: a
+    SQuAD 2.0 model puts that mass on the leading [CLS] token. Renormalising over
+    the context alone gave every chunk a confident-looking span however unrelated
+    it was, and threw away the one signal that separates them: on the hybrid
+    top-30 the median no-answer mass is 0.81-0.95 on non-gold chunks and under
+    0.01 on gold ones, and keeping it lifts the gold/non-gold AUC of the score
+    from 0.70 to 0.73 on QASPER and 0.68 to 0.75 on QASA
+    (benchmark/qa_score_distribution.py). The span itself cannot change: the
+    extra term only rescales the context probabilities.
+
     Args:
         start_logits: Start logits for one sequence.
         end_logits: End logits for the same sequence.
@@ -58,8 +68,11 @@ def _best_span(start_logits: np.ndarray,
     if not is_context.any():
         return None
 
-    start_probs = _softmax(np.where(is_context, start_logits, -np.inf))
-    end_probs = _softmax(np.where(is_context, end_logits, -np.inf))
+    normalised = is_context.copy()
+    if sequence_ids[0] is None:
+        normalised[0] = True  # [CLS]: the no-answer option
+    start_probs = _softmax(np.where(normalised, start_logits, -np.inf)) * is_context
+    end_probs = _softmax(np.where(normalised, end_logits, -np.inf)) * is_context
 
     # Rows are starts, columns are ends: keep end >= start and bound the span length.
     scores = np.triu(np.outer(start_probs, end_probs))
@@ -219,9 +232,8 @@ class QAEngine:
         Args:
             question: The question to answer.
             candidates: List of RerankedChunk objects to extract answers from.
-            config: Resolved question-type config (see ``question_presets.resolve``).
-                Reads ``qa_score_threshold``, ``min_answer_words`` and
-                ``section_diversity_enabled``.
+            config: The resolved settings (see ``settings.resolve``).
+                Reads ``qa_score_threshold`` and ``section_diversity_enabled``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
 
@@ -236,13 +248,12 @@ class QAEngine:
             return []
         
         # --- 0. INITIALIZE STATS & CONFIG ---
-        logger.info(f"QA Configuration -> Threshold: {config['qa_score_threshold']:.3f} | Min Words: {config['min_answer_words']}")
+        logger.info(f"QA Configuration -> Threshold: {config['qa_score_threshold']:.3f}")
         
         # Initialize tracking dictionaries
         filter_stats = {
             'total_inputs': 0,      # Candidates scored
             'successful_raw': 0,    # Raw answers extracted from model
-            'too_few_words': 0,     # Filtered: Answer too short
             'below_threshold': 0,   # Filtered: Confidence too low
             'duplicates': 0,        # Filtered: Duplicate content
             'final_count': 0        # Final answers returned
@@ -335,7 +346,7 @@ class QAEngine:
                 logger.error(f"Batch {b} failed: {e}")
                 continue
 
-        # --- 3. RECONSTRUCT & FILTER (WORD COUNT) ---
+        # --- 3. RECONSTRUCT ---
         grouped_results = {}
         for res in all_answers_raw:
             c_idx = res['meta']['candidate_idx']
@@ -346,13 +357,6 @@ class QAEngine:
         for c_idx, group in grouped_results.items():
             # Best of this candidate's windows
             best_res = max(group, key=lambda x: x['score'])
-            
-            # Filter: Word Count
-            if len(best_res['text'].split()) < config['min_answer_words']:
-                filter_stats['too_few_words'] += 1
-                logger.debug(f"Rejected (Too Short): {best_res['text'][:30]}...")
-                continue
-                
             meta = best_res['meta']
             
             # Recalculate offsets relative to original chunk
@@ -455,7 +459,6 @@ class QAEngine:
         logger.info(f"Input: {len(candidates)} candidates -> {filter_stats['total_inputs']} sequences (expanded)")
         logger.info(f"Raw Outputs: {filter_stats['successful_raw']} spans found")
         logger.info("Filtering:")
-        logger.info(f"  - Too Short (<{config['min_answer_words']} words): {filter_stats['too_few_words']}")
         logger.info(f"  - Low Confidence (<{config['qa_score_threshold']:.2f}): {filter_stats['below_threshold']}")
         logger.info(f"  - Duplicates: {filter_stats['duplicates']}")
         logger.info(f"Final Results: {filter_stats['final_count']} unique answers")
