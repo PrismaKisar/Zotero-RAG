@@ -1,0 +1,47 @@
+# Questions no paper in an NLP/ML library answers. The system should return
+# nothing for them: they calibrate the thresholds on the side a golden set of
+# answerable questions cannot see. One per line; lines starting with # are skipped.
+# Everyday and general knowledge
+What is the capital of Australia?
+Who won the football World Cup in 2018?
+How long should I boil an egg to get a soft yolk?
+What is the best way to remove a red wine stain from a carpet?
+How many bones are there in the adult human body?
+When was the Eiffel Tower built?
+What is the boiling point of water at the top of Mount Everest?
+Which planet in the solar system has the most moons?
+How do I renew an Italian passport?
+What time does the sun set in Rome in December?
+# Other disciplines, asked the way a researcher would
+What is the recommended dosage of amoxicillin for a child with otitis?
+How does the Italian constitution regulate the dissolution of parliament?
+What mortar mix is used to restore Roman brick walls?
+Which enzyme catalyses the first step of glycolysis?
+What caused the collapse of the Tacoma Narrows bridge?
+How is the yield strength of structural steel measured?
+What are the main themes of Dante's Purgatorio?
+Which grape varieties are allowed in Chianti Classico?
+How does a heat pump defrost cycle work?
+What is the half-life of carbon-14?
+# Plausible form, empty content
+What did the authors conclude about the migration patterns of arctic terns?
+Which dataset of medieval tax records do the authors use?
+How many patients were enrolled in the phase III trial?
+What is the tensile strength reported for the new concrete mixture?
+Which telescope collected the spectra analysed in the paper?
+How did the authors measure soil acidity in the vineyards?
+What interest rate did the central bank set in the simulation?
+Which violin makers are compared in the acoustic study?
+What was the population of the fishing villages surveyed?
+How long did the authors ferment the dough samples?
+# Nonsense
+Why is the colour purple heavier than a Tuesday?
+How many ideas fit inside a sleeping triangle?
+What does the moon taste like when it is angry?
+asdkjh qwe zxcv mnbv
+Can a spreadsheet dream about electric sheep on weekends?
+Which vowel is the tallest?
+How loud is the smell of blue?
+Is seven more yellow than a cloud?
+What is the opposite of a banana?
+How do you fold a sound?
