@@ -1,9 +1,8 @@
-"""One-parameter-at-a-time ablation over the PRESETS['general'] baseline.
+"""One-parameter-at-a-time ablation around the pipeline's fixed settings.
 
 Per the advisor's methodology (see thesis, chapter on ablation): lock every
-parameter except one at the fixed baseline, sweep that one parameter, repeat
-per parameter. This is deliberately NOT the adaptive per-question-type preset
-in zotero_rag/question_presets.py (that's a separate, out-of-scope experiment).
+parameter except one at the baseline (zotero_rag/settings.py), sweep that one
+parameter, repeat per parameter.
 
 Runs on either golden set. QASPER (output_qasper/) is the one the frozen
 alignment protocol designates for the ablation proper; QASA (output_qasa/)
@@ -114,7 +113,7 @@ from pathlib import Path
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from question_presets import PRESETS
+from settings import SETTINGS
 
 from benchmark.qasper_evaluator import (
     get_answers_and_evidence,
@@ -127,26 +126,31 @@ from benchmark.retrieval_metrics import (
 )
 from benchmark.stratify import stratify, to_markdown
 
-BASELINE = PRESETS["general"]
+BASELINE = SETTINGS
 
-# ponytail: threshold low/high bracket the preset defaults, but each pair is set
-# on its *own* stage's score scale, measured rather than guessed - a pair outside
-# the observed range is a no-op row that reads as a null result. rerank_threshold
-# is on the cross-encoder's probability scale, where gold evidence sits around
-# p50 0.007. retrieval_threshold was swept at 0.65/0.72, inside the band where a
-# dense cosine cut acts; it has since been removed from the pipeline (see
-# question_presets.py), and its rows in existing results are the evidence for
-# that. qa_score_threshold spans 0.006-0.97 since
-# span scoring became a real softmax product. The ranking knobs get their full
+# ponytail: threshold low/high bracket the settings, but each pair is set on its
+# *own* stage's score scale, measured rather than guessed - a pair outside the
+# observed range is a no-op row that reads as a null result. rerank_gate is on
+# gte-reranker-modernbert-base's probability scale, where on the hybrid top-30
+# gold sits at a median of 0.91-0.93 and the rest at 0.80-0.84
+# (benchmark/rerank_score_distribution.py); rerank_margin is a distance on that
+# same scale, and the shipped 0.02 sits between the two swept here.
+# retrieval_threshold was swept at 0.65/0.72, inside the band where a dense
+# cosine cut acts; it has since been removed from the pipeline (see settings.py),
+# and its rows in existing results are the evidence for that. qa_score_threshold
+# is on the reader's span probability with the no-answer mass kept, where any
+# value above 0 acts as a veto (benchmark/answer_gate.py measured it off). Rows
+# from earlier campaigns used bge-reranker-base, an absolute rerank cut and the
+# context-only span score, so their thresholds are on other scales. The ranking knobs get their full
 # discrete range (3 modes, reranker on/off) plus a narrow/wide result_limit. Not
 # exhaustively tuned - the point is which stage moves the needle, not the optimum.
 GRID = {
     "retrieval_mode": ["dense", "sparse"],
     "rerank_enabled": [False],
     "result_limit": [10, 60],
-    "rerank_threshold": [0.0002, 0.01],
-    "qa_score_threshold": [0.05, 0.20],
-    "min_answer_words": [1, 5],
+    "rerank_gate": [0.85, 0.91],
+    "rerank_margin": [0.005, 0.05],
+    "qa_score_threshold": [0.01, 0.05],
     "section_diversity_enabled": [True],
     # Phase-two intervention, not a preset field: keep the cross-encoder's
     # threshold and drop its ordering. Read through the attribution metrics and
@@ -571,7 +575,8 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
     failure to rank the right paper and a failure to rank the right paragraph
     land in the same number.
     """
-    pipeline_config, harness = split_harness_params(config)
+    # The harness axes are applied by the caller (apply_reader) before this runs.
+    pipeline_config, _ = split_harness_params(config)
     rows = []
     for q in questions:
         pdf_hashes = None
@@ -579,7 +584,7 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
             pdf_hashes = sorted({h for h, _ in gold_chunks[q["question_id"]]})
         started = time.perf_counter()
         answers = rag.answer_question(
-            q["question"], question_type="general", overrides=pipeline_config,
+            q["question"], overrides=pipeline_config,
             pdf_hashes=pdf_hashes)
         elapsed = time.perf_counter() - started
         row = score_question(q, answers, rag, gold_chunks, gold_answers,

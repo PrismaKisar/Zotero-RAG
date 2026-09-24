@@ -38,15 +38,12 @@ def load_config(config_path: str) -> dict[str, Any]:
     
     # Set defaults
     config.setdefault('defaults', {})
-    config['defaults'].setdefault('rerank_threshold', 0.25)
     config['defaults'].setdefault('highlight_color', [1, 1, 0])
-    config['defaults'].setdefault('question_type', 'general')
-    config['defaults'].setdefault('overrides', None)
     
     config.setdefault('output_base_dir', './output')
-    config.setdefault('dense_model_name', 'BAAI/bge-base-en-v1.5')
-    config.setdefault('qa_model', 'deepset/roberta-base-squad2')
-    config.setdefault('reranker_model', 'cross-encoder/ms-marco-MiniLM-L-6-v2')
+    config.setdefault('dense_model_name', 'google/embeddinggemma-300m')
+    # No reader or reranker model here: the thresholds in settings.py are
+    # calibrated on the pipeline's own two, so a config cannot swap them.
     config.setdefault('grobid_url', 'http://localhost:8070')
     config.setdefault('grobid_timeout', 180)
     config.setdefault('create_highlighted_pdfs', True)
@@ -98,8 +95,6 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
 
     rag = ZoteroRAG(
         dense_model_name=config['dense_model_name'],
-        qa_model=config['qa_model'],
-        reranker_model=config['reranker_model'],
         grobid_url=config['grobid_url'],
         grobid_timeout=config['grobid_timeout'],
         model_device=config.get('model_device'),
@@ -151,26 +146,16 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
         
         logger.info(f"Processing question {i+1}/{len(questions)}: {question}")
         
-        # Get question-specific settings or use defaults
-        rerank_threshold = question_config.get('rerank_threshold', defaults['rerank_threshold'])
+        # Only the highlight colour is per question: the pipeline's settings are fixed
         highlight_color = question_config.get('highlight_color', defaults['highlight_color'])
-        question_type = question_config.get('question_type', defaults.get('question_type', 'general'))
         
         # Convert highlight_color to tuple
         if highlight_color:
             highlight_color = tuple(highlight_color)
         
-        # Merge the per-question threshold and any extra overrides into the resolver config
-        overrides = {'rerank_threshold': rerank_threshold}
-        extra_overrides = question_config.get('overrides', defaults.get('overrides'))
-        if extra_overrides:
-            overrides.update(extra_overrides)
-
         # Answer the question
         answers = rag.answer_question(
             question=question,
-            question_type=question_type,
-            overrides=overrides,
             highlight_color=highlight_color,
         )
         

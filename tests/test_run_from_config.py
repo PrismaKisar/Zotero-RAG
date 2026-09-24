@@ -40,6 +40,7 @@ class _FakeRag:
 
     def answer_question(self, **kwargs):
         calls.setdefault("questions", []).append(kwargs["question"])
+        calls.setdefault("answer_kwargs", []).append(kwargs)
         return []
 
 
@@ -62,7 +63,7 @@ def _write_config(tmp_path, **overrides):
 
 def test_load_config_fills_in_the_documented_defaults(tmp_path):
     config = load_config(str(_write_config(tmp_path)))
-    assert config["dense_model_name"] == "BAAI/bge-base-en-v1.5"
+    assert config["dense_model_name"] == "google/embeddinggemma-300m"
     assert config["rebuild_index"] is False
 
 
@@ -99,6 +100,18 @@ def test_results_file_is_written_even_without_highlighted_pdfs(tmp_path):
     run_from_config(str(path))
     written = tmp_path / "out" / "highlighted_results" / "results.json"
     assert json.loads(written.read_text()) == {"What are transformers?": []}
+
+
+def test_a_question_reaches_the_pipeline_with_its_colour_and_no_settings(tmp_path):
+    path = _write_config(tmp_path, questions=[{"question": "q", "highlight_color": [0, 1, 0],
+                                               "rerank_gate": 0.1}])
+    run_from_config(str(path))
+    assert calls["answer_kwargs"] == [{"question": "q", "highlight_color": (0, 1, 0)}]
+
+
+def test_the_reader_and_reranker_models_are_not_configurable(tmp_path):
+    run_from_config(str(_write_config(tmp_path, qa_model="x", reranker_model="y")))
+    assert not {"qa_model", "reranker_model"} & set(calls["init"])
 
 
 def test_missing_questions_is_reported_not_crashed(tmp_path):

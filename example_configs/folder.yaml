@@ -7,10 +7,8 @@ folder_path: /path/to/your/pdf/folder  # Replace with your actual folder path
 # Output directory for indexes and highlighted PDFs
 output_base_dir: ./output
 
-# Model configuration
-dense_model_name: BAAI/bge-base-en-v1.5
-qa_model: deepset/roberta-base-squad2
-reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+# Embedding model (the reranker and the reader are fixed)
+dense_model_name: google/embeddinggemma-300m
 
 # GROBID service for PDF parsing
 grobid_url: http://localhost:8070
@@ -27,22 +25,17 @@ rebuild_index: false
 # Whether to create highlighted PDFs with answers
 create_highlighted_pdfs: true
 
-# Default settings for all questions (can be overridden per question)
+# Default settings for all questions (the colour can be set per question)
 defaults:
-  rerank_threshold: 0.001
   highlight_color: [1, 1, 0]  # RGB color (yellow)
-  question_type: general
 
 # Questions to answer
 questions:
   - question: "What is the main contribution of this work?"
-    question_type: general
     highlight_color: [1, 1, 0]  # yellow
-  
+
   - question: "What methodology was used?"
-    question_type: methodology
     highlight_color: [0, 1, 1]  # cyan
-  
+
   - question: "What are the key results?"
-    question_type: factoid
     highlight_color: [1, 0.5, 0]  # orange

@@ -19,14 +19,9 @@ output_base_dir: ./output
 # Model Settings
 # ============================================================================
 
-# Embedding model for semantic search
-dense_model_name: BAAI/bge-base-en-v1.5
-
-# Question answering model for extractive QA
-qa_model: deepset/roberta-base-squad2
-
-# Cross-encoder model for reranking
-reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+# Embedding model for semantic search. The reranker and the reader are not
+# configurable: the pipeline's thresholds are calibrated on its own two.
+dense_model_name: google/embeddinggemma-300m
 
 # Device to use: 'cpu', 'cuda', 'mps', or null for auto-detect
 model_device: null
@@ -57,10 +52,6 @@ rebuild_index: false
 # ============================================================================
 
 defaults:
-  # Minimum rerank probability to keep candidates (0-1). The cross-encoder is
-  # conservative: gold evidence typically scores around 0.01, so keep this low.
-  rerank_threshold: 0.001
-
   # Default highlight color as RGB values (0-1)
   # Yellow: [1, 1, 0], Green: [0, 1, 0], Blue: [0, 0.5, 1], Pink: [1, 0, 1]
   highlight_color: [1, 1, 0]
@@ -69,28 +60,19 @@ defaults:
 # Questions to Answer
 # ============================================================================
 
+# Only the question and its highlight colour are set here: the retrieval,
+# reranking and answering settings are fixed (zotero_rag/settings.py).
 questions:
-  # Example 1: Simple question with defaults
+  # Example 1: Simple question with the default colour
   - question: "What are transformers?"
 
-  # Example 2: Question with custom pipeline settings
+  # Example 2: Question with its own highlight color
   - question: "How does attention mechanism work?"
-    rerank_threshold: 0.001
     highlight_color: [0, 1, 0]  # Green
-    question_type: methodology
 
-  # Example 3: Question with its own highlight color
-  - question: "What is BERT?"
-    highlight_color: [0, 0.5, 1]  # Blue
-
-  # Example 4: Question with custom QA config
+  # Example 3: Another colour, so its highlights are told apart in the PDF
   - question: "What is the learning rate used?"
-    rerank_threshold: 0.001
     highlight_color: [1, 0, 1]  # Pink
-    question_type: factoid
-    overrides:
-      qa_score_threshold: 0.3
-      min_answer_words: 2
 
 # ============================================================================
 # Output Settings

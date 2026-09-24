@@ -14,7 +14,6 @@ import streamlit as st
 from embedding_manager import DEFAULT_ENCODE_BATCH_SIZE
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
-from question_presets import PRESETS, resolve
 from reranker import DEFAULT_RERANK_BATCH_SIZE
 from zotero_db import ZoteroDatabase
 
@@ -223,7 +222,7 @@ def main():
     if 'zotero_collection' not in st.session_state:
         st.session_state.zotero_collection = None
     if 'dense_model_name' not in st.session_state:
-        st.session_state.dense_model_name = "BAAI/bge-base-en-v1.5"
+        st.session_state.dense_model_name = "google/embeddinggemma-300m"
     if 'model_loaded' not in st.session_state:
         st.session_state.model_loaded = False
     if 'model_device' not in st.session_state:
@@ -317,10 +316,10 @@ def show_setup_tab():
 
     with model_col_left:
         model_input = st.text_input(
-            "FastEmbed dense model name",
+            "Dense model name",
             value=st.session_state.dense_model_name,
-            placeholder="e.g., BAAI/bge-base-en-v1.5",
-            help="Enter a FastEmbed-supported dense model (for example 'BAAI/bge-base-en-v1.5' or 'sentence-transformers/all-MiniLM-L6-v2')"
+            placeholder="e.g., google/embeddinggemma-300m",
+            help="Enter a sentence-transformers dense model (for example 'google/embeddinggemma-300m' or 'BAAI/bge-base-en-v1.5')"
         )
 
         col_device, col_encode_batch, col_rerank_batch = st.columns(3)
@@ -395,7 +394,7 @@ def show_setup_tab():
                     st.rerun()
                 except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
                     st.error(f"Error loading model: {e}")
-                    st.info("Make sure the model name is correct and supported by FastEmbed")
+                    st.info("Make sure the model name is correct and loadable by sentence-transformers")
         else:
             st.error("Please enter a model name")
 
@@ -628,98 +627,13 @@ def show_search_tab():
 
     st.header("Search Your Library")
 
-    # UI-only copy for the type selector. The hyperparameters themselves live in
-    # question_presets, so a preset change is reflected here without editing app.py.
-    QUESTION_TYPE_DESCRIPTIONS = {
-        'factoid': 'Specific facts or entities',
-        'methodology': 'Processes, methods, algorithms',
-        'explanation': 'How/why something works',
-        'comparison': 'Contrasting different concepts',
-        'definition': 'What something is',
-        'general': 'General questions',
-        'custom': 'Custom settings (fully configurable)',
-    }
-
-    # Initialize session state for presets if not exists
-    if 'selected_question_type' not in st.session_state:
-        st.session_state.selected_question_type = 'general'
-
-    # Query input (moved to top)
+    # No question type and no parameter widgets: the pipeline's settings are
+    # fixed, measured values (settings.py), not something to tune per search.
     query = st.text_input(
         "Enter your question",
         placeholder="What are the main findings about...",
         key="search_input"
     )
-
-    st.markdown("---")
-
-    col_question_type, col_adjust = st.columns([1, 2], gap="large")
-
-    with col_question_type:
-        # Question type selector
-        st.subheader("Question Type")
-
-        question_type_options = list(PRESETS.keys())
-        question_type_labels = [
-            f"{qt.title()} - {QUESTION_TYPE_DESCRIPTIONS[qt]}"
-            for qt in question_type_options
-        ]
-
-        selected_idx = question_type_options.index(st.session_state.selected_question_type)
-        selected_label = st.selectbox(
-            "Select question type to apply preset parameters",
-            question_type_labels,
-            index=selected_idx,
-            key="question_type_selector"
-        )
-
-        # Extract question type from label
-        selected_question_type = question_type_options[question_type_labels.index(selected_label)]
-        st.session_state.selected_question_type = selected_question_type
-
-    preset = resolve(selected_question_type)
-
-    with col_adjust:
-        # Always show configurable parameters (pre-filled with preset values)
-        st.subheader("Adjust Parameters (optional)")
-        col_rerank, col_qa = st.columns(2)
-
-        with col_rerank:
-            rerank_threshold = st.number_input(
-                "1. Rerank Threshold",
-                min_value=0.0, max_value=1.0,
-                value=preset['rerank_threshold'],
-                step=0.001,
-                format="%.4f",
-                help="Stage 2 (CrossEncoder): minimum probability. The model is "
-                     "conservative — gold evidence typically scores around 0.01."
-            )
-
-        with col_qa:
-            qa_score_threshold = st.number_input(
-                "2. QA Confidence",
-                min_value=0.0, max_value=1.0,
-                value=preset['qa_score_threshold'],
-                step=0.05,
-                help="Stage 3 (QA Model): Confidence threshold."
-            )
-
-        min_answer_words = st.number_input(
-            "Min Answer Words",
-            min_value=1, max_value=20,
-            value=preset['min_answer_words'],
-            step=1,
-            help="Minimum words in an answer."
-        )
-
-    # User overrides applied on top of the question-type preset by the resolver.
-    # The number inputs are pre-filled with preset values, so unchanged fields
-    # resolve back to the preset default.
-    overrides = {
-        'rerank_threshold': rerank_threshold,
-        'qa_score_threshold': qa_score_threshold,
-        'min_answer_words': min_answer_words,
-    }
 
     # Predefined color presets (defined here for use in search)
     COLOR_PRESETS = {
@@ -822,8 +736,6 @@ def show_search_tab():
         try:
             st.session_state.search_results = st.session_state.rag.answer_question(
                 question=query,
-                question_type=selected_question_type,
-                overrides=overrides,
                 progress_callback=qa_callback,
                 rerank_callback=rerank_callback,
             )

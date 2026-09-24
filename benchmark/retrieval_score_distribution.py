@@ -2,11 +2,11 @@
 
 retrieval_threshold used to cut the dense branch by cosine similarity (the
 ``score_threshold`` of the dense query, or of the dense prefetch in hybrid
-mode). The presets put it at 0.35-0.45, a value never checked against the
+mode). The shipped config put it at 0.35-0.45, a value never checked against the
 scores, and a threshold below every score a question ever sees is a no-op
 however it is swept. This measures where the scores actually lie, the way
 rerank_threshold was re-set against the cross-encoder's measured distribution;
-what it found got the cut dropped rather than re-tuned (see question_presets.py).
+what it found got the cut dropped rather than re-tuned (see zotero_rag/settings.py).
 
 Every aligned question is scored against every chunk of the corpus with the
 index's own embedding model, exactly: no HNSW, so these are the scores Qdrant
@@ -155,10 +155,11 @@ def report(questions: list[dict], limit: int) -> str:
 
     return "\n\n".join([
         "# Dense cosine score distribution (retrieval_threshold)",
-        f"{len(questions)} questions, "
-        f"{len(questions[0]['noise']) + len(questions[0]['gold'])} corpus chunks, exact search. {gold_in_top} of {len(gold)} gold chunks "
-        f"({gold_in_top / len(gold):.1%}) rank inside the top {limit}: no threshold "
-        "can bring back the rest.",
+        (f"{len(questions)} questions, "
+         f"{len(questions[0]['noise']) + len(questions[0]['gold'])} corpus chunks, exact search. "
+         f"{gold_in_top} of {len(gold)} gold chunks "
+         f"({gold_in_top / len(gold):.1%}) rank inside the top {limit}: no threshold "
+         "can bring back the rest."),
         "## Percentiles", percentiles,
         "## Histogram", histogram,
         "## Absolute threshold", sweep_table(sweep(questions, ABSOLUTE_THRESHOLDS)),

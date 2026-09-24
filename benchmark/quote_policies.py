@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from question_presets import PRESETS
+from settings import SETTINGS
 
 from benchmark.ablation import (
     LATENCY_STAGES,
@@ -90,11 +90,10 @@ def main():
     print(f"scoring {len(questions)} aligned questions, one generation each")
 
     rows = {"baseline": [], "citation_quote_strict": []}
-    config = dict(PRESETS["general"])
+    config = dict(SETTINGS)
     for i, q in enumerate(questions, 1):
         started = time.perf_counter()
-        answers = rag.answer_question(q["question"], question_type="general",
-                                      overrides=config)
+        answers = rag.answer_question(q["question"], overrides=config)
         elapsed = time.perf_counter() - started
         lenient, strict = split_policies(answers, rag.qa_engine.last_verified_contexts)
         for name, view in (("baseline", lenient), ("citation_quote_strict", strict)):

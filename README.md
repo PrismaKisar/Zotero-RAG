@@ -10,7 +10,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - GROBID sentence-level parsing with coordinates for precise PDF highlighting
 - Dense + Sparse retrieval with Qdrant hybrid search
 - Chunk contextualization via Ollama before embedding (optional)
-- Question type presets (factoid, methodology, explanation, comparison)
+- Fixed pipeline settings, measured on benchmarks rather than tuned per question
 - Sliding window QA for answers spanning chunk boundaries
 - Multi-color highlighting for multiple queries
 - Streamlit web interface with real-time progress tracking
@@ -41,11 +41,12 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
+│   ├── settings.py             # Fixed, measured pipeline settings
 │   └── zotero_db.py            # Zotero SQLite database interface
 │
 ├── example_configs/         # Example YAML configurations
 │   ├── basic.yaml           # Zotero source, every option documented
-│   ├── advanced.yaml        # Zotero source, per-question overrides
+│   ├── advanced.yaml        # Zotero collection, device, a colour per question
 │   ├── folder.yaml          # Folder source, for PDF upload workflows
 │   └── highlight_colors.html # Swatch reference for the highlight_color key
 │
@@ -143,7 +144,7 @@ Then navigate to `http://localhost:8501`
     - Used for chunk contextualization before embedding
 
 5. **Select Embedding Model**
-   - Model name: Any HuggingFace SentenceTransformer (e.g., `BAAI/bge-base-en-v1.5`)
+   - Model name: Any HuggingFace SentenceTransformer (e.g., `google/embeddinggemma-300m`)
    - Device: auto/cpu/mps/cuda
    - Batch sizes: encoding and reranking (default 32)
    - Click "Load Model"
@@ -162,34 +163,21 @@ Then navigate to `http://localhost:8501`
    - Natural language queries supported
    - Example: "What methods are used for circuit interpretability?"
 
-2. **Question Type Selection** (Optional)
-   - **Factoid**: Short, precise answers (e.g., "Who invented transformers?")
-   - **Methodology**: Detailed process explanations (e.g., "How does attention mechanism work?")
-   - **Explanation**: Conceptual understanding (e.g., "Why are transformers effective?")
-   - **Comparison**: Contrasting approaches (e.g., "What's the difference between BERT and GPT?")
-   - **General**: Balanced settings for mixed queries
-
-3. **Adjust Parameters** (Advanced)
-   - **Rerank threshold**: CrossEncoder score ( (0, 1), higher = stricter )
-   - **QA threshold**: Answer confidence ( (0, 1), higher = more confident )
-   - **Min words**: Minimum answer length filter
-   - **Answer length**: Max characters per answer
-
-4. **Search & Navigate**
+2. **Search & Navigate**
    - View answers with context and scores
    - Navigate results with Previous/Next buttons
    - See PDF source, page number, and section
    - Click "Open PDF" to view in default viewer
 
-5. **Highlight Color**
+3. **Highlight Color**
    - Choose from presets (Yellow, Cyan, Orange, Green, Pink, Purple)
    - Or use custom RGB color picker
 
-6. **Highlight PDF**
+4. **Highlight PDF**
    - Select only the answers you like to highlight
    - Click "Highlight PDF" to add colored annotations
 
-7. **Multi-Query Highlighting**
+5. **Multi-Query Highlighting**
    - Run multiple queries with different colors
    - All highlights accumulate in the same PDF
    - Perfect for exploring different aspects of a paper
@@ -248,15 +236,12 @@ export TQDM_DISABLE=1
 export TOKENIZERS_PARALLELISM=false
 ```
 
-### Question Type Presets
+### Pipeline Settings
 
-Each question type has optimized parameters:
-
-- **Factoid**: Stricter QA threshold, shorter answers, entity preference
-- **Methodology**: Very lenient threshold, longer answers, section diversity
-- **Explanation**: Lenient threshold, medium-length answers
-- **Comparison**: Moderate threshold, diverse sources preferred
-- **General**: Balanced settings for mixed queries
+There are no question types and no parameters to adjust. The retrieval, reranking
+and answering thresholds are fixed values measured on the benchmarks, including on
+questions the library cannot answer, for which the right output is nothing. They
+are documented with their measurements in `zotero_rag/settings.py`.
 
 ## Citation
 

@@ -1,10 +1,11 @@
-"""Regression guard: example configs only carry knobs the pipeline reads.
+"""Regression guard: example configs carry only knobs the runner reads, and none
+of the pipeline's fixed settings.
 
-`load_config` does no key validation, so a dead knob in an `overrides` block
-silently rides into the resolver overrides and looks like a tuning dial that
-does nothing. These tests keep the shipped examples honest: every override key
-must be a live preset field, and every question type must exist in the shared
-presets.
+`load_config` does no key validation, so a dead key rides along looking like a
+tuning dial that does nothing. The thresholds are fixed and calibrated on the
+pipeline's own reranker and reader (zotero_rag/settings.py), so a config may set
+neither the thresholds nor those two models, nor the question types and
+overrides that used to carry them.
 """
 
 import ast
@@ -13,19 +14,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from zotero_rag.question_presets import PRESETS
+from zotero_rag.settings import SETTINGS
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "example_configs"
-LIVE_FIELDS = {key for preset in PRESETS.values() for key in preset}
-
-# The keys run_from_config actually reads out of the `defaults` block; anything
-# else there is a knob the runner silently ignores.
-RUNNER_DEFAULTS = {
-    "rerank_threshold",
-    "highlight_color",
-    "question_type",
-    "overrides",
-}
+FIXED = {*SETTINGS, "question_type", "overrides", "qa_model", "reranker_model"}
+# What run_from_config reads from `defaults` and from each question.
+RUNNER_DEFAULTS = {"highlight_color"}
+RUNNER_QUESTION_KEYS = {"question", "highlight_color"}
 
 CONFIGS = sorted(CONFIG_DIR.glob("*.yaml"))
 
@@ -34,11 +29,15 @@ def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
-def _override_blocks(config: dict):
-    """Yield every overrides block in a loaded config."""
-    blocks = [config.get("defaults", {}).get("overrides")]
-    blocks += [q.get("overrides") for q in config.get("questions", [])]
-    return [b for b in blocks if b]
+def _keys(node):
+    """Every mapping key anywhere in a loaded config."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _keys(value)
 
 
 def test_example_configs_exist():
@@ -61,26 +60,18 @@ def test_config_is_valid_yaml(path):
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
-def test_overrides_keys_are_live_preset_fields(path):
-    for block in _override_blocks(_load(path)):
-        dead = set(block) - LIVE_FIELDS
-        assert not dead, f"{path.name} sets keys the pipeline never reads: {sorted(dead)}"
+def test_no_config_sets_a_fixed_setting(path):
+    fixed = FIXED & set(_keys(_load(path)))
+    assert not fixed, f"{path.name} sets fixed settings: {sorted(fixed)}"
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
-def test_defaults_only_expose_keys_the_runner_reads(path):
-    defaults = _load(path).get("defaults", {})
-    ignored = set(defaults) - RUNNER_DEFAULTS
-    assert not ignored, f"{path.name} sets defaults the runner ignores: {sorted(ignored)}"
-
-
-@pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
-def test_question_types_are_known(path):
+def test_defaults_and_questions_only_carry_what_the_runner_reads(path):
     config = _load(path)
-    types = [config.get("defaults", {}).get("question_type")]
-    types += [q.get("question_type") for q in config.get("questions", [])]
-    for question_type in filter(None, types):
-        assert question_type in PRESETS, f"{path.name}: unknown question type {question_type!r}"
+    ignored = set(config.get("defaults", {})) - RUNNER_DEFAULTS
+    for question in config.get("questions", []):
+        ignored |= set(question) - RUNNER_QUESTION_KEYS
+    assert not ignored, f"{path.name} sets keys the runner ignores: {sorted(ignored)}"
 
 
 # Keys the runner itself consumes; everything else at the top level is forwarded

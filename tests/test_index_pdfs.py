@@ -56,6 +56,6 @@ def test_zotero_rag_name_resolves_to_the_package():
 
     assert hasattr(zotero_rag, "__path__"), "zotero_rag got shadowed by zotero_rag.py"
 
-    from zotero_rag.question_presets import PRESETS
+    from zotero_rag.settings import SETTINGS
 
-    assert PRESETS
+    assert SETTINGS

@@ -56,7 +56,7 @@ def _rag(results, answers=None):
     rag.qa_engine = types.SimpleNamespace(
         extract_answers=lambda *a, **k: answers or [])
     rag.reranker = types.SimpleNamespace(
-        rerank=lambda question, candidates, threshold, progress_callback=None,
+        rerank=lambda question, candidates, gate=0.0, margin=1.0, progress_callback=None,
         order_by_retrieval=False: [
             RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
             for c, s in candidates])

@@ -21,8 +21,8 @@ from benchmark.ablation import (
     csv_metrics,
     csv_row,
     dataset_name,
-    load_completed_configs,
     highlight_scores,
+    load_completed_configs,
     load_gold_chunks,
     quote_scores,
     reader_key,
@@ -75,7 +75,7 @@ class _FakeRag:
         ]
         self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
 
-    def answer_question(self, question, question_type, overrides, pdf_hashes=None):
+    def answer_question(self, question, overrides, pdf_hashes=None):
         self.seen_call = {"overrides": overrides, "pdf_hashes": pdf_hashes}
         return self._answers
 
@@ -139,10 +139,10 @@ def test_split_harness_params_omits_axes_the_config_leaves_at_baseline():
     assert harness == {}
 
 
-def test_harness_params_are_not_question_preset_fields():
+def test_harness_params_are_not_pipeline_settings():
     """They must be split out: resolve() would carry them into every stage's config."""
-    from question_presets import PRESETS
-    assert not set(HARNESS_PARAMS) & set(PRESETS["general"])
+    from settings import SETTINGS
+    assert not set(HARNESS_PARAMS) & set(SETTINGS)
 
 
 def test_run_config_keeps_harness_axes_out_of_the_pipeline_overrides():
@@ -229,15 +229,16 @@ def test_the_harness_reader_defaults_match_the_readers_own():
     and drifting means every generative config reloads the model on every pass
     while still scoring correctly - a silent, purely-cost failure.
     """
-    from benchmark.ablation import (
-        ANSWER_STYLE_DEFAULT,
-        CONTEXT_CHUNKS_DEFAULT,
-        QUOTE_DEFAULT,
-    )
     from generative_reader import (
         DEFAULT_ANSWER_STYLE,
         DEFAULT_CONTEXT_CHUNKS,
         QUOTE_OFF,
+    )
+
+    from benchmark.ablation import (
+        ANSWER_STYLE_DEFAULT,
+        CONTEXT_CHUNKS_DEFAULT,
+        QUOTE_DEFAULT,
     )
 
     assert QUOTE_DEFAULT == QUOTE_OFF

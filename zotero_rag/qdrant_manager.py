@@ -15,7 +15,7 @@ class QdrantManager:
     """Manage Qdrant vector database for storing and searching chunk vectors."""
     
     def __init__(self, 
-                dense_model_name: str = "BAAI/bge-base-en-v1.5", 
+                dense_model_name: str = "google/embeddinggemma-300m", 
                 qdrant_url: str = "http://localhost:6333",
                 vector_size: int = 768,
                 collection_suffix: str = ""):
@@ -616,7 +616,7 @@ class QdrantManager:
 
         No request carries a ``score_threshold``: ``result_limit`` is the only
         cut. A cosine floor used to sit on the dense side and was removed - see
-        question_presets.py for the measurement behind that.
+        settings.py for the measurement behind that.
 
         The dense side is searched exactly, not through HNSW. At benchmark
         scale this changes nothing - below ``indexing_threshold_kb`` (10 MB of

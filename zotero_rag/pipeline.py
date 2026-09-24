@@ -27,8 +27,8 @@ from pdf_cache_manager import PDFCacheManager
 from pdf_processor import PDFProcessor
 from qa_engine import QAEngine
 from qdrant_manager import QdrantManager
-from question_presets import resolve
 from reranker import Reranker
+from settings import resolve
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 from zotero_db import ZoteroDatabase
 
@@ -64,9 +64,9 @@ class ZoteroRAG:
     """Main orchestration class for the Zotero RAG pipeline."""
     
     def __init__(self, 
-                dense_model_name: str = "BAAI/bge-base-en-v1.5", 
+                dense_model_name: str = "google/embeddinggemma-300m", 
                 qa_model: str = "deepset/deberta-v3-large-squad2",
-                reranker_model: str = "BAAI/bge-reranker-base",
+                reranker_model: str = "Alibaba-NLP/gte-reranker-modernbert-base",
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,
                 qdrant_url: str = "http://localhost:6333",
@@ -81,7 +81,7 @@ class ZoteroRAG:
         """Initialize the RAG system.
         
         Args:
-            dense_model_name: Name of the FastEmbed dense model for embeddings.
+            dense_model_name: Name of the sentence-transformers dense model for embeddings.
             qa_model: Name of the QA model for answer extraction.
             reranker_model: Name of the cross-encoder model for reranking.
             grobid_url: URL of the GROBID service.
@@ -660,7 +660,6 @@ class ZoteroRAG:
 
     def answer_question(self,
                     question: str,
-                    question_type: str = 'general',
                     overrides: dict | None = None,
                     progress_callback=None,
                     rerank_callback=None,
@@ -675,10 +674,8 @@ class ZoteroRAG:
 
         Args:
             question: The question to answer.
-            question_type: Type of question (factoid, explanation, methodology, etc.).
-            overrides: User overrides applied on top of the question-type preset.
-                The merged config drives every stage: rerank_threshold and
-                qa_score_threshold are applied literally.
+            overrides: Changes to the fixed settings (see ``settings``), for the
+                benchmarks that vary them one at a time. The product passes none.
             progress_callback: Function(current, total, message) for QA progress.
             rerank_callback: Function(current, total, message) for rerank progress.
             highlight_color: RGB tuple (0-1) for highlighting. If None, use query-based color.
@@ -690,7 +687,7 @@ class ZoteroRAG:
         Returns:
             List of Answer objects, deduplicated and sorted by score.
         """
-        config = resolve(question_type, overrides)
+        config = resolve(overrides)
 
         # Stage timings: a stage absent from the dict is one this call never
         # reached, which is the honest record when retrieval comes back empty.
@@ -762,7 +759,8 @@ class ZoteroRAG:
             reranked = self.reranker.rerank(
                 question,
                 candidates,
-                config['rerank_threshold'],
+                config['rerank_gate'],
+                config['rerank_margin'],
                 progress_callback=rerank_callback,
                 # Read with a default rather than added to every preset: this is
                 # a phase-two intervention, and a preset field would ship it as a
