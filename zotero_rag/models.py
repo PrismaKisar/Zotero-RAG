@@ -56,6 +56,30 @@ class RerankedChunk:
 
 
 @dataclass
+class RetrievedChunk:
+    """A retrieval candidate. A neighbour was pulled in beside a hit and never
+    scored against the query: its score is the hit's, borrowed."""
+    chunk: Chunk
+    retrieval_score: float
+    is_neighbour: bool = False
+
+
+@dataclass
+class QuestionTrace:
+    """What one ``answer_question`` call did at each stage, for the benchmarks.
+
+    ``retrieved`` is the retrieval order: hits best first, ties by chunk id,
+    then neighbours best first. ``reranked`` is what the reader was given.
+    ``stage_times`` holds wall-clock seconds per stage reached; total latency
+    alone cannot say whether a slow reader or a slow retriever is responsible,
+    and the two carry opposite fixes.
+    """
+    retrieved: list[RetrievedChunk] = field(default_factory=list)
+    reranked: list[RerankedChunk] = field(default_factory=list)
+    stage_times: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class Answer:
     """Represents an extracted answer to a question."""
     text: str  # The answer text extracted from passage
@@ -82,6 +106,27 @@ class Answer:
              self.section, self.start_char, self.end_char, self.score, self.query, self.color,
              self.sentence_coords, self.retrieval_score, self.rerank_score, self.pdf_path, self.pdf_hash)
         )
+
+
+class Reader(Protocol):
+    """The seam between reranking and answers: QAEngine and GenerativeReader.
+
+    ``reader_kind`` names everything that changes what the reader does, so two
+    readers of one kind are interchangeable and a loaded one can be reused.
+    ``last_quote_stats`` describes the last call, with ``cited`` 0 when nothing
+    was asked to quote; ``generation_failures`` counts the calls lost to the
+    service since it was last reset. A reader that cannot fail or quote keeps
+    both at zero rather than lacking them.
+    """
+
+    reader_kind: str
+    last_quote_stats: dict[str, int]
+    generation_failures: int
+
+    def extract_answers(self, question: str, candidates: list[RerankedChunk],
+                        config: dict, color: tuple[float, float, float] = (1, 1, 0),
+                        progress_callback=None) -> list[Answer]:
+        ...
 
 
 @dataclass

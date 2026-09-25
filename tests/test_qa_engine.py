@@ -147,3 +147,12 @@ def test_a_batch_below_the_cap_still_runs_in_one_pass():
     model = _CountingModel()
     _engine_with(model)._logits_in_windows(_inputs(MAX_WINDOWS_PER_FORWARD - 1))
     assert model.forward_sizes == [MAX_WINDOWS_PER_FORWARD - 1]
+
+
+def test_the_extractive_reader_is_its_model_and_never_quotes_or_fails(monkeypatch):
+    """The Reader seam's shared fields: the ablation reads them on every reader."""
+    monkeypatch.setattr(QAEngine, "_load_model_direct", lambda self: None)
+    engine = QAEngine(model_name="deepset/roberta-base-squad2", device="cpu")
+    assert engine.reader_kind == "deepset/roberta-base-squad2"
+    assert engine.last_quote_stats == {"cited": 0, "matched": 0}
+    assert engine.generation_failures == 0

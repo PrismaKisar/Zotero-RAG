@@ -10,6 +10,7 @@ from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_QA_MODEL = "deepset/deberta-v3-large-squad2"
 DEFAULT_QA_BATCH_SIZE = {"cuda": 128, "mps": 16, "cpu": 8}
 MAX_SEQUENCE_TOKENS = 512
 MAX_ANSWER_TOKENS = 60
@@ -86,7 +87,7 @@ class QAEngine:
     """Handles extractive question answering over text passages."""
     
     def __init__(self, 
-                model_name: str = "deepset/deberta-v3-large-squad2", 
+                model_name: str = DEFAULT_QA_MODEL,
                 device: str | None = None,
                 batch_size: int | None = None):
         """Initialize the QA engine.
@@ -97,6 +98,11 @@ class QAEngine:
             batch_size: Sequences per forward pass. Device default if None.
         """
         self.model_name = model_name
+        # The Reader seam (models.Reader): an extractive reader is its model,
+        # never quotes, and has no service to lose a generation to.
+        self.reader_kind = model_name
+        self.last_quote_stats = {"cited": 0, "matched": 0}
+        self.generation_failures = 0
         self.device = resolve_device(device)
         self.model = None
         self.tokenizer = None

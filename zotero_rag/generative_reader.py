@@ -171,9 +171,8 @@ def span_sentence_coords(chunk, span: tuple[int, int] | None) -> list:
 class GenerativeReader:
     """Answers from the retrieved chunks with a local LLM, citing what it used.
 
-    Duck-types ``extract_answers``, the one method ``ZoteroRAG.answer_question``
-    calls on its reader, so it drops into the pipeline and the ablation harness
-    with no special case.
+    A ``models.Reader``, like ``QAEngine``, so it drops into the pipeline and the
+    ablation harness with no special case.
     """
 
     def __init__(self,
