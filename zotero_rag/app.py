@@ -11,7 +11,7 @@ import sys
 import time
 
 import streamlit as st
-from embedding_manager import DEFAULT_ENCODE_BATCH_SIZE
+from embedding_manager import DEFAULT_DENSE_MODEL, DEFAULT_ENCODE_BATCH_SIZE
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
 from reranker import DEFAULT_RERANK_BATCH_SIZE
@@ -209,8 +209,6 @@ def main():
         st.session_state.rag = None
     if 'search_results' not in st.session_state:
         st.session_state.search_results = []
-    if 'search_candidates' not in st.session_state:
-        st.session_state.search_candidates = []
     if 'current_answer' not in st.session_state:
         st.session_state.current_answer = 0
     if 'indexed' not in st.session_state:
@@ -222,7 +220,7 @@ def main():
     if 'zotero_collection' not in st.session_state:
         st.session_state.zotero_collection = None
     if 'dense_model_name' not in st.session_state:
-        st.session_state.dense_model_name = "google/embeddinggemma-300m"
+        st.session_state.dense_model_name = DEFAULT_DENSE_MODEL
     if 'model_loaded' not in st.session_state:
         st.session_state.model_loaded = False
     if 'model_device' not in st.session_state:
@@ -318,8 +316,8 @@ def show_setup_tab():
         model_input = st.text_input(
             "Dense model name",
             value=st.session_state.dense_model_name,
-            placeholder="e.g., google/embeddinggemma-300m",
-            help="Enter a sentence-transformers dense model (for example 'google/embeddinggemma-300m' or 'BAAI/bge-base-en-v1.5')"
+            placeholder=f"e.g., {DEFAULT_DENSE_MODEL}",
+            help=f"Enter a sentence-transformers dense model (for example '{DEFAULT_DENSE_MODEL}' or 'BAAI/bge-base-en-v1.5')"
         )
 
         col_device, col_encode_batch, col_rerank_batch = st.columns(3)
@@ -751,7 +749,6 @@ def show_search_tab():
             rerank_status.text("Stage 1 - Reranking: Complete!")
             qa_status.text("Stage 2 - QA Extraction: Complete!")
 
-            st.session_state.search_candidates = getattr(st.session_state.rag, "last_candidates", [])
             st.session_state.current_answer = 0
             st.session_state.current_query = query
         except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app

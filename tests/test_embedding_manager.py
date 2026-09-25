@@ -103,3 +103,14 @@ def test_encode_query_uses_the_query_prompt():
 
     assert manager.dense_model.calls == [("query", 1)]
     assert len(encoded["dense"]) == DIM
+
+
+def test_each_model_default_is_named_in_one_module_only():
+    """A second copy of a default drifts: the app and the YAML runner once
+    disagreed with the pipeline about which dense model was the default."""
+    pkg = Path(__file__).resolve().parent.parent / "zotero_rag"
+    for name, owner in (("google/embeddinggemma-300m", "embedding_manager.py"),
+                        ("deepset/deberta-v3-large-squad2", "qa_engine.py"),
+                        ("Alibaba-NLP/gte-reranker-modernbert-base", "reranker.py")):
+        holders = [p.name for p in pkg.glob("*.py") if name in p.read_text()]
+        assert holders == [owner], (name, holders)

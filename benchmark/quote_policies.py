@@ -105,7 +105,7 @@ def main():
             # strict row is a filter applied to it and times nothing of its own.
             row["latency_s"] = elapsed
             for stage in LATENCY_STAGES:
-                row[f"latency_{stage}_s"] = rag.last_stage_times.get(stage, 0.0)
+                row[f"latency_{stage}_s"] = rag.last_trace.stage_times.get(stage, 0.0)
             rows[name].append(row)
         if i % 20 == 0:
             print(f"  {i}/{len(questions)}")

@@ -1,21 +1,39 @@
 """QdrantManager class for managing Qdrant vector database operations."""
 
+import functools
 import logging
 import re
 import uuid
 
+import httpx
 import qdrant_client as qc
 from models import Chunk
 from qdrant_client.http import models as qmodels
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 logger = logging.getLogger(__name__)
+
+
+def _reports_unreachable(method):
+    """Raise a Qdrant that went away mid-session as the ConnectionError a failed
+    connect raises, so the app's "Qdrant is not running" handling still applies
+    to a client that stays open."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except ResponseHandlingException as exc:
+            if isinstance(exc.source, httpx.TransportError):
+                raise self._unreachable() from exc
+            raise
+    return wrapper
 
 
 class QdrantManager:
     """Manage Qdrant vector database for storing and searching chunk vectors."""
     
     def __init__(self, 
-                dense_model_name: str = "google/embeddinggemma-300m", 
+                dense_model_name: str,
                 qdrant_url: str = "http://localhost:6333",
                 vector_size: int = 768,
                 collection_suffix: str = ""):
@@ -36,8 +54,8 @@ class QdrantManager:
         self.registry_collection = "zotero_rag_registry" + collection_suffix
         self.vector_size = vector_size
         self.chunks: list[Chunk] = []
-        self.client: qc.QdrantClient | None = None
-        self.conn_initialized = False
+        self._client: qc.QdrantClient | None = None
+        self._collections_ready = False
     
     @staticmethod
     def _sanitize_model_name(model_name: str) -> str:
@@ -70,36 +88,58 @@ class QdrantManager:
         NAMESPACE_RAG = uuid.UUID("12345678-1234-5678-1234-567812345678")
         return str(uuid.uuid5(NAMESPACE_RAG, input_str))
 
-    def _start_connection(self):
-        """Start connection to Qdrant client and verify connectivity."""
-        self.client = qc.QdrantClient(
-            url=self.qdrant_url,
+    def _unreachable(self) -> ConnectionError:
+        message = (
+            f"Qdrant service not reachable at {self.qdrant_url}. "
+            "Start Qdrant and retry."
         )
+        logger.error(message)
+        return ConnectionError(message)
+
+    def _connect(self) -> qc.QdrantClient:
+        """A client that has completed one round-trip, or ConnectionError."""
+        client = qc.QdrantClient(url=self.qdrant_url)
         try:
             # Force a round-trip to verify the service is reachable.
-            self.client.get_collections()
+            client.get_collections()
         except Exception as exc:
-            if self.client:
-                try:
-                    self.client.close()
-                except Exception:
-                    logger.debug("Error closing unreachable Qdrant client", exc_info=True)
-            self.client = None
-            message = (
-                f"Qdrant service not reachable at {self.qdrant_url}. "
-                "Start Qdrant and retry."
-            )
-            logger.error(message)
-            raise ConnectionError(message) from exc
-
+            try:
+                client.close()
+            except Exception:
+                logger.debug("Error closing unreachable Qdrant client", exc_info=True)
+            raise self._unreachable() from exc
         logger.info("Connected to Qdrant client")
+        return client
 
-    def _initialize_connection(self):
-        """Initialize Qdrant client and ensure collections and indexes are set up."""
-        self._start_connection()
-        
-        if not self.client.collection_exists(self.chunk_collection):
-            self.client.create_collection(
+    @property
+    def client(self) -> qc.QdrantClient:
+        """The connected client, with both collections in place.
+
+        Connects on first use and stays connected for the manager's lifetime,
+        so callers never sequence an open and a close. A failed connection is
+        not cached: the next use tries again.
+        """
+        if self._client is None:
+            self._client = self._connect()
+        if not self._collections_ready:
+            self._ensure_collections()
+        return self._client
+
+    @_reports_unreachable
+    def ping(self):
+        """Raise ConnectionError now if Qdrant is unreachable.
+
+        For a batch that records per-item failures and moves on: without it, a
+        Qdrant that is down is recorded as every item failing instead of as
+        the one error it is.
+        """
+        self.client.get_collections()
+
+    def _ensure_collections(self):
+        """Create the chunk and registry collections, and their indexes, if missing."""
+        client = self._client
+        if not client.collection_exists(self.chunk_collection):
+            client.create_collection(
                 collection_name=self.chunk_collection,
                 hnsw_config=qmodels.HnswConfigDiff(
                     ef_construct=100,
@@ -123,7 +163,7 @@ class QdrantManager:
             )
 
             # Create an index on 'pdf_hash' payload field for efficient lookups
-            self.client.create_payload_index(
+            client.create_payload_index(
                 collection_name=self.chunk_collection,
                 field_name="pdf_hash",
                 field_schema=qmodels.KeywordIndexParams(
@@ -142,14 +182,14 @@ class QdrantManager:
         else:
             logger.info(f"Qdrant chunk collection already exists: {self.chunk_collection}")
 
-        if not self.client.collection_exists(self.registry_collection):
-            self.client.create_collection(
+        if not client.collection_exists(self.registry_collection):
+            client.create_collection(
                 collection_name=self.registry_collection,
                 vectors_config=None,
             )
 
             # Create an index on 'models' payload field for efficient lookups
-            self.client.create_payload_index(
+            client.create_payload_index(
                 collection_name=self.registry_collection,
                 field_name="models",
                 field_schema=qmodels.KeywordIndexParams(
@@ -158,7 +198,7 @@ class QdrantManager:
                 ),
             )
             # Create an index on title to allow lookups by name
-            self.client.create_payload_index(
+            client.create_payload_index(
                 collection_name=self.registry_collection,
                 field_name="title",
                 field_schema=qmodels.KeywordIndexParams(
@@ -170,22 +210,9 @@ class QdrantManager:
         else:
             logger.info(f"Qdrant registry collection already exists: {self.registry_collection}")
 
-        self.conn_initialized = True
+        self._collections_ready = True
 
-    def open_connection(self):
-        """Open connection to Qdrant client."""
-        if self.conn_initialized is False:
-            self._initialize_connection()
-        else:
-            self._start_connection()
-        
-    def close_connection(self):
-        """Disconnect from Qdrant client."""
-        if self.client:
-            self.client.close()
-            self.client = None
-            logger.info("Disconnected from Qdrant client")
-
+    @_reports_unreachable
     def is_pdf_indexed(self, pdf_hash: str) -> bool:
         """Check if a pdf with the given pdf hash is already indexed in Qdrant.
         
@@ -195,9 +222,6 @@ class QdrantManager:
         Returns:
             True if the pdf is already indexed, False otherwise.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         flt = qmodels.Filter(
             must=[
@@ -228,15 +252,13 @@ class QdrantManager:
 
         return False
     
+    @_reports_unreachable
     def list_indexed_pdfs(self) -> list[dict[str, str]]:
         """List PDFs that have been indexed in Qdrant.
         
         Returns:
             List of dictionaries with 'title' and 'pdf_hash' keys.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         flt = qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
@@ -269,6 +291,7 @@ class QdrantManager:
 
         return indexed
     
+    @_reports_unreachable
     def upsert_chunks(self,
                         chunks: list[Chunk],
                         dense_embeddings: list[list[float]],
@@ -286,9 +309,6 @@ class QdrantManager:
         Returns:
             Tuple of (number of chunks upserted, title override info).
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         if not chunks:
             raise ValueError("No chunks provided for indexing.")
 
@@ -360,6 +380,7 @@ class QdrantManager:
 
         return len(points), title_overrides
 
+    @_reports_unreachable
     def register_pdf_title(self, pdf_hash: str, title: str) -> str | None:
         """Register or update the title for a given PDF hash in the registry collection.
 
@@ -370,9 +391,6 @@ class QdrantManager:
         Returns:
             The canonical title for the PDF hash, or None if it could not be resolved.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         if not pdf_hash:
             raise ValueError("PDF hash is required to register title.")
 
@@ -448,6 +466,7 @@ class QdrantManager:
         match = self.find_pdf_hash_by_title(title, filter_by_model=False)
         return bool(match and match != pdf_hash)
 
+    @_reports_unreachable
     def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> str | None:
         """Return the pdf_hash for a given title.
 
@@ -458,9 +477,6 @@ class QdrantManager:
         Returns:
             The pdf_hash associated with the title, or None if not found.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         if not title:
             return None
 
@@ -494,6 +510,7 @@ class QdrantManager:
         payload = points[0].payload or {}
         return payload.get("pdf_hash")
 
+    @_reports_unreachable
     def delete_pdf_from_index(self, pdf_hash: str) -> dict[str, bool]:
         """Delete all chunks associated with a specific PDF hash from the Qdrant collection.
         
@@ -503,9 +520,6 @@ class QdrantManager:
         Returns:
             Dictionary indicating whether the entry was deleted and if it had other models.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-        
         flt = qmodels.Filter(
             must=[
                 qmodels.FieldCondition(
@@ -526,6 +540,7 @@ class QdrantManager:
                 return res
         raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
     
+    @_reports_unreachable
     def delete_registry_entry(self, pdf_hash: str) -> dict[str, bool]:
         """Delete the registry entry for a specific PDF hash from the registry collection.
         
@@ -534,9 +549,6 @@ class QdrantManager:
         Returns:
             Dictionary indicating whether the entry was deleted and if it had other models.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-        
         registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         existing = self.client.retrieve(
             collection_name=self.registry_collection,
@@ -569,15 +581,13 @@ class QdrantManager:
             return {"deleted": True, "had_other_models": True}
         return {"deleted": False, "had_other_models": False}
 
+    @_reports_unreachable
     def clear_chunk_collection(self) -> dict[str, str]:
         """Clear all data from the Qdrant chunk collection.
         
         Returns:
             Dictionary of deleted PDF hashes and their titles.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-        
         indexed_pdfs = self.list_indexed_pdfs()
         deleted_entries: dict[str, str] = {}
         for item in indexed_pdfs:
@@ -588,7 +598,7 @@ class QdrantManager:
                     deleted_entries[pdf_hash] = item.get("title", "")
 
         self.client.delete_collection(self.chunk_collection)
-        self.conn_initialized = False
+        self._collections_ready = False
         logger.info(f"Cleared Qdrant chunk collection: {self.chunk_collection}")
         return deleted_entries
 
@@ -673,14 +683,13 @@ class QdrantManager:
             sentences=payload.get('sentences', [])
         )
 
+    @_reports_unreachable
     def fetch_chunks(self, ids: list[tuple[str, int]]) -> list[Chunk]:
         """Retrieve indexed chunks by (pdf_hash, chunk_index), skipping misses.
 
         Used by the oracle-context evaluation, which needs the gold chunks
         exactly as the reader would have received them from retrieval.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
         if not ids:
             return []
         point_ids = [QdrantManager._generate_point_id(pdf_hash, idx) for pdf_hash, idx in ids]
@@ -688,6 +697,7 @@ class QdrantManager:
             collection_name=self.chunk_collection, ids=point_ids, with_payload=True)
         return [QdrantManager._chunk_from_payload(p.payload or {}) for p in points]
 
+    @_reports_unreachable
     def search_batch(self,
                     query_embeddings: list[dict[str, list[float]]],
                     result_limit: int = 30,
@@ -704,9 +714,6 @@ class QdrantManager:
         Returns:
             List of lists of (Chunk, score) tuples, aligned to query order.
         """
-        if not self.client:
-            raise ValueError("Qdrant client is not connected. Call open_connection() first.")
-
         if not query_embeddings:
             return []
 

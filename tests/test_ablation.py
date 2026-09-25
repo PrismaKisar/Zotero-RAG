@@ -25,7 +25,6 @@ from benchmark.ablation import (
     load_completed_configs,
     load_gold_chunks,
     quote_scores,
-    reader_key,
     retrieval_trace,
     run_config,
     run_oracle,
@@ -59,21 +58,19 @@ class _FakeAnswer:
 
 
 class _FakeRag:
-    """Stubs the two stages scoring reads: last_candidates (pre-rerank) and
-    last_reranked (post-rerank), which can carry different orderings."""
+    """Stubs the trace scoring reads: the retrieval order (pre-rerank) and the
+    reranked list (post-rerank), which can carry different orderings."""
 
     def __init__(self, answers=None, stage_times=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
         # An extractive reader, which is never asked to quote anything.
-        self.qa_engine = types.SimpleNamespace()
+        self.qa_engine = types.SimpleNamespace(last_quote_stats={"cited": 0, "matched": 0})
         self.seen_call = None
-        self.last_stage_times = {"retrieval": 0.2, "rerank": 0.3, "read": 0.4} \
-            if stage_times is None else stage_times
-        self.last_candidates = [
-            {"chunk": _FakeChunk("h", 2, "ctx-2"), "retrieval_score": 0.9},
-            {"chunk": _FakeChunk("h", 1, "ctx-1"), "retrieval_score": 0.5},
-        ]
-        self.last_reranked = [_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")]
+        self.last_trace = types.SimpleNamespace(
+            retrieved=[_FakeReranked("h", 2, "ctx-2"), _FakeReranked("h", 1, "ctx-1")],
+            reranked=[_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")],
+            stage_times={"retrieval": 0.2, "rerank": 0.3, "read": 0.4}
+            if stage_times is None else stage_times)
 
     def answer_question(self, question, overrides, pdf_hashes=None):
         self.seen_call = {"overrides": overrides, "pdf_hashes": pdf_hashes}
@@ -151,15 +148,6 @@ def test_run_config_keeps_harness_axes_out_of_the_pipeline_overrides():
                {"q1": {("h", 1)}}, GOLD_ANSWERS)
 
     assert rag.seen_call["overrides"] == {"retrieval_mode": "dense"}
-
-
-def test_reader_key_tells_the_two_reader_kinds_apart():
-    extractive = types.SimpleNamespace(model_name="deepset/roberta-base-squad2")
-    generative = types.SimpleNamespace(reader_kind="generative:off",
-                                       model_name="qwen3.5:2b")
-
-    assert reader_key(extractive) == "deepset/roberta-base-squad2"
-    assert reader_key(generative) == "generative:off"
 
 
 BASELINE_MODEL = "deepset/deberta-v3-large-squad2"
@@ -254,7 +242,7 @@ def test_a_quote_mode_implies_the_generative_reader():
 
 def test_apply_reader_is_a_no_op_when_the_loaded_reader_already_matches():
     """The early return must precede the heavy imports, or every config pays for them."""
-    baseline = types.SimpleNamespace(model_name=BASELINE_MODEL)
+    baseline = types.SimpleNamespace(model_name=BASELINE_MODEL, reader_kind=BASELINE_MODEL)
     rag = types.SimpleNamespace(qa_engine=baseline)
 
     apply_reader(rag, baseline, {}, "http://localhost:11434")
@@ -363,14 +351,10 @@ def test_quote_match_rate_is_the_share_of_citations_that_check_out():
     assert quote_scores(rag) == {"quote_match_rate": 0.75}
 
 
-def test_quote_match_rate_is_absent_for_a_reader_never_asked_to_quote():
-    """Zero here would read as a model that fabricates every citation."""
-    extractive = types.SimpleNamespace(qa_engine=types.SimpleNamespace())
-    assert quote_scores(extractive) == {}
-
-
 def test_quote_match_rate_is_absent_when_the_question_produced_no_citation():
-    """Nothing was claimed, so nothing was verified - and 0/0 is not 0."""
+    """Nothing was claimed, so nothing was verified - and 0/0 is not 0. This is
+    also every question of a reader never asked to quote: zero there would read
+    as a model that fabricates every citation."""
     assert quote_scores(_rag_with_quote_stats({"cited": 0, "matched": 0})) == {}
 
 
@@ -420,13 +404,6 @@ def test_run_config_skips_questions_without_gold_chunks():
 class _FakeQdrant:
     def __init__(self, chunks):
         self._chunks = chunks
-        self.opened = False
-
-    def open_connection(self):
-        self.opened = True
-
-    def close_connection(self):
-        self.opened = False
 
     def fetch_chunks(self, ids):
         return [p for p in self._chunks if (p.pdf_hash, p.chunk_index) in set(ids)]
@@ -462,7 +439,6 @@ def test_run_oracle_feeds_gold_chunks_to_the_reader():
     assert [c.chunk.text for c in rag.qa_engine.seen_candidates] == ["gold text"]
     # oracle rows carry no retrieval metrics: they would be 1.0 by construction
     assert f"recall@{RECALL_K}" not in rows[0]
-    assert rag.qdrant_manager.opened is False  # connection closed again
 
 
 def test_run_oracle_skips_questions_whose_gold_chunks_are_not_indexed():
@@ -538,11 +514,8 @@ def test_check_schema_compatible_rejects_old_schema(tmp_path):
 
 
 class _FakeClient:
-    def __init__(self, exists=True, count=42):
-        self._exists, self._count = exists, count
-
-    def collection_exists(self, name):
-        return self._exists
+    def __init__(self, count=42):
+        self._count = count
 
     def count(self, name):
         return types.SimpleNamespace(count=self._count)
@@ -552,25 +525,11 @@ class _FakeManager:
     def __init__(self, **kwargs):
         self.chunk_collection = "zotero_rag_test"
         self.client = _FakeClient(**kwargs)
-        self.closed = False
-
-    def open_connection(self):
-        pass
-
-    def close_connection(self):
-        self.closed = True
 
 
 def test_check_corpus_indexed_returns_chunk_count():
     rag = types.SimpleNamespace(qdrant_manager=_FakeManager(count=4978))
     assert check_corpus_indexed(rag) == 4978
-    assert rag.qdrant_manager.closed
-
-
-def test_check_corpus_indexed_rejects_missing_collection():
-    rag = types.SimpleNamespace(qdrant_manager=_FakeManager(exists=False))
-    with pytest.raises(SystemExit, match="does not exist"):
-        check_corpus_indexed(rag)
 
 
 def test_check_corpus_indexed_rejects_empty_collection():

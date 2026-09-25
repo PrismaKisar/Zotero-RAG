@@ -3,8 +3,8 @@ def test_collection_suffix_isolates_chunk_and_registry_collections():
     """Two corpora must not share a retrieval pool, nor a title registry."""
     from qdrant_manager import QdrantManager
 
-    default = QdrantManager()
-    qasa = QdrantManager(collection_suffix="_qasa")
+    default = QdrantManager("m")
+    qasa = QdrantManager("m", collection_suffix="_qasa")
 
     assert qasa.chunk_collection == default.chunk_collection + "_qasa"
     assert qasa.registry_collection == default.registry_collection + "_qasa"

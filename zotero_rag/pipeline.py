@@ -11,7 +11,7 @@ import logging
 import time
 import warnings
 
-from embedding_manager import EmbeddingManager
+from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
 from highlighter import PDFHighlighter
 from models import (
     Answer,
@@ -19,15 +19,18 @@ from models import (
     Chunk,
     IngestResult,
     PDFIngestItem,
+    QuestionTrace,
+    Reader,
     RerankedChunk,
+    RetrievedChunk,
     UpsertResult,
     ingest_items_from_folder,
 )
 from pdf_cache_manager import PDFCacheManager
 from pdf_processor import PDFProcessor
-from qa_engine import QAEngine
+from qa_engine import DEFAULT_QA_MODEL, QAEngine
 from qdrant_manager import QdrantManager
-from reranker import Reranker
+from reranker import DEFAULT_RERANKER_MODEL, Reranker
 from settings import resolve
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 from zotero_db import ZoteroDatabase
@@ -64,9 +67,9 @@ class ZoteroRAG:
     """Main orchestration class for the Zotero RAG pipeline."""
     
     def __init__(self, 
-                dense_model_name: str = "google/embeddinggemma-300m", 
-                qa_model: str = "deepset/deberta-v3-large-squad2",
-                reranker_model: str = "Alibaba-NLP/gte-reranker-modernbert-base",
+                dense_model_name: str = DEFAULT_DENSE_MODEL,
+                qa_model: str = DEFAULT_QA_MODEL,
+                reranker_model: str = DEFAULT_RERANKER_MODEL,
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,
                 qdrant_url: str = "http://localhost:6333",
@@ -132,7 +135,7 @@ class ZoteroRAG:
             batch_size=rerank_batch_size
         )
         
-        self.qa_engine = QAEngine(
+        self.qa_engine: Reader = QAEngine(
             model_name=qa_model,
             device=model_device,
             batch_size=qa_batch_size,
@@ -147,13 +150,9 @@ class ZoteroRAG:
         ]
         self.query_color_map = {}
         
-        # For debugging/inspection
-        self.last_candidates = []
-        self.last_reranked = []
-        # Wall-clock seconds per stage of the last answer_question call. Total
-        # latency alone cannot say whether a slow reader or a slow retriever is
-        # responsible, and the two carry opposite fixes.
-        self.last_stage_times = {}
+        # What the last answer_question call did at each stage, for the
+        # benchmarks: see QuestionTrace.
+        self.last_trace = QuestionTrace()
     
     def get_query_color(self, query: str) -> tuple[float, float, float]:
         """Get a consistent color for a query string.
@@ -176,16 +175,10 @@ class ZoteroRAG:
             List of dictionaries with title and pdf_hash.
         """
         try:
-            self.qdrant_manager.open_connection()
             return self.qdrant_manager.list_indexed_pdfs()
-        except ConnectionError as e:
-            logger.error(f"Error during get_indexed_pdfs: {e!s}")
-            raise
         except Exception as e:
             logger.error(f"Error during get_indexed_pdfs: {e!s}")
             raise
-        finally:
-            self.qdrant_manager.close_connection()
 
     def consistency_check(self, indexed_pdfs: list[dict[str, str]]) -> bool:
         """Check consistency between indexed PDFs and cached PDFs.
@@ -317,6 +310,189 @@ class ZoteroRAG:
 
         return True
 
+    def _skip_message(self, item: CachedPDF, result: UpsertResult,
+                    newly_cached_hashes: set[str]) -> str | None:
+        """Why ``item`` is not indexed, as a progress message, or None to index it.
+
+        Records the skip in ``result``. A duplicate title that was newly cached
+        is removed from the cache here, and from ``newly_cached_hashes`` so the
+        rollback does not try to remove it a second time.
+        """
+        title, pdf_hash = item.title, item.pdf_hash
+        existing_title_hash = self.qdrant_manager.find_pdf_hash_by_title(
+            title,
+            filter_by_model=False,
+        )
+        if existing_title_hash and existing_title_hash != pdf_hash:
+            logger.warning("Title already in use, skipping indexing: %s", title)
+            result.duplicate_titles.append(title)
+            if item.newly_cached:
+                removed = self.pdf_cache.remove_pdf(pdf_hash)
+                if removed:
+                    newly_cached_hashes.discard(pdf_hash)
+                    logger.info("Removed cached PDF for duplicate title: %s", title)
+                else:
+                    logger.warning("Failed to remove cached PDF for duplicate title: %s", title)
+            return f"Skipped (title already in use): {title[:80]}"
+
+        try:
+            if self.qdrant_manager.is_pdf_indexed(pdf_hash):
+                indexed_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
+                result.already_indexed.append({
+                    "input_title": title,
+                    "indexed_title": indexed_title or title,
+                    "pdf_hash": pdf_hash,
+                })
+                if indexed_title and indexed_title != title:
+                    return (
+                        "Skipped (already indexed, using: "
+                        f"{indexed_title[:80]}): {title[:80]}"
+                    )
+                return f"Skipped (already indexed): {title[:80]}"
+        except Exception as e:  # noqa: BLE001 - index check failure: fall through to reindexing
+            logger.warning(
+                "Qdrant index check failed for '%s': %s", title, str(e),
+            )
+        return None
+
+    def _extract_chunks(self, target_pdfs: list[CachedPDF], result: UpsertResult,
+                        newly_cached_hashes: set[str],
+                        progress_callback=None) -> tuple[list[Chunk], dict]:
+        """Stage 1: the chunks of every PDF that needs indexing.
+
+        A PDF that fails is recorded in ``result`` and the others go on.
+
+        Returns:
+            ``(all_chunks, per_pdf_context)``: the latter maps each processed
+            pdf_hash to its title, full document text, and the positions of its
+            chunks in ``all_chunks``.
+        """
+        all_chunks = []
+        per_pdf_context = {}
+        for idx, item in enumerate(target_pdfs):
+            title = item.title
+            pdf_hash = item.pdf_hash
+            if progress_callback:
+                progress_callback(
+                    'pdf',
+                    idx,
+                    len(target_pdfs),
+                    f"Analysing PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
+                )
+
+            try:
+                skip = self._skip_message(item, result, newly_cached_hashes)
+                if skip:
+                    if progress_callback:
+                        progress_callback('pdf', idx + 1, len(target_pdfs), skip)
+                    continue
+
+                canonical_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
+                if canonical_title:
+                    title = canonical_title
+
+                extracted_chunks, document_text = self.pdf_processor.extract_text_chunks(
+                    pdf_hash,
+                    pdf_title=title,
+                )
+
+                if pdf_hash not in per_pdf_context:
+                    per_pdf_context[pdf_hash] = {
+                        "title": title,
+                        "document_text": document_text,
+                        "chunk_indices": [],
+                    }
+
+                for extracted in extracted_chunks:
+                    # Filter by section type if needed
+                    if not self.pdf_processor.CONTENT_SECTIONS.get(extracted.section, True):
+                        continue
+
+                    chunk = Chunk(
+                        text=extracted.text,
+                        page_number=extracted.page_number,
+                        chunk_index=extracted.chunk_index,
+                        title=title,
+                        pdf_hash=pdf_hash,
+                        section=extracted.section,
+                        sentence_count=len(extracted.sentences),
+                        sentences=extracted.sentences
+                    )
+                    all_chunks.append(chunk)
+                    per_pdf_context[pdf_hash]["chunk_indices"].append(len(all_chunks) - 1)
+            except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
+                logger.error("Failed to process PDF '%s': %s", title, str(e))
+                result.failed_pdfs.append({"title": title, "error": str(e), "pdf_hash": pdf_hash})
+
+            if progress_callback:
+                progress_callback(
+                    'pdf',
+                    idx + 1,
+                    len(target_pdfs),
+                    f"Analysed PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
+                )
+        return all_chunks, per_pdf_context
+
+    def _contextualize(self, all_texts: list[str], per_pdf_context: dict,
+                       progress_callback=None) -> None:
+        """Stage 2: replace each PDF's texts in ``all_texts`` with contextualized ones.
+
+        Best-effort, per PDF: a PDF with no document text or a mismatched
+        result keeps its original texts, and an unexpected error stops here
+        leaving the PDFs already done contextualized.
+        """
+        try:
+            pdf_hashes_with_chunks = [
+                pdf_hash
+                for pdf_hash, context_info in per_pdf_context.items()
+                if context_info.get("chunk_indices")
+            ]
+
+            for pdf_idx, pdf_hash in enumerate(pdf_hashes_with_chunks):
+                context_info = per_pdf_context[pdf_hash]
+                pdf_title = context_info.get("title", pdf_hash)
+                if progress_callback:
+                    progress_callback(
+                        "contextualization",
+                        pdf_idx,
+                        len(pdf_hashes_with_chunks),
+                        f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
+                    )
+                chunk_indices = context_info.get("chunk_indices", [])
+
+                document_text = context_info.get("document_text", "")
+                if not document_text.strip():
+                    logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
+                    continue
+
+                base_chunks = [all_texts[i] for i in chunk_indices]
+                contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
+                    document_text=document_text,
+                    all_texts=base_chunks,
+                )
+
+                if len(contextualized_chunks) != len(chunk_indices):
+                    logger.warning(
+                        "Contextualization size mismatch for %s (%s vs %s), using original chunks",
+                        pdf_title,
+                        len(contextualized_chunks),
+                        len(chunk_indices),
+                    )
+                    continue
+
+                for offset, chunk_abs_idx in enumerate(chunk_indices):
+                    all_texts[chunk_abs_idx] = contextualized_chunks[offset]
+
+                if progress_callback:
+                    progress_callback(
+                        "contextualization",
+                        pdf_idx + 1,
+                        len(pdf_hashes_with_chunks),
+                        f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
+                    )
+        except Exception as e:  # noqa: BLE001 - contextualization optional: keep the original chunks
+            logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
+
     def upsert_pdfs(self, target_pdfs: list[CachedPDF], progress_callback=None) -> UpsertResult:
         """Process PDFs, extract chunks, and upsert into Qdrant index.
         
@@ -329,128 +505,18 @@ class ZoteroRAG:
         if target_pdfs is None or target_pdfs == []:
             raise ValueError("No new PDFs provided for upsert. Skipping indexing stage.")
 
-        all_chunks = []
-        per_pdf_context = {}
         result = UpsertResult()
         newly_cached_hashes: set[str] = set()
         try:
-            self.qdrant_manager.open_connection()
-            
-            # Stage 1: Process PDFs and extract chunks
+            self.qdrant_manager.ping()
+
             newly_cached_hashes = {
                 item.pdf_hash
                 for item in target_pdfs
                 if item.newly_cached
             }
-
-            for idx, item in enumerate(target_pdfs):
-                title = item.title
-                pdf_hash = item.pdf_hash
-                if progress_callback:
-                    progress_callback(
-                        'pdf',
-                        idx,
-                        len(target_pdfs),
-                        f"Analysing PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
-                    )
-
-                try:
-                    existing_title_hash = self.qdrant_manager.find_pdf_hash_by_title(
-                        title,
-                        filter_by_model=False,
-                    )
-                    if existing_title_hash and existing_title_hash != pdf_hash:
-                        logger.warning("Title already in use, skipping indexing: %s", title)
-                        result.duplicate_titles.append(title)
-                        if item.newly_cached:
-                            removed = self.pdf_cache.remove_pdf(pdf_hash)
-                            if removed:
-                                newly_cached_hashes.discard(pdf_hash)
-                                logger.info("Removed cached PDF for duplicate title: %s", title)
-                            else:
-                                logger.warning("Failed to remove cached PDF for duplicate title: %s", title)
-                        if progress_callback:
-                            progress_callback(
-                                'pdf',
-                                idx + 1,
-                                len(target_pdfs),
-                                f"Skipped (title already in use): {title[:80]}",
-                            )
-                        continue
-
-                    try:
-                        if self.qdrant_manager.is_pdf_indexed(pdf_hash):
-                            indexed_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
-                            result.already_indexed.append({
-                                "input_title": title,
-                                "indexed_title": indexed_title or title,
-                                "pdf_hash": pdf_hash,
-                            })
-                            if progress_callback:
-                                message = f"Skipped (already indexed): {title[:80]}"
-                                if indexed_title and indexed_title != title:
-                                    message = (
-                                        "Skipped (already indexed, using: "
-                                        f"{indexed_title[:80]}): {title[:80]}"
-                                    )
-                                progress_callback(
-                                    'pdf',
-                                    idx + 1,
-                                    len(target_pdfs),
-                                    message,
-                                )
-                            continue
-                    except Exception as e:  # noqa: BLE001 - index check failure: fall through to reindexing
-                        logger.warning(
-                            "Qdrant index check failed for '%s': %s", title, str(e),
-                        )
-
-                    canonical_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
-                    if canonical_title:
-                        title = canonical_title
-
-                    extracted_chunks, document_text = self.pdf_processor.extract_text_chunks(
-                        pdf_hash,
-                        pdf_title=title,
-                    )
-
-                    if pdf_hash not in per_pdf_context:
-                        per_pdf_context[pdf_hash] = {
-                            "title": title,
-                            "document_text": document_text,
-                            "chunk_indices": [],
-                        }
-
-                    for extracted in extracted_chunks:
-                        # Filter by section type if needed
-                        if not self.pdf_processor.CONTENT_SECTIONS.get(extracted.section, True):
-                            continue
-
-                        sentence_count = len(extracted.sentences)
-                        chunk = Chunk(
-                            text=extracted.text,
-                            page_number=extracted.page_number,
-                            chunk_index=extracted.chunk_index,
-                            title=title,
-                            pdf_hash=pdf_hash,
-                            section=extracted.section,
-                            sentence_count=sentence_count,
-                            sentences=extracted.sentences
-                        )
-                        all_chunks.append(chunk)
-                        per_pdf_context[pdf_hash]["chunk_indices"].append(len(all_chunks) - 1)
-                except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
-                    logger.error("Failed to process PDF '%s': %s", title, str(e))
-                    result.failed_pdfs.append({"title": title, "error": str(e), "pdf_hash": pdf_hash})
-
-                if progress_callback:
-                    progress_callback(
-                        'pdf',
-                        idx + 1,
-                        len(target_pdfs),
-                        f"Analysed PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
-                    )
-
+            all_chunks, per_pdf_context = self._extract_chunks(
+                target_pdfs, result, newly_cached_hashes, progress_callback)
             result.processed_pdfs = len(per_pdf_context)
 
             if not all_chunks:
@@ -460,73 +526,20 @@ class ZoteroRAG:
                     raise ValueError("No text could be extracted from the selected PDFs.")
                 return result
 
-            # Stage 2: Build index
             all_texts = [p.text for p in all_chunks]
             if self.use_chunk_contextualization:
-                try:
-                    pdf_hashes_with_chunks = [
-                        pdf_hash
-                        for pdf_hash, context_info in per_pdf_context.items()
-                        if context_info.get("chunk_indices")
-                    ]
-
-                    for pdf_idx, pdf_hash in enumerate(pdf_hashes_with_chunks):
-                        context_info = per_pdf_context[pdf_hash]
-                        pdf_title = context_info.get("title", pdf_hash)
-                        if progress_callback:
-                            progress_callback(
-                                "contextualization",
-                                pdf_idx,
-                                len(pdf_hashes_with_chunks),
-                                f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                            )
-                        chunk_indices = context_info.get("chunk_indices", [])
-                        if not chunk_indices:
-                            continue
-
-                        document_text = context_info.get("document_text", "")
-                        if not document_text.strip():
-                            logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
-                            continue
-
-                        base_chunks = [all_texts[i] for i in chunk_indices]
-                        contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
-                            document_text=document_text,
-                            all_texts=base_chunks,
-                        )
-
-                        if len(contextualized_chunks) != len(chunk_indices):
-                            logger.warning(
-                                "Contextualization size mismatch for %s (%s vs %s), using original chunks",
-                                pdf_title,
-                                len(contextualized_chunks),
-                                len(chunk_indices),
-                            )
-                            continue
-
-                        for offset, chunk_abs_idx in enumerate(chunk_indices):
-                            all_texts[chunk_abs_idx] = contextualized_chunks[offset]
-
-                        if progress_callback:
-                            progress_callback(
-                                "contextualization",
-                                pdf_idx + 1,
-                                len(pdf_hashes_with_chunks),
-                                f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                            )
-                except Exception as e:  # noqa: BLE001 - contextualization optional: keep the original chunks
-                    logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
+                self._contextualize(all_texts, per_pdf_context, progress_callback)
             else:
                 logger.info("Chunk contextualization disabled: using original chunks for embedding.")
 
-            contextual_texts = list(all_texts) #FIXME: debug
+            # Stage 3: embed and index
             hybrid_embeddings = self.embedding_manager.encode_chunks(progress_callback, all_texts)
 
             indexed_chunks, title_overrides = self.qdrant_manager.upsert_chunks(
                 all_chunks,
                 dense_embeddings=hybrid_embeddings["dense"],
                 sparse_embeddings=hybrid_embeddings["sparse"],
-                contextual_texts=contextual_texts, #FIXME: debug
+                contextual_texts=all_texts, #FIXME: debug
                 progress_callback=progress_callback,
             )
             result.indexed_chunks = indexed_chunks
@@ -541,7 +554,6 @@ class ZoteroRAG:
                 if item.get("pdf_hash")
             }
             _ = self._rollback_pdfs(newly_cached_hashes, failed_hashes)
-            self.qdrant_manager.close_connection()
 
         return result
     
@@ -555,8 +567,6 @@ class ZoteroRAG:
             Number of deleted PDFs.
         """
         try:
-            self.qdrant_manager.open_connection()
-
             pdf_hash = self.qdrant_manager.find_pdf_hash_by_title(
                 pdf_title.strip(),
                 filter_by_model=True,
@@ -579,8 +589,6 @@ class ZoteroRAG:
         except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
             logger.error(f"Error during delete_pdf_from_index: {e!s}")
             return False
-        finally:
-            self.qdrant_manager.close_connection()
 
     def clear_index(self) -> bool:
         """Clear the entire Qdrant collection, removing all indexed chunks.
@@ -589,7 +597,6 @@ class ZoteroRAG:
             True if the collection was cleared successfully, False otherwise.
         """
         try:
-            self.qdrant_manager.open_connection()
             deleted_pdfs = self.qdrant_manager.clear_chunk_collection()
             self.pdf_cache.clear_pdf_cache(deleted_pdfs)
             self.pdf_processor.clear_tei_cache(deleted_pdfs)
@@ -598,8 +605,6 @@ class ZoteroRAG:
         except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
             logger.error(f"Error during clear_chunk_collection: {e!s}")
             return False
-        finally:
-            self.qdrant_manager.close_connection()
 
     def _neighbour_candidates(self, retrieved: list, seen: set, span: int) -> list:
         """Chunks adjacent to the retrieved ones, for evidence spread over paragraphs.
@@ -689,29 +694,29 @@ class ZoteroRAG:
         """
         config = resolve(overrides)
 
-        # Stage timings: a stage absent from the dict is one this call never
+        # A fresh trace per call: a stage absent from it is one this call never
         # reached, which is the honest record when retrieval comes back empty.
-        self.last_stage_times = {}
+        trace = QuestionTrace()
+        self.last_trace = trace
         stage_started = time.perf_counter()
 
         def mark(stage: str) -> None:
             nonlocal stage_started
             now = time.perf_counter()
-            self.last_stage_times[stage] = now - stage_started
+            trace.stage_times[stage] = now - stage_started
             stage_started = now
 
         # Stage 1: Retrieve candidate chunks (Qdrant). One query: expanding it
         # with paraphrases was measured, never added recall, and was removed.
         try:
-            self.qdrant_manager.open_connection()
             [hits] = self.qdrant_manager.search_batch(
                 [self.embedding_manager.encode_query(question)],
                 result_limit=config['result_limit'],
                 mode=config['retrieval_mode'],
                 pdf_hashes=pdf_hashes,
             )
-            all_candidates = list(hits)
-            seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in all_candidates}
+            hits = list(hits)
+            seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in hits}
 
             # Best first, ties broken by chunk id. RRF gives equal scores to
             # chunks at the same rank in different branches and Qdrant returns
@@ -719,39 +724,26 @@ class ZoteroRAG:
             # differently across campaigns, mostly by adjacent swaps. Every
             # consumer re-sorts by its own score with a stable sort, so this is
             # the tie order they all inherit.
-            all_candidates.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
-            hit_count = len(all_candidates)
-            all_candidates += self._neighbour_candidates(
-                all_candidates, seen_chunks, config.get('retrieval_neighbours', 0))
-
-            candidates = all_candidates
-            neighbour_flags = [i >= hit_count for i in range(len(candidates))]
+            hits.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
+            neighbours = self._neighbour_candidates(
+                hits, seen_chunks, config.get('retrieval_neighbours', 0))
+            candidates = hits + neighbours
 
             logger.debug(f"Question: {question}")
             logger.debug(f"Retrieved {len(candidates)} chunks")
-            
+
+            # The retrieval order: every neighbour after every hit, best first
+            # inside each group. A neighbour inherits its parent's score, so on
+            # the score alone a chunk nothing scored could outrank a hit that
+            # scored lower and take a position retrieval never assigned it.
+            trace.retrieved = (
+                [RetrievedChunk(chunk, score) for chunk, score in hits]
+                + [RetrievedChunk(chunk, score, is_neighbour=True)
+                   for chunk, score in sorted(neighbours, key=lambda c: -c[1])])
+
             if not candidates:
-                self.last_candidates = []
-                self.last_reranked = []
                 return []
-            
-            # Store for debugging
-            self.last_candidates = [
-                {
-                    'chunk': c[0],
-                    'retrieval_score': c[1],
-                    'kept': True,
-                    # A neighbour inherits its parent's score, so a chunk
-                    # nothing scored can outrank a hit that scored lower.
-                    # Consumers reading a retrieval order must be able to put
-                    # every neighbour after every hit; the score alone cannot
-                    # say which is which.
-                    'is_neighbour': flag,
-                }
-                for c, flag in zip(candidates, neighbour_flags)
-            ]
         finally:
-            self.qdrant_manager.close_connection()
             mark("retrieval")
 
         # Stage 2: Rerank and Filter (CrossEncoder)
@@ -768,21 +760,14 @@ class ZoteroRAG:
                 order_by_retrieval=config.get('rerank_order_by_retrieval', False)
             )
         else:
-            # ponytail: bypass keeps the retrieval order (best first) so the
-            # ablation can attribute the reranker's contribution; rerank_score
-            # mirrors retrieval_score because nothing rescored the candidates.
-            bypass_order = sorted(
-                zip(candidates, neighbour_flags),
-                key=lambda pair: (pair[1], -pair[0][1]))
-            reranked = [RerankedChunk(chunk=chunk, retrieval_score=score,
-                                          rerank_score=score)
-                        for (chunk, score), _ in bypass_order]
-        
-        # Update debug info with rerank results
-        reranked_texts = {c.chunk.text for c in reranked}
-        for c in self.last_candidates:
-            c['kept'] = c['chunk'].text in reranked_texts
-        self.last_reranked = reranked  # already sorted by rerank_score desc
+            # ponytail: bypass keeps the retrieval order so the ablation can
+            # attribute the reranker's contribution; rerank_score mirrors
+            # retrieval_score because nothing rescored the candidates.
+            reranked = [RerankedChunk(chunk=r.chunk, retrieval_score=r.retrieval_score,
+                                      rerank_score=r.retrieval_score)
+                        for r in trace.retrieved]
+
+        trace.reranked = reranked  # already sorted by rerank_score desc
         mark("rerank")
 
         if not reranked:

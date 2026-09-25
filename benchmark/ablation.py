@@ -411,8 +411,8 @@ def quote_scores(rag) -> dict:
     was never asked to quote, so a column of zeros never reads as a model that
     fabricates everything when it is a metric that did not apply.
     """
-    stats = getattr(rag.qa_engine, "last_quote_stats", None)
-    if not stats or not stats["cited"]:
+    stats = rag.qa_engine.last_quote_stats
+    if not stats["cited"]:
         return {}
     return {"quote_match_rate": stats["matched"] / stats["cited"]}
 
@@ -457,15 +457,10 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     references = gold_answers.get(question["question_id"], [])
     f1, answer_type = answer_f1(predicted_answer, references)
 
-    # Neighbours after hits, then best first inside each group: a neighbour
-    # carries its parent's score, so ranking on the score alone would credit
-    # retrieval with a position it never assigned.
-    ranked = sorted(rag.last_candidates,
-                    key=lambda c: (c.get("is_neighbour", False),
-                                   -c["retrieval_score"]))
-    ranked_ids = [(c["chunk"].pdf_hash, c["chunk"].chunk_index) for c in ranked]
-    reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in rag.last_reranked]
-    predicted_ids = attributed_ids(answers, rag.last_reranked)
+    trace = rag.last_trace
+    ranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.retrieved]
+    reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.reranked]
+    predicted_ids = attributed_ids(answers, trace.reranked)
 
     row = {}
     if score_answers:
@@ -477,7 +472,7 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
         if k == RECALL_K:
             continue
         row[f"recall@{k}"] = per_question_scores(ranked_ids, gold_ids, k)[f"recall@{k}"]
-    row.update(highlight_scores(answers, rag.last_reranked, gold_ids))
+    row.update(highlight_scores(answers, trace.reranked, gold_ids))
     row.update(quote_scores(rag))
     # Every k, not just the deepest. The reranker is invisible to the plain
     # recall columns, which score the pre-rerank list, so these are the only
@@ -507,13 +502,8 @@ def split_harness_params(config: dict) -> tuple[dict, dict]:
     return pipeline_config, harness
 
 
-def reader_key(reader) -> str:
-    """Identity of the loaded reader, for skipping redundant reloads."""
-    return getattr(reader, "reader_kind", None) or reader.model_name
-
-
 def wanted_reader(harness: dict, baseline_model: str) -> str:
-    """Which reader this config asks for, in ``reader_key`` terms.
+    """Which reader this config asks for, as a ``reader_kind``.
 
     Any of the three generative-only axes implies the generative reader: the
     extractive one returns a verbatim span already, so there is nothing to
@@ -538,7 +528,7 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
     paying for one each.
     """
     wanted = wanted_reader(harness, baseline_engine.model_name)
-    if reader_key(rag.qa_engine) == wanted:
+    if rag.qa_engine.reader_kind == wanted:
         return
 
     import torch
@@ -592,7 +582,7 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
         if row is not None:
             row["latency_s"] = elapsed
             for stage in LATENCY_STAGES:
-                row[f"latency_{stage}_s"] = rag.last_stage_times.get(stage, 0.0)
+                row[f"latency_{stage}_s"] = rag.last_trace.stage_times.get(stage, 0.0)
             rows.append(row)
     return rows
 
@@ -613,31 +603,27 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
 
     config, _ = split_harness_params(config)
     rows = []
-    rag.qdrant_manager.open_connection()
-    try:
-        for q in questions:
-            gold_ids = gold_chunks.get(q["question_id"])
-            if gold_ids is None:
-                continue
-            chunks = rag.qdrant_manager.fetch_chunks(sorted(gold_ids))
-            if not chunks:
-                continue
-            candidates = [RerankedChunk(chunk=p, retrieval_score=1.0, rerank_score=1.0)
-                          for p in chunks]
-            started = time.perf_counter()
-            answers = rag.qa_engine.extract_answers(
-                q["question"], candidates, config)
-            elapsed = time.perf_counter() - started
-            predicted = answers[0].text if answers else ""
-            references = gold_answers.get(q["question_id"], [])
-            f1, answer_type = answer_f1(predicted, references)
-            rows.append({"answer_f1": f1,
-                         "answer_em": answer_exact_match(predicted, references),
-                         "latency_s": elapsed,
-                         "record": dict(q, answer_type=answer_type,
-                                        gold_ids=[list(i) for i in sorted(gold_ids)])})
-    finally:
-        rag.qdrant_manager.close_connection()
+    for q in questions:
+        gold_ids = gold_chunks.get(q["question_id"])
+        if gold_ids is None:
+            continue
+        chunks = rag.qdrant_manager.fetch_chunks(sorted(gold_ids))
+        if not chunks:
+            continue
+        candidates = [RerankedChunk(chunk=p, retrieval_score=1.0, rerank_score=1.0)
+                      for p in chunks]
+        started = time.perf_counter()
+        answers = rag.qa_engine.extract_answers(
+            q["question"], candidates, config)
+        elapsed = time.perf_counter() - started
+        predicted = answers[0].text if answers else ""
+        references = gold_answers.get(q["question_id"], [])
+        f1, answer_type = answer_f1(predicted, references)
+        rows.append({"answer_f1": f1,
+                     "answer_em": answer_exact_match(predicted, references),
+                     "latency_s": elapsed,
+                     "record": dict(q, answer_type=answer_type,
+                                    gold_ids=[list(i) for i in sorted(gold_ids)])})
     return rows
 
 
@@ -688,22 +674,16 @@ def write_per_question(rows: list[dict], path: Path) -> None:
 def check_corpus_indexed(rag) -> int:
     """Fail fast unless the collection being queried actually holds chunks.
 
-    open_connection() *creates* a missing collection, so a wrong
-    --collection-suffix does not raise: the run quietly scores an empty index
-    and every metric comes out 0.0, indistinguishable from a real result.
+    Connecting *creates* a missing collection, so a wrong --collection-suffix
+    does not raise: the run quietly scores an empty index and every metric comes
+    out 0.0, indistinguishable from a real result.
     """
-    rag.qdrant_manager.open_connection()
-    try:
-        name = rag.qdrant_manager.chunk_collection
-        if not rag.qdrant_manager.client.collection_exists(name):
-            raise SystemExit(f"Qdrant collection {name!r} does not exist - "
-                             "index the corpus first, or check --qdrant-collection-suffix.")
-        count = rag.qdrant_manager.client.count(name).count
-        if not count:
-            raise SystemExit(f"Qdrant collection {name!r} is empty.")
-        return count
-    finally:
-        rag.qdrant_manager.close_connection()
+    name = rag.qdrant_manager.chunk_collection
+    count = rag.qdrant_manager.client.count(name).count
+    if not count:
+        raise SystemExit(f"Qdrant collection {name!r} is empty - index the corpus "
+                         "first, or check --collection-suffix.")
+    return count
 
 
 def main():
@@ -798,8 +778,7 @@ def main():
         # Reset per config, not per reader: apply_reader reuses a loaded reader
         # whose identity already matches, so a counter left alone would carry
         # one config's failures into the next one's report.
-        if hasattr(rag.qa_engine, "generation_failures"):
-            rag.qa_engine.generation_failures = 0
+        rag.qa_engine.generation_failures = 0
         if entry["param"].startswith("oracle_context"):
             rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
         else:
@@ -808,7 +787,7 @@ def main():
                               score_answers=score_answers)
         # Loud, because these are scored as unanswered questions: an arm with
         # failures is measuring the service as well as the configuration.
-        lost = getattr(rag.qa_engine, "generation_failures", 0)
+        lost = rag.qa_engine.generation_failures
         if lost:
             print(f"WARNING: {entry['param']}={entry['value']} lost {lost} of "
                   f"{len(questions)} questions to failed generation; "
