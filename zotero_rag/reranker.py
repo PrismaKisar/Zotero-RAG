@@ -17,6 +17,7 @@ from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_RERANKER_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base"
 DEFAULT_RERANK_BATCH_SIZE = 32
 
 
@@ -24,7 +25,7 @@ class Reranker:
     """Handles reranking of retrieved candidates using a cross-encoder model."""
     
     def __init__(self, 
-                model_name: str = 'Alibaba-NLP/gte-reranker-modernbert-base',
+                model_name: str = DEFAULT_RERANKER_MODEL,
                 device: str | None = None,
                 batch_size: int | None = None):
         """Initialize the reranker.

@@ -11,6 +11,10 @@ from sentence_transformers import SentenceTransformer
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENCODE_BATCH_SIZE = 32
+# The default, not a fixed setting: the user may index with another model, and
+# the Qdrant collection is named after it, so a second model builds a second
+# index instead of corrupting the first.
+DEFAULT_DENSE_MODEL = "google/embeddinggemma-300m"
 # The reranker reads 512 tokens, and the dense comparison (benchmark/retrieval_models.py)
 # measured every model at this window, so the index embeds what the reranker sees.
 MAX_TOKENS = 512
@@ -20,7 +24,7 @@ class EmbeddingManager:
     """Generate dense and sparse embeddings for indexing and retrieval."""
 
     def __init__(self,
-                dense_model_name: str = "google/embeddinggemma-300m",
+                dense_model_name: str = DEFAULT_DENSE_MODEL,
                 ollama_url: str = "http://localhost:11434",
                 device: str | None = None,
                 encode_batch_size: int | None = None,

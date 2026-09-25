@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from embedding_manager import DEFAULT_DENSE_MODEL
 from models import Answer
 from pipeline import ZoteroRAG
 
@@ -41,7 +42,7 @@ def load_config(config_path: str) -> dict[str, Any]:
     config['defaults'].setdefault('highlight_color', [1, 1, 0])
     
     config.setdefault('output_base_dir', './output')
-    config.setdefault('dense_model_name', 'google/embeddinggemma-300m')
+    config.setdefault('dense_model_name', DEFAULT_DENSE_MODEL)
     # No reader or reranker model here: the thresholds in settings.py are
     # calibrated on the pipeline's own two, so a config cannot swap them.
     config.setdefault('grobid_url', 'http://localhost:8070')
