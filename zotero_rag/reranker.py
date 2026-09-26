@@ -13,6 +13,7 @@ import logging
 import torch
 from device import resolve_device
 from models import Chunk, RerankedChunk
+from selection import rerank_floor
 from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
@@ -107,9 +108,10 @@ class Reranker:
         ]
         
         best = max(item.rerank_score for item in scored_candidates)
-        filtered_candidates = [
-            item for item in scored_candidates
-            if best >= gate and item.rerank_score >= best - margin
+        # best is already in hand for the log below; the floor only reads the best
+        floor = rerank_floor((best,), gate, margin)
+        filtered_candidates = [] if floor is None else [
+            item for item in scored_candidates if item.rerank_score >= floor
         ]
 
         # Sort by rerank score descending, or keep retrieval's order if asked
