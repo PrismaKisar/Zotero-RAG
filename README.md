@@ -30,7 +30,8 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 .
 ├── zotero_rag/                 # Main package
 │   ├── app.py                  # Streamlit web interface
-│   ├── embedding_manager.py    # Dense, sparse, and contextual embeddings
+│   ├── contextualizer.py       # Ollama context line per chunk, before embedding
+│   ├── embedding_manager.py    # Dense and sparse embeddings
 │   ├── highlighter.py          # PDF annotation using coordinates
 │   ├── models.py               # Data classes
 │   ├── pdf_cache_manager.py    # Local PDF cache management
@@ -41,6 +42,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
+│   ├── selection.py            # Rerank gate and margin, shared with the benchmarks
 │   ├── settings.py             # Fixed, measured pipeline settings
 │   └── zotero_db.py            # Zotero SQLite database interface
 │

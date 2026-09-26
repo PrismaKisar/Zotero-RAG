@@ -30,13 +30,13 @@ sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 from settings import SETTINGS
 
 from benchmark.ablation import (
-    LATENCY_STAGES,
     load_gold_chunks,
-    load_jsonl,
     score_question,
+    stage_latencies,
     write_per_question,
 )
 from benchmark.qasper_evaluator import get_answers_and_evidence
+from benchmark.reports import load_jsonl
 
 
 def split_policies(answers, verified_contexts: set) -> tuple[list, list]:
@@ -85,8 +85,8 @@ def main():
     rag = ZoteroRAG(grobid_url=args.grobid_url, qdrant_url=args.qdrant_url,
                     output_base_dir=args.work_dir,
                     qdrant_collection_suffix=args.collection_suffix)
-    rag.qa_engine = GenerativeReader(ollama_url=args.ollama_url,
-                                     citation_quote=QUOTE_LENIENT)
+    rag.reader = GenerativeReader(ollama_url=args.ollama_url,
+                                 citation_quote=QUOTE_LENIENT)
     print(f"scoring {len(questions)} aligned questions, one generation each")
 
     rows = {"baseline": [], "citation_quote_strict": []}
@@ -95,7 +95,7 @@ def main():
         started = time.perf_counter()
         answers = rag.answer_question(q["question"], overrides=config)
         elapsed = time.perf_counter() - started
-        lenient, strict = split_policies(answers, rag.qa_engine.last_verified_contexts)
+        lenient, strict = split_policies(answers, rag.reader.last_verified_contexts)
         for name, view in (("baseline", lenient), ("citation_quote_strict", strict)):
             row = score_question(q, view, rag, gold_chunks, gold_answers,
                                  score_answers=score_answers)
@@ -104,8 +104,7 @@ def main():
             # One generation, so the whole cost belongs to the lenient row; the
             # strict row is a filter applied to it and times nothing of its own.
             row["latency_s"] = elapsed
-            for stage in LATENCY_STAGES:
-                row[f"latency_{stage}_s"] = rag.last_trace.stage_times.get(stage, 0.0)
+            row.update(stage_latencies(rag.last_trace))
             rows[name].append(row)
         if i % 20 == 0:
             print(f"  {i}/{len(questions)}")

@@ -1,7 +1,7 @@
 """Stage timings recorded by ZoteroRAG.answer_question.
 
 ZoteroRAG.__init__ loads three transformer models, so these build the instance
-with __new__ and attach only the collaborators answer_question actually touches.
+with from_components and pass only the collaborators the call actually touches.
 The point under test is where the mark() calls sit, not what the models do.
 """
 
@@ -41,20 +41,16 @@ def _chunk(index):
 
 
 def _rag(results, answers=None):
-    rag = ZoteroRAG.__new__(ZoteroRAG)
-    rag.query_colors = [(1.0, 1.0, 0.0)]
-    rag.query_color_map = {}
-    rag.qdrant_manager = _Qdrant(results)
-    rag.embedding_manager = types.SimpleNamespace(encode_query=lambda q: [0.0])
-    rag.qa_engine = types.SimpleNamespace(
-        extract_answers=lambda *a, **k: answers or [])
-    rag.reranker = types.SimpleNamespace(
-        rerank=lambda question, candidates, gate=0.0, margin=1.0, progress_callback=None,
-        order_by_retrieval=False: [
-            RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
-            for c, s in candidates])
-    rag.pdf_cache = types.SimpleNamespace(get_pdf_path=lambda h: None)
-    return rag
+    return ZoteroRAG.from_components(
+        qdrant_manager=_Qdrant(results),
+        embedding_manager=types.SimpleNamespace(encode_query=lambda q: [0.0]),
+        reader=types.SimpleNamespace(extract_answers=lambda *a, **k: answers or []),
+        reranker=types.SimpleNamespace(
+            rerank=lambda question, candidates, gate=0.0, margin=1.0, progress_callback=None,
+            order_by_retrieval=False: [
+                RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
+                for c, s in candidates]),
+        pdf_cache=types.SimpleNamespace(get_pdf_path=lambda h: None))
 
 
 def _neighbour_rag(span, indexed):
@@ -224,10 +220,10 @@ def test_upsert_with_qdrant_down_raises_instead_of_failing_every_pdf():
         def ping(self):
             raise ConnectionError("Qdrant service not reachable")
 
-    rag = ZoteroRAG.__new__(ZoteroRAG)
-    rag.qdrant_manager = _Down()
-    rag.pdf_cache = types.SimpleNamespace(remove_pdf=lambda h: True)
-    rag.pdf_processor = types.SimpleNamespace(remove_tei_cache=lambda h: None)
+    rag = ZoteroRAG.from_components(
+        qdrant_manager=_Down(),
+        pdf_cache=types.SimpleNamespace(remove_pdf=lambda h: True),
+        pdf_processor=types.SimpleNamespace(remove_tei_cache=lambda h: None))
     item = types.SimpleNamespace(title="T", pdf_hash="h", newly_cached=True)
     with pytest.raises(ConnectionError):
         rag.upsert_pdfs([item])
@@ -277,15 +273,17 @@ class _Processor:
         self.tei_removed.append(pdf_hash)
 
 
-class _Embedder:
+class _Contextualizer:
     def __init__(self, drop_for=()):
         self.drop_for = set(drop_for)  # documents whose result comes back short
 
-    def generate_contextual_chunks(self, document_text, all_texts):
+    def contextualize(self, document_text, all_texts):
         if document_text in self.drop_for:
             return all_texts[:-1]
         return [f"ctx|{t}" for t in all_texts]
 
+
+class _Embedder:
     def encode_chunks(self, progress_callback, all_texts):
         return {"dense": [[0.0]] * len(all_texts), "sparse": [{}] * len(all_texts)}
 
@@ -299,14 +297,10 @@ class _Cache:
         return True
 
 
-def _indexing_rag(qdrant, processor, embedder=None, contextualize=False):
-    rag = ZoteroRAG.__new__(ZoteroRAG)
-    rag.qdrant_manager = qdrant
-    rag.pdf_processor = processor
-    rag.embedding_manager = embedder or _Embedder()
-    rag.pdf_cache = _Cache()
-    rag.use_chunk_contextualization = contextualize
-    return rag
+def _indexing_rag(qdrant, processor, contextualizer=None):
+    return ZoteroRAG.from_components(qdrant_manager=qdrant, pdf_processor=processor,
+                                     embedding_manager=_Embedder(), pdf_cache=_Cache(),
+                                     contextualizer=contextualizer)
 
 
 def _pdf(pdf_hash, title, newly_cached=True):
@@ -345,8 +339,7 @@ def test_contextualization_falls_back_per_pdf_and_indexes_what_was_embedded():
         "short": ("doc short", [("intro", "d"), ("intro", "e")]),
     })
     qdrant = _IndexQdrant()
-    rag = _indexing_rag(qdrant, processor, _Embedder(drop_for={"doc short"}),
-                        contextualize=True)
+    rag = _indexing_rag(qdrant, processor, _Contextualizer(drop_for={"doc short"}))
 
     rag.upsert_pdfs([_pdf("ok", "Ok"), _pdf("blank", "Blank"), _pdf("short", "Short")])
 

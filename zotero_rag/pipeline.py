@@ -11,6 +11,7 @@ import logging
 import time
 import warnings
 
+from contextualizer import ChunkContextualizer
 from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
 from highlighter import PDFHighlighter
 from models import (
@@ -100,49 +101,86 @@ class ZoteroRAG:
             qdrant_collection_suffix: Appended to the Qdrant collection names, to keep
                 separate corpora out of each other's retrieval pool.
         """
-        self.use_chunk_contextualization = use_chunk_contextualization
         self.output_base_dir = output_base_dir
         self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
-        
-        self.pdf_cache = PDFCacheManager(
+
+        pdf_cache = PDFCacheManager(
             folder_path=self.pdf_cache_dir
         )
-        
-        self.pdf_processor = PDFProcessor(
+
+        pdf_processor = PDFProcessor(
             grobid_url=grobid_url,
             grobid_timeout=grobid_timeout,
             output_base_dir=self.output_base_dir
         )
-        
-        self.embedding_manager = EmbeddingManager(
+
+        embedding_manager = EmbeddingManager(
             dense_model_name=dense_model_name,
-            ollama_url=ollama_url,
             device=model_device,
             encode_batch_size=encode_batch_size,
-            use_chunk_contextualization=use_chunk_contextualization
+        )
+        contextualizer = (ChunkContextualizer(ollama_url=ollama_url)
+                          if use_chunk_contextualization else None)
+
+        self._assemble(
+            pdf_cache=pdf_cache,
+            pdf_processor=pdf_processor,
+            embedding_manager=embedding_manager,
+            contextualizer=contextualizer,
+            qdrant_manager=QdrantManager(
+                dense_model_name=dense_model_name,
+                qdrant_url=qdrant_url,
+                vector_size=embedding_manager.vector_size,
+                collection_suffix=qdrant_collection_suffix,
+            ),
+            reranker=Reranker(
+                model_name=reranker_model,
+                device=model_device,
+                batch_size=rerank_batch_size
+            ),
+            reader=QAEngine(
+                model_name=qa_model,
+                device=model_device,
+                batch_size=qa_batch_size,
+            ),
+            highlighter=PDFHighlighter(),
         )
 
-        self.qdrant_manager = QdrantManager(
-            dense_model_name=dense_model_name,
-            qdrant_url=qdrant_url,
-            vector_size=self.embedding_manager.vector_size,
-            collection_suffix=qdrant_collection_suffix,
-        )
-        
-        self.reranker = Reranker(
-            model_name=reranker_model,
-            device=model_device,
-            batch_size=rerank_batch_size
-        )
-        
-        self.qa_engine: Reader = QAEngine(
-            model_name=qa_model,
-            device=model_device,
-            batch_size=qa_batch_size,
-        )
-        
-        self.highlighter = PDFHighlighter()
-        
+    @classmethod
+    def from_components(cls, *, qdrant_manager=None, embedding_manager=None,
+                        reranker=None, reader: Reader | None = None, pdf_cache=None,
+                        pdf_processor=None, contextualizer=None,
+                        highlighter=None) -> "ZoteroRAG":
+        """A pipeline over components built elsewhere, loading no model itself.
+
+        The seam for the tests, which pass stand-ins for only the components the
+        call under test touches. A component left out is None, and whatever
+        reaches for it fails.
+        """
+        rag = cls.__new__(cls)
+        rag._assemble(pdf_cache=pdf_cache, pdf_processor=pdf_processor,
+                      embedding_manager=embedding_manager, contextualizer=contextualizer,
+                      qdrant_manager=qdrant_manager, reranker=reranker, reader=reader,
+                      highlighter=highlighter)
+        return rag
+
+    def _assemble(self, *, pdf_cache, pdf_processor, embedding_manager, contextualizer,
+                  qdrant_manager, reranker, reader, highlighter) -> None:
+        """Wire the components and the per-instance state every constructor needs.
+
+        ``reader`` is public: the benchmarks point it at the reader a config asks
+        for (see ``models.Reader``). ``contextualizer`` is None when chunks are
+        embedded as extracted.
+        """
+        self.pdf_cache = pdf_cache
+        self.pdf_processor = pdf_processor
+        self.embedding_manager = embedding_manager
+        self.contextualizer = contextualizer
+        self.qdrant_manager = qdrant_manager
+        self.reranker = reranker
+        self.reader = reader
+        self.highlighter = highlighter
+
         # Color management for multi-query highlighting
         self.query_colors = [
             (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.5, 0.0),
@@ -466,7 +504,7 @@ class ZoteroRAG:
                     continue
 
                 base_chunks = [all_texts[i] for i in chunk_indices]
-                contextualized_chunks = self.embedding_manager.generate_contextual_chunks(
+                contextualized_chunks = self.contextualizer.contextualize(
                     document_text=document_text,
                     all_texts=base_chunks,
                 )
@@ -527,7 +565,7 @@ class ZoteroRAG:
                 return result
 
             all_texts = [p.text for p in all_chunks]
-            if self.use_chunk_contextualization:
+            if self.contextualizer is not None:
                 self._contextualize(all_texts, per_pdf_context, progress_callback)
             else:
                 logger.info("Chunk contextualization disabled: using original chunks for embedding.")
@@ -780,7 +818,7 @@ class ZoteroRAG:
         else:
             color = highlight_color
         
-        answers = self.qa_engine.extract_answers(
+        answers = self.reader.extract_answers(
             question,
             reranked,
             config,

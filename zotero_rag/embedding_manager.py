@@ -1,14 +1,9 @@
 """Embedding manager for dense and sparse vector generation."""
 
-import logging
-
 import numpy as np
-import ollama
 from device import resolve_device
 from fastembed import SparseTextEmbedding
 from sentence_transformers import SentenceTransformer
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_ENCODE_BATCH_SIZE = 32
 # The default, not a fixed setting: the user may index with another model, and
@@ -25,10 +20,8 @@ class EmbeddingManager:
 
     def __init__(self,
                 dense_model_name: str = DEFAULT_DENSE_MODEL,
-                ollama_url: str = "http://localhost:11434",
                 device: str | None = None,
-                encode_batch_size: int | None = None,
-                use_chunk_contextualization: bool = False):
+                encode_batch_size: int | None = None):
         """Initialize embedding models and runtime options.
 
         Args:
@@ -39,12 +32,9 @@ class EmbeddingManager:
         """
         self.dense_model_name = dense_model_name
         self.sparse_model_name = "Qdrant/bm25"
-        self.ollama_url = ollama_url
-        self.context_model_name = "llama3.2:3b"
 
         self.device = resolve_device(device)
         self.encode_batch_size = encode_batch_size or DEFAULT_ENCODE_BATCH_SIZE
-        self.use_chunk_contextualization = use_chunk_contextualization
 
         # Dense runs on torch, so it gets the accelerator: on an M4, EmbeddingGemma on
         # MPS encodes QASA at 29 chunks/s against 16 for the old ONNX bge on CPU. The
@@ -55,127 +45,10 @@ class EmbeddingManager:
         self.sparse_model = SparseTextEmbedding(model_name=self.sparse_model_name,
                                                 cuda=self.device == "cuda")
 
-        if self.use_chunk_contextualization:
-            self.ollama_client = ollama.Client(host=self.ollama_url)
-
     @property
     def vector_size(self) -> int:
         """Return the dense embedding dimensionality."""
         return self.dense_model.get_embedding_dimension()
-
-    def _generate_document_summary(self, document_text: str) -> str:
-        """Generates a concise global summary of the given document.
-
-        Args:
-            document_text: The full text of the document to summarize.
-            
-        Returns:
-            A concise summary string that captures the main themes and content of the document.
-        """
-        required_ctx = (len(document_text) // 4) + 1024
-        optimal_num_ctx = max(2048, min(required_ctx, 16384))
-
-        prompt = (
-            "You are an expert AI assistant preparing metadata for a vector database.\n"
-            "Read the following document and write a dense, entity-rich summary in exactly one paragraph.\n"
-            "Include the main subject and scope, specific systems, methods, algorithms, datasets, metrics,\n"
-            "and key entities such as organizations, authors, products, standards, and technologies.\n"
-            "Do NOT use bullets, numbered lists, or markdown formatting.\n\n"
-            f"<document>\n{document_text}\n</document>"
-        )
-
-        try:
-            response = self.ollama_client.generate(
-                model=self.context_model_name,
-                prompt=prompt,
-                options={
-                    "temperature": 0.1, 
-                    "num_predict": 400,
-                    "num_ctx": optimal_num_ctx
-                },
-                keep_alive=-1
-            )
-            return response['response'].strip()
-        except Exception as e:  # noqa: BLE001 - Ollama optional: degrade to no summary
-            logger.warning(f"Document summary generation failed: {e}")
-            return ""
-
-    def generate_contextual_chunks(self, 
-                                document_text:str, 
-                                all_texts:list[str]) -> list[str]:
-        """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
-        
-        Args:
-            document_text: The full text of the document.
-            all_texts: List of text chunks to contextualize.
-
-        Returns:
-            List of contextualized text chunks, where each chunk is prefixed with a succinct context.
-        """
-        contextualized_results = []
-
-        doc_summary = self._generate_document_summary(document_text)
-
-        max_chunk_chars = max((len(chunk) for chunk in all_texts), default=0)
-        prompt_tokens = (len(doc_summary) + max_chunk_chars) // 4
-        predict_tokens = 100
-        buffer_tokens = 250
-
-        required_ctx = prompt_tokens + predict_tokens + buffer_tokens
-        optimal_num_ctx = max(2048, min(required_ctx, 16384))
-
-        # Prompt template for generating contextualized chunks one chunk at a time.
-        prompt_template = (
-            "<document_summary>\n{doc_summary}\n</document_summary>\n\n"
-            "<current_chunk>\n{chunk}\n</current_chunk>\n\n"
-            "You are an assistant organizing a vector database. Based on the global summary above, "
-            "provide a succinct context (max 30 words) that describes what THIS chunk is about, "
-            "so that it can be found via semantic search.\n"
-            "Rules:\n"
-            "- Name the specific topic, entity, method, or metric discussed in this chunk.\n"
-            "- Avoid generic phrases like 'This chunk discusses...' or 'In this section...'.\n"
-            "- Output only the context sentence, without labels, bullets, or quotes.\n\n"
-            "Context sentence:"
-        )
-
-        for i, chunk in enumerate(all_texts):
-            formatted_prompt = prompt_template.format(
-                doc_summary=doc_summary, 
-                chunk=chunk.strip()
-            )
-
-            try:
-                response = self.ollama_client.generate(
-                    model=self.context_model_name,
-                    prompt=formatted_prompt,
-                    options={
-                        "temperature": 0.1, 
-                        "num_predict": 100,
-                        "num_ctx": optimal_num_ctx
-                    },
-                    keep_alive=-1
-                )
-
-                context_prefix = response["response"].strip().strip('"').strip("'")
-                context_prefix = context_prefix.replace("```", "").strip()
-
-                full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
-                contextualized_results.append(full_chunk)
-            except Exception as e:  # noqa: BLE001 - Ollama optional: keep the raw chunk
-                logger.warning(f"Contextual chunk generation failed for chunk index {i}: {e}")
-                contextualized_results.append(chunk)
-
-        self._flush_ollama_cache()
-
-        return contextualized_results
-
-    def _flush_ollama_cache(self):
-        """Flush Ollama's model cache to free up memory."""
-        try:
-            self.ollama_client.generate(model=self.context_model_name, keep_alive=0)
-            logger.info("Successfully flushed Ollama cache for model: %s", self.context_model_name)
-        except Exception as e:  # noqa: BLE001 - cache flush is best-effort
-            logger.warning("Failed to flush Ollama cache: %s", str(e))
 
     def encode_chunks(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:
         """Encode chunks into dense+sparse vectors with progress updates.

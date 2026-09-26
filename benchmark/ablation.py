@@ -120,6 +120,7 @@ from benchmark.qasper_evaluator import (
     normalize_answer,
     token_f1_score,
 )
+from benchmark.reports import load_jsonl
 from benchmark.retrieval_metrics import (
     per_question_scores,
     summarize,
@@ -320,10 +321,6 @@ def sample_questions(questions: list[dict], n: int, seed: int) -> list[dict]:
     return random.Random(seed).sample(questions, n)
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.open()]
-
-
 def load_gold_chunks(aligned_path: Path, pdf_hash_map: dict) -> dict[str, set[tuple[str, int]]]:
     """question_id -> gold set of (pdf_hash, chunk_index) retrieval targets."""
     gold = {}
@@ -346,6 +343,14 @@ def answer_f1(predicted_answer: str, references: list[dict]) -> tuple[float, str
     scored = [(token_f1_score(predicted_answer, ref["answer"]), ref["type"])
               for ref in references]
     return max(scored, key=lambda x: x[0])
+
+
+def answer_scores(answers, references: list[dict]) -> tuple[dict, str]:
+    """Answer F1 and EM of the top answer, and the type of the reference it matched."""
+    predicted_answer = answers[0].text if answers else ""
+    f1, answer_type = answer_f1(predicted_answer, references)
+    return ({"answer_f1": f1, "answer_em": answer_exact_match(predicted_answer, references)},
+            answer_type)
 
 
 def answer_exact_match(predicted_answer: str, references: list[dict]) -> float:
@@ -411,7 +416,7 @@ def quote_scores(rag) -> dict:
     was never asked to quote, so a column of zeros never reads as a model that
     fabricates everything when it is a metric that did not apply.
     """
-    stats = rag.qa_engine.last_quote_stats
+    stats = rag.reader.last_quote_stats
     if not stats["cited"]:
         return {}
     return {"quote_match_rate": stats["matched"] / stats["cited"]}
@@ -435,10 +440,34 @@ def retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids) -> dict:
     return {
         "ranked_ids": [list(i) for i in ranked_ids[:TRACE_DEPTH]],
         "reranked_ids": [list(i) for i in reranked_ids[:TRACE_DEPTH]],
-        "predicted_ids": [list(i) for i in sorted(predicted_ids)],
-        "gold_ids": [list(i) for i in sorted(gold_ids)],
+        "predicted_ids": _id_list(predicted_ids),
+        "gold_ids": _id_list(gold_ids),
         "gold_paper_in_top10": any(h in gold_papers for h, _ in ranked_ids[:10]),
     }
+
+
+def _id_list(ids) -> list[list]:
+    return [list(i) for i in sorted(ids)]
+
+
+def question_record(question: dict, answer_type: str, gold_ids,
+                    ranked_ids=None, reranked_ids=None, predicted_ids=None) -> dict:
+    """What the per-question dump keeps of a question besides its metrics.
+
+    Without ranked_ids no retrieval ran - the oracle rows - and only the gold
+    ids are kept; otherwise the ranked lists come too (see retrieval_trace).
+    """
+    if ranked_ids is None:
+        trace = {"gold_ids": _id_list(gold_ids)}
+    else:
+        trace = retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids)
+    return dict(question, answer_type=answer_type, **trace)
+
+
+def stage_latencies(trace) -> dict[str, float]:
+    """Seconds per stage in LATENCY_STAGES, 0.0 for a stage the call never reached."""
+    return {f"latency_{stage}_s": trace.stage_times.get(stage, 0.0)
+            for stage in LATENCY_STAGES}
 
 
 def score_question(question: dict, answers, rag, gold_chunks: dict,
@@ -453,19 +482,15 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
     if gold_ids is None:
         return None
 
-    predicted_answer = answers[0].text if answers else ""
-    references = gold_answers.get(question["question_id"], [])
-    f1, answer_type = answer_f1(predicted_answer, references)
+    answer_row, answer_type = answer_scores(
+        answers, gold_answers.get(question["question_id"], []))
 
     trace = rag.last_trace
     ranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.retrieved]
     reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.reranked]
     predicted_ids = attributed_ids(answers, trace.reranked)
 
-    row = {}
-    if score_answers:
-        row = {"answer_f1": f1,
-               "answer_em": answer_exact_match(predicted_answer, references)}
+    row = answer_row if score_answers else {}
     row.update(per_question_scores(ranked_ids, gold_ids, RECALL_K,
                                    predicted_ids=predicted_ids))
     for k in RECALL_KS:
@@ -485,8 +510,8 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
             reranked_ids, gold_ids, k)[f"recall@{k}"]
     row["mrr_reranked"] = per_question_scores(
         reranked_ids, gold_ids, RECALL_K)["mrr"]
-    row["record"] = dict(question, answer_type=answer_type, **retrieval_trace(
-        ranked_ids, reranked_ids, predicted_ids, gold_ids))
+    row["record"] = question_record(question, answer_type, gold_ids,
+                                    ranked_ids, reranked_ids, predicted_ids)
     return row
 
 
@@ -521,14 +546,14 @@ def wanted_reader(harness: dict, baseline_model: str) -> str:
 
 
 def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
-    """Point ``rag.qa_engine`` at the reader this config asks for.
+    """Point ``rag.reader`` at the reader this config asks for.
 
     Reloading is skipped when the current reader already matches, so the many
     configs that leave both axes at the baseline share one model load instead of
     paying for one each.
     """
     wanted = wanted_reader(harness, baseline_engine.model_name)
-    if rag.qa_engine.reader_kind == wanted:
+    if rag.reader.reader_kind == wanted:
         return
 
     import torch
@@ -537,16 +562,16 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
 
     qa_model = harness.get("qa_model", baseline_engine.model_name)
     if wanted.startswith("generative"):
-        rag.qa_engine = GenerativeReader(
+        rag.reader = GenerativeReader(
             ollama_url=ollama_url,
             citation_quote=harness.get("citation_quote", QUOTE_DEFAULT),
             answer_style=harness.get("answer_style", ANSWER_STYLE_DEFAULT),
             max_context_chunks=harness.get("max_context_chunks",
                                            CONTEXT_CHUNKS_DEFAULT))
     elif qa_model == baseline_engine.model_name:
-        rag.qa_engine = baseline_engine
+        rag.reader = baseline_engine
     else:
-        rag.qa_engine = QAEngine(model_name=qa_model)
+        rag.reader = QAEngine(model_name=qa_model)
 
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
@@ -581,8 +606,7 @@ def run_config(rag, questions: list[dict], config: dict, gold_chunks: dict,
                              score_answers=score_answers)
         if row is not None:
             row["latency_s"] = elapsed
-            for stage in LATENCY_STAGES:
-                row[f"latency_{stage}_s"] = rag.last_trace.stage_times.get(stage, 0.0)
+            row.update(stage_latencies(rag.last_trace))
             rows.append(row)
     return rows
 
@@ -613,17 +637,12 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
         candidates = [RerankedChunk(chunk=p, retrieval_score=1.0, rerank_score=1.0)
                       for p in chunks]
         started = time.perf_counter()
-        answers = rag.qa_engine.extract_answers(
+        answers = rag.reader.extract_answers(
             q["question"], candidates, config)
         elapsed = time.perf_counter() - started
-        predicted = answers[0].text if answers else ""
-        references = gold_answers.get(q["question_id"], [])
-        f1, answer_type = answer_f1(predicted, references)
-        rows.append({"answer_f1": f1,
-                     "answer_em": answer_exact_match(predicted, references),
-                     "latency_s": elapsed,
-                     "record": dict(q, answer_type=answer_type,
-                                    gold_ids=[list(i) for i in sorted(gold_ids)])})
+        answer_row, answer_type = answer_scores(answers, gold_answers.get(q["question_id"], []))
+        rows.append({**answer_row, "latency_s": elapsed,
+                     "record": question_record(q, answer_type, gold_ids)})
     return rows
 
 
@@ -752,7 +771,7 @@ def main():
     # chunks at batch 8 the medians are mps/fp16 3.45s, cpu/fp32 4.59s, and
     # cpu/fp16 34.48s - which is what moving the half-precision model to the CPU
     # actually produced. The device now stays wherever QAEngine put it.
-    baseline_engine = rag.qa_engine
+    baseline_engine = rag.reader
 
     out_path = Path(args.out_file)
     metrics = csv_metrics(score_answers)
@@ -778,7 +797,7 @@ def main():
         # Reset per config, not per reader: apply_reader reuses a loaded reader
         # whose identity already matches, so a counter left alone would carry
         # one config's failures into the next one's report.
-        rag.qa_engine.generation_failures = 0
+        rag.reader.generation_failures = 0
         if entry["param"].startswith("oracle_context"):
             rows = run_oracle(rag, questions, entry["config"], gold_chunks, gold_answers)
         else:
@@ -787,7 +806,7 @@ def main():
                               score_answers=score_answers)
         # Loud, because these are scored as unanswered questions: an arm with
         # failures is measuring the service as well as the configuration.
-        lost = rag.qa_engine.generation_failures
+        lost = rag.reader.generation_failures
         if lost:
             print(f"WARNING: {entry['param']}={entry['value']} lost {lost} of "
                   f"{len(questions)} questions to failed generation; "

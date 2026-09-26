@@ -8,10 +8,12 @@ import pytest
 from benchmark.ablation import (
     CI_METRICS,
     HARNESS_PARAMS,
+    LATENCY_STAGES,
     RECALL_K,
     RECALL_KS,
     answer_exact_match,
     answer_f1,
+    answer_scores,
     apply_reader,
     attributed_ids,
     build_configs,
@@ -24,6 +26,7 @@ from benchmark.ablation import (
     highlight_scores,
     load_completed_configs,
     load_gold_chunks,
+    question_record,
     quote_scores,
     retrieval_trace,
     run_config,
@@ -31,6 +34,7 @@ from benchmark.ablation import (
     sample_questions,
     select_configs,
     split_harness_params,
+    stage_latencies,
     wanted_reader,
     write_per_question,
 )
@@ -64,7 +68,7 @@ class _FakeRag:
     def __init__(self, answers=None, stage_times=None):
         self._answers = [_FakeAnswer()] if answers is None else answers
         # An extractive reader, which is never asked to quote anything.
-        self.qa_engine = types.SimpleNamespace(last_quote_stats={"cited": 0, "matched": 0})
+        self.reader = types.SimpleNamespace(last_quote_stats={"cited": 0, "matched": 0})
         self.seen_call = None
         self.last_trace = types.SimpleNamespace(
             retrieved=[_FakeReranked("h", 2, "ctx-2"), _FakeReranked("h", 1, "ctx-1")],
@@ -243,11 +247,11 @@ def test_a_quote_mode_implies_the_generative_reader():
 def test_apply_reader_is_a_no_op_when_the_loaded_reader_already_matches():
     """The early return must precede the heavy imports, or every config pays for them."""
     baseline = types.SimpleNamespace(model_name=BASELINE_MODEL, reader_kind=BASELINE_MODEL)
-    rag = types.SimpleNamespace(qa_engine=baseline)
+    rag = types.SimpleNamespace(reader=baseline)
 
     apply_reader(rag, baseline, {}, "http://localhost:11434")
 
-    assert rag.qa_engine is baseline
+    assert rag.reader is baseline
 
 
 def test_load_gold_chunks_maps_paper_id_to_pdf_hash(tmp_path):
@@ -343,7 +347,7 @@ def test_highlight_scores_count_one_mark_once():
 
 
 def _rag_with_quote_stats(stats):
-    return types.SimpleNamespace(qa_engine=types.SimpleNamespace(last_quote_stats=stats))
+    return types.SimpleNamespace(reader=types.SimpleNamespace(last_quote_stats=stats))
 
 
 def test_quote_match_rate_is_the_share_of_citations_that_check_out():
@@ -422,7 +426,7 @@ class _FakeQaEngine:
 class _OracleRag:
     def __init__(self, chunks, answers):
         self.qdrant_manager = _FakeQdrant(chunks)
-        self.qa_engine = _FakeQaEngine(answers)
+        self.reader = _FakeQaEngine(answers)
 
 
 def test_run_oracle_feeds_gold_chunks_to_the_reader():
@@ -436,7 +440,7 @@ def test_run_oracle_feeds_gold_chunks_to_the_reader():
     assert len(rows) == 1
     assert rows[0]["answer_f1"] == 1.0
     # the reader saw exactly the gold chunk, never the retriever's output
-    assert [c.chunk.text for c in rag.qa_engine.seen_candidates] == ["gold text"]
+    assert [c.chunk.text for c in rag.reader.seen_candidates] == ["gold text"]
     # oracle rows carry no retrieval metrics: they would be 1.0 by construction
     assert f"recall@{RECALL_K}" not in rows[0]
 
@@ -716,3 +720,38 @@ def test_dataset_name_comes_from_the_golden_directory():
     """The two sets are never pooled, so a mislabelled strata table is a real error."""
     assert dataset_name(Path("output_qasa")) == "QASA"
     assert dataset_name(Path("output_qasper")) == "QASPER"
+
+
+# One place each for the pieces every per-question row shares, so a field added
+# to the dump (the predicted answer, say) reaches every row that carries it.
+
+def test_answer_scores_score_the_top_answer_and_name_the_matched_reference():
+    scores, answer_type = answer_scores([_FakeAnswer(text="some answer"), _FakeAnswer(text="x")],
+                                        GOLD_ANSWERS["q1"])
+    assert scores == {"answer_f1": 1.0, "answer_em": 1.0}
+    assert answer_type == "extractive"
+
+
+def test_no_answer_scores_zero_against_the_references():
+    scores, _ = answer_scores([], GOLD_ANSWERS["q1"])
+    assert scores == {"answer_f1": 0.0, "answer_em": 0.0}
+
+
+def test_an_oracle_record_carries_only_the_gold_ids():
+    record = question_record(QUESTIONS[0], "extractive", {("h", 2), ("h", 1)})
+    assert list(record) == ["question_id", "question", "answer_type", "gold_ids"]
+    assert record["gold_ids"] == [["h", 1], ["h", 2]]
+
+
+def test_a_retrieval_record_carries_the_ranked_lists():
+    ranked, reranked, predicted, gold = [("h", 2), ("h", 1)], [("h", 1)], {("h", 1)}, {("h", 1)}
+    record = question_record(QUESTIONS[0], "none", gold, ranked, reranked, predicted)
+    assert record == dict(QUESTIONS[0], answer_type="none",
+                          **retrieval_trace(ranked, reranked, predicted, gold))
+
+
+def test_every_stage_gets_a_latency_column_even_when_never_reached():
+    trace = types.SimpleNamespace(stage_times={"retrieval": 0.5})
+    assert stage_latencies(trace) == {f"latency_{stage}_s": 0.5 if stage == "retrieval" else 0.0
+                                      for stage in LATENCY_STAGES}
+    assert list(stage_latencies(trace)) == [f"latency_{stage}_s" for stage in LATENCY_STAGES]
