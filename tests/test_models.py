@@ -56,6 +56,55 @@ def test_chunk_survives_pickle_roundtrip():
     assert restored == original
 
 
+def _sentenced(text, sentences):
+    return Chunk(text=text, page_number=1, chunk_index=0, title="T", pdf_hash="h",
+                 sentences=sentences)
+
+
+# Both readers ask the chunk which sentences a character span falls in, since
+# the highlighter draws per sentence. The extractive one widens its span to them;
+# the generative one only needs their coordinates.
+
+def test_a_span_widens_to_the_whole_sentences_it_touches():
+    chunk = _sentenced("One two. Three four. Five.",
+                       [("One two.", "cA"), ("Three four.", "cB"), ("Five.", "cC")])
+    expanded = chunk.expand_to_sentences(10, 14)  # inside "Three four."
+    assert (expanded.text, expanded.start_char, expanded.end_char) == ("Three four.", 9, 20)
+    assert expanded.sentence_coords == ["cB"]
+
+
+def test_a_span_across_a_boundary_takes_both_sentences():
+    chunk = _sentenced("One two. Three four. Five.",
+                       [("One two.", "cA"), ("Three four.", "cB"), ("Five.", "cC")])
+    expanded = chunk.expand_to_sentences(4, 12)
+    assert expanded.text == "One two. Three four."
+    assert expanded.sentence_coords == ["cA", "cB"]
+
+
+def test_without_sentences_the_span_is_kept_as_is():
+    expanded = _sentenced("plain text", []).expand_to_sentences(0, 5)
+    assert (expanded.text, expanded.start_char, expanded.end_char) == ("plain", 0, 5)
+    assert expanded.sentence_coords == []
+
+
+def test_coords_of_the_sentences_a_span_touches():
+    chunk = _sentenced("Alpha one.  Beta two. Gamma.",
+                       [("Alpha one.", "cA"), ("Beta two.", "cB"), ("Gamma.", "")])
+    assert chunk.sentence_coords_within((12, 16)) == ["cB"]
+    assert chunk.sentence_coords_within((0, 16)) == ["cA", "cB"]
+
+
+def test_no_span_means_every_sentence_with_coords():
+    chunk = _sentenced("A. B.", [("A.", "cA"), ("B.", "")])
+    assert chunk.sentence_coords_within(None) == ["cA"]
+
+
+def test_a_sentence_missing_from_the_text_is_skipped_not_misplaced():
+    chunk = _sentenced("Alpha one. Gamma.",
+                       [("Alpha one.", "cA"), ("altered", "cX"), ("Gamma.", "cG")])
+    assert chunk.sentence_coords_within((11, 17)) == ["cG"]
+
+
 def test_answer_survives_pickle_roundtrip():
     original = Answer(
         text="answer", context="context", page_number=1, title="Title",

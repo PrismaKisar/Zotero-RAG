@@ -143,31 +143,6 @@ def locate_quote(quote: str, text: str) -> tuple[int, int] | None:
     return (match.start(), match.end()) if match else None
 
 
-def span_sentence_coords(chunk, span: tuple[int, int] | None) -> list:
-    """Coordinates of the sentences ``span`` touches, or all of them if it is None.
-
-    The highlighter draws per sentence, so narrowing the character span without
-    narrowing the coordinates would report a tight citation and still paint the
-    whole paragraph.
-
-    ponytail: sentence offsets are recovered by scanning ``chunk.text`` rather
-    than stored, since nothing else needs them; a sentence the extractor altered
-    is skipped instead of misplacing every sentence after it.
-    """
-    if span is None:
-        return [coords for _, coords in chunk.sentences if coords]
-    start, end = span
-    found_coords, cursor = [], 0
-    for sentence, coords in chunk.sentences:
-        at = chunk.text.find(sentence, cursor)
-        if at < 0:
-            continue
-        cursor = at + len(sentence)
-        if coords and at < end and cursor > start:
-            found_coords.append(coords)
-    return found_coords
-
-
 class GenerativeReader:
     """Answers from the retrieved chunks with a local LLM, citing what it used.
 
@@ -284,7 +259,7 @@ class GenerativeReader:
             score=1.0,
             query=question,
             color=color,
-            sentence_coords=span_sentence_coords(chunk, span),
+            sentence_coords=chunk.sentence_coords_within(span),
             retrieval_score=candidate.retrieval_score,
             rerank_score=candidate.rerank_score,
             pdf_hash=chunk.pdf_hash,

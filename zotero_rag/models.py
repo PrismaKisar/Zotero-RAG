@@ -46,6 +46,98 @@ class Chunk:
             )
         )
 
+    def expand_to_sentences(self, start_char: int, end_char: int) -> "ExpandedAnswerSpan":
+        """Widen a character span to the complete sentences it touches.
+
+        Sentence positions are counted as if the sentences were joined by one
+        space each, which is how the extractor builds ``text`` from them.
+
+        Args:
+            start_char: Start position of the span in ``text``.
+            end_char: End position of the span in ``text``.
+
+        Returns:
+            The widened span, with the coordinates of its sentences.
+        """
+        if not self.sentences:
+            return ExpandedAnswerSpan(
+                text=self.text[start_char:end_char],
+                start_char=start_char,
+                end_char=end_char,
+                sentence_coords=[],
+            )
+
+        # Map character positions to sentences
+        start_sentence_idx = -1
+        end_sentence_idx = -1
+
+        current_pos = 0
+        for i, (sent_text, _) in enumerate(self.sentences):
+            sent_len = len(sent_text)
+            sent_end = current_pos + sent_len
+
+            # Check if answer start falls in this sentence
+            if start_sentence_idx == -1 and start_char < sent_end + 1:
+                start_sentence_idx = i
+
+            # Check if answer end falls in this sentence
+            if end_char <= sent_end + 1:
+                end_sentence_idx = i
+                break
+
+            current_pos += sent_len + 1  # +1 for space between sentences
+
+        if start_sentence_idx == -1:
+            start_sentence_idx = 0
+        if end_sentence_idx == -1:
+            end_sentence_idx = len(self.sentences) - 1
+
+        # Extract full text of all involved sentences
+        involved_sentences = self.sentences[start_sentence_idx : end_sentence_idx + 1]
+
+        expanded_text = " ".join(s[0] for s in involved_sentences)
+        sentence_coords = [s[1] for s in involved_sentences if s[1]]
+
+        # Calculate new start/end relative to the whole chunk text
+        new_start = 0
+        for i in range(start_sentence_idx):
+            new_start += len(self.sentences[i][0]) + 1
+
+        new_end = new_start + len(expanded_text)
+
+        return ExpandedAnswerSpan(
+            text=expanded_text,
+            start_char=new_start,
+            end_char=new_end,
+            sentence_coords=sentence_coords,
+        )
+
+    def sentence_coords_within(self, span: tuple[int, int] | None) -> list[str]:
+        """Coordinates of the sentences ``span`` touches, or all of them if it is None.
+
+        The highlighter draws per sentence, so narrowing the character span without
+        narrowing the coordinates would report a tight citation and still paint the
+        whole paragraph.
+
+        ponytail: sentence offsets are recovered by scanning ``text`` rather than
+        stored, since nothing else needs them; a sentence the extractor altered is
+        skipped instead of misplacing every sentence after it. This scan and the
+        one-space arithmetic of ``expand_to_sentences`` are two readings of the same
+        layout, kept apart because each reader was measured with its own.
+        """
+        if span is None:
+            return [coords for _, coords in self.sentences if coords]
+        start, end = span
+        found_coords, cursor = [], 0
+        for sentence, coords in self.sentences:
+            at = self.text.find(sentence, cursor)
+            if at < 0:
+                continue
+            cursor = at + len(sentence)
+            if coords and at < end and cursor > start:
+                found_coords.append(coords)
+        return found_coords
+
 
 @dataclass
 class RerankedChunk:

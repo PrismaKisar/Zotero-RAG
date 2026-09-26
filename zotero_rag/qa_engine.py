@@ -1,11 +1,12 @@
 """Question answering engine using extractive QA models."""
 
 import logging
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 from device import resolve_device
-from models import Answer, Chunk, ExpandedAnswerSpan, RerankedChunk
+from models import Answer, RerankedChunk
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,13 @@ CONTEXT_STRIDE = 128
 MAX_WINDOWS_PER_FORWARD = 16
 
 
-def _softmax(logits: np.ndarray) -> np.ndarray:
+def softmax(logits: np.ndarray) -> np.ndarray:
     """Return the softmax of ``logits``, shifted for numerical stability."""
     exponentials = np.exp(logits - np.max(logits))
     return exponentials / exponentials.sum()
 
 
-def _best_span(start_logits: np.ndarray,
+def best_span(start_logits: np.ndarray,
             end_logits: np.ndarray,
             sequence_ids: list[int | None]) -> tuple[int, int, float] | None:
     """Pick the jointly most probable answer span inside the context tokens.
@@ -72,8 +73,8 @@ def _best_span(start_logits: np.ndarray,
     normalised = is_context.copy()
     if sequence_ids[0] is None:
         normalised[0] = True  # [CLS]: the no-answer option
-    start_probs = _softmax(np.where(normalised, start_logits, -np.inf)) * is_context
-    end_probs = _softmax(np.where(normalised, end_logits, -np.inf)) * is_context
+    start_probs = softmax(np.where(normalised, start_logits, -np.inf)) * is_context
+    end_probs = softmax(np.where(normalised, end_logits, -np.inf)) * is_context
 
     # Rows are starts, columns are ends: keep end >= start and bound the span length.
     scores = np.triu(np.outer(start_probs, end_probs))
@@ -81,6 +82,21 @@ def _best_span(start_logits: np.ndarray,
 
     start_token, end_token = np.unravel_index(scores.argmax(), scores.shape)
     return int(start_token), int(end_token), float(scores[start_token, end_token])
+
+
+@dataclass
+class Windows:
+    """Every overflow window of a batch of contexts, with the model's logits for it.
+
+    Row ``k`` of each field is one window; ``sample_mapping[k]`` is the index of
+    the context it was cut from, and ``offsets[k]`` maps its tokens back to
+    character positions in that context.
+    """
+    sample_mapping: list[int]
+    offsets: np.ndarray
+    sequence_ids: list[list[int | None]]
+    start_logits: np.ndarray
+    end_logits: np.ndarray
 
 
 class QAEngine:
@@ -143,73 +159,6 @@ class QAEngine:
             logger.error(f"Could not load QA model {self.model_name}: {e}")
             raise
     
-    def _expand_to_sentences(self, 
-                            chunk: Chunk, 
-                            start_char: int, 
-                            end_char: int) -> ExpandedAnswerSpan:
-        """Expand answer span to include complete sentences and return their coordinates.
-        
-        Args:
-            chunk: The Chunk object containing the answer.
-            start_char: Start position of answer in context.
-            end_char: End position of answer in context.
-            
-        Returns:
-            (expanded_text, new_start, new_end, sentence_coords) tuple.
-        """
-        if not chunk.sentences:
-            return ExpandedAnswerSpan(
-                text=chunk.text[start_char:end_char],
-                start_char=start_char,
-                end_char=end_char,
-                sentence_coords=[],
-            )
-
-        # Map character positions to sentences
-        start_sentence_idx = -1
-        end_sentence_idx = -1
-        
-        current_pos = 0
-        for i, (sent_text, _) in enumerate(chunk.sentences):
-            sent_len = len(sent_text)
-            sent_end = current_pos + sent_len
-            
-            # Check if answer start falls in this sentence
-            if start_sentence_idx == -1 and start_char < sent_end + 1:
-                start_sentence_idx = i
-            
-            # Check if answer end falls in this sentence
-            if end_char <= sent_end + 1:
-                end_sentence_idx = i
-                break
-                
-            current_pos += sent_len + 1  # +1 for space between sentences
-            
-        if start_sentence_idx == -1:
-            start_sentence_idx = 0
-        if end_sentence_idx == -1:
-            end_sentence_idx = len(chunk.sentences) - 1
-            
-        # Extract full text of all involved sentences
-        involved_sentences = chunk.sentences[start_sentence_idx : end_sentence_idx + 1]
-        
-        expanded_text = " ".join(s[0] for s in involved_sentences)
-        sentence_coords = [s[1] for s in involved_sentences if s[1]]
-        
-        # Calculate new start/end relative to the whole chunk text
-        new_start = 0
-        for i in range(start_sentence_idx):
-            new_start += len(chunk.sentences[i][0]) + 1
-            
-        new_end = new_start + len(expanded_text)
-        
-        return ExpandedAnswerSpan(
-            text=expanded_text,
-            start_char=new_start,
-            end_char=new_end,
-            sentence_coords=sentence_coords,
-        )
-    
     def _logits_in_windows(self, inputs) -> tuple[np.ndarray, np.ndarray]:
         """Start/end logits for every window, at most MAX_WINDOWS_PER_FORWARD at a time.
 
@@ -226,6 +175,28 @@ class QAEngine:
             starts.append(outputs.start_logits.float().cpu().numpy())
             ends.append(outputs.end_logits.float().cpu().numpy())
         return np.concatenate(starts), np.concatenate(ends)
+
+    def score_windows(self, question: str, contexts: list[str]) -> Windows:
+        """Ask ``question`` of every context, one window at a time.
+
+        A context longer than the window used to be silently cut, losing every
+        answer past the 512th token. Overflowing windows keep the tail, and the
+        stride keeps a span straddling a boundary intact in one of them. All the
+        contexts are padded together, so the caller decides the batch.
+        """
+        encoded = self.tokenizer(
+            [question] * len(contexts), contexts,
+            add_special_tokens=True, return_tensors="pt", padding=True,
+            truncation="only_second", max_length=MAX_SEQUENCE_TOKENS,
+            stride=CONTEXT_STRIDE, return_overflowing_tokens=True,
+            return_offsets_mapping=True
+        )
+
+        sample_mapping = encoded.pop("overflow_to_sample_mapping").tolist()
+        offsets = encoded.pop("offset_mapping").numpy()
+        sequence_ids = [encoded.sequence_ids(k) for k in range(len(sample_mapping))]
+        start_logits, end_logits = self._logits_in_windows(encoded.to(self.device))
+        return Windows(sample_mapping, offsets, sequence_ids, start_logits, end_logits)
 
     def extract_answers(self,
                     question: str,
@@ -266,7 +237,6 @@ class QAEngine:
         }
 
         # --- 1. PREPARE BATCH DATA ---
-        batch_questions = []
         batch_contexts = []
         metadata_map = [] 
         
@@ -274,7 +244,6 @@ class QAEngine:
             chunk = candidate.chunk
             combined_text = chunk.text
             
-            batch_questions.append(question)
             batch_contexts.append(combined_text)
             metadata_map.append({
                 'chunk': chunk,
@@ -284,13 +253,13 @@ class QAEngine:
                 'candidate_idx': i
             })
         
-        filter_stats['total_inputs'] = len(batch_questions)
+        filter_stats['total_inputs'] = len(batch_contexts)
         logger.info(f"Preparing inference for {len(candidates)} candidates.")
 
         # --- 2. BATCH TOKENIZATION & INFERENCE ---
         BATCH_SIZE = self.batch_size
         all_answers_raw = []
-        num_batches = (len(batch_questions) + BATCH_SIZE - 1) // BATCH_SIZE
+        num_batches = (len(batch_contexts) + BATCH_SIZE - 1) // BATCH_SIZE
         
         for b in range(num_batches):
             if progress_callback:
@@ -299,33 +268,17 @@ class QAEngine:
             start_idx = b * BATCH_SIZE
             end_idx = start_idx + BATCH_SIZE
             
-            b_q = batch_questions[start_idx:end_idx]
             b_c = batch_contexts[start_idx:end_idx]
-            
+
             try:
-                # A context longer than the window used to be silently cut, losing every
-                # answer past the 512th token. Overflowing windows keep the tail, and
-                # the stride keeps a span straddling a boundary intact in one of them.
-                encoded = self.tokenizer(
-                    b_q, b_c,
-                    add_special_tokens=True, return_tensors="pt", padding=True,
-                    truncation="only_second", max_length=MAX_SEQUENCE_TOKENS,
-                    stride=CONTEXT_STRIDE, return_overflowing_tokens=True,
-                    return_offsets_mapping=True
-                )
-
-                sample_mapping = encoded.pop("overflow_to_sample_mapping").tolist()
-                offset_mapping = encoded.pop("offset_mapping").numpy()
-                sequence_ids = [encoded.sequence_ids(k) for k in range(len(sample_mapping))]
-                inputs = encoded.to(self.device)
-
-                start_logits, end_logits = self._logits_in_windows(inputs)
+                windows = self.score_windows(question, b_c)
 
                 # Extract spans from logits
-                for k, (start_logit, end_logit, offsets) in enumerate(zip(start_logits, end_logits, offset_mapping)):
-                    global_idx = start_idx + sample_mapping[k]
+                for k, (start_logit, end_logit, offsets) in enumerate(
+                        zip(windows.start_logits, windows.end_logits, windows.offsets)):
+                    global_idx = start_idx + windows.sample_mapping[k]
 
-                    span = _best_span(start_logit, end_logit, sequence_ids[k])
+                    span = best_span(start_logit, end_logit, windows.sequence_ids[k])
                     if span is None:
                         continue
 
@@ -373,9 +326,7 @@ class QAEngine:
             local_start, local_end = raw_start, raw_end
 
             # Sentence expansion
-            expanded = self._expand_to_sentences(
-                target_chunk, local_start, local_end
-            )
+            expanded = target_chunk.expand_to_sentences(local_start, local_end)
             
             answers.append(Answer(
                 text=expanded.text,

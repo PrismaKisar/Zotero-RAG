@@ -16,7 +16,7 @@ Two scores per chunk:
   mass the model puts on "no answer" lowers the score. ``null`` is that mass.
   The best span cannot change: keeping [CLS] only rescales the context
   probabilities, so ``with_null = masked * (1 - P_start[CLS]) * (1 - P_end[CLS])``.
-  This run is what moved ``_best_span`` to it: it is the score shipped now.
+  This run is what moved ``best_span`` to it: it is the score shipped now.
 
 The report gives the distribution of both on gold and non-gold chunks, the
 pooled AUC (the chance a gold chunk outscores a non-gold one, which is what a
@@ -38,17 +38,11 @@ import numpy as np
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from qa_engine import (
-    CONTEXT_STRIDE,
-    MAX_SEQUENCE_TOKENS,
-    QAEngine,
-    _best_span,
-    _softmax,
-)
+from qa_engine import QAEngine, best_span, softmax
 
-from benchmark.ablation import load_jsonl
 from benchmark.paraphrase_retrieval import LIMIT, HybridSearch
-from benchmark.retrieval_score_distribution import _table, gold_ids
+from benchmark.reports import load_jsonl, markdown_table
+from benchmark.retrieval_score_distribution import gold_ids
 
 SCORES = ("masked", "with_null")
 THRESHOLDS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.90)
@@ -57,16 +51,16 @@ PERCENTILES = (10, 25, 50, 75, 90)
 
 def span_scores(start_logits, end_logits, sequence_ids) -> dict | None:
     """One window's best span, scored with (as shipped) and without the "no answer" option."""
-    best = _best_span(start_logits, end_logits, sequence_ids)
+    best = best_span(start_logits, end_logits, sequence_ids)
     if best is None:
         return None
     start_token, end_token, with_null = best
     context = np.array([sid == 1 for sid in sequence_ids])
     with_cls = context.copy()
     with_cls[0] = True  # [CLS]: where a SQuAD 2.0 model puts "no answer"
-    start, end = (_softmax(np.where(context, logits, -np.inf))
+    start, end = (softmax(np.where(context, logits, -np.inf))
                   for logits in (start_logits, end_logits))
-    start_cls, end_cls = (_softmax(np.where(with_cls, logits, -np.inf))
+    start_cls, end_cls = (softmax(np.where(with_cls, logits, -np.inf))
                           for logits in (start_logits, end_logits))
     return {"masked": float(start[start_token] * end[end_token]),
             "with_null": with_null,
@@ -91,17 +85,12 @@ def chunk_scores(windows: list[dict | None]) -> dict | None:
 
 
 def reader_scores(engine, question: str, contexts: list[str]) -> list[dict | None]:
-    """Each context's span scores, tokenised and windowed the way extract_answers does."""
-    encoded = engine.tokenizer(
-        [question] * len(contexts), contexts, return_tensors="pt", padding=True,
-        truncation="only_second", max_length=MAX_SEQUENCE_TOKENS, stride=CONTEXT_STRIDE,
-        return_overflowing_tokens=True)
-    sample_of = encoded.pop("overflow_to_sample_mapping").tolist()
-    sequence_ids = [encoded.sequence_ids(k) for k in range(len(sample_of))]
-    starts, ends = engine._logits_in_windows(encoded.to(engine.device))
+    """Each context's span scores, from the windows extract_answers reads its spans off."""
+    scored = engine.score_windows(question, contexts)
     windows = defaultdict(list)
-    for k, sample in enumerate(sample_of):
-        windows[sample].append(span_scores(starts[k], ends[k], sequence_ids[k]))
+    for k, sample in enumerate(scored.sample_mapping):
+        windows[sample].append(span_scores(scored.start_logits[k], scored.end_logits[k],
+                                           scored.sequence_ids[k]))
     return [chunk_scores(windows[i]) for i in range(len(contexts))]
 
 
@@ -174,11 +163,11 @@ def report(name: str, rows: list[dict], n_questions: int) -> str:
            (f"{n_questions} questions, hybrid top-{LIMIT} each, {len(gold_rows)} gold and "
             f"{len(other_rows)} non-gold chunks."),
            "## Distribution",
-           _table(DISTRIBUTION_HEADER, distribution_rows(rows, (*SCORES, "null"))),
+           markdown_table(DISTRIBUTION_HEADER, distribution_rows(rows, (*SCORES, "null"))),
            "## Separation (pooled AUC; 0.5 = none)",
-           _table(["score", "AUC gold vs non-gold"], separation)]
+           markdown_table(["score", "AUC gold vs non-gold"], separation)]
     for score in SCORES:
-        out += [f"## Sweep: {score}", _table(["threshold", *STATS_HEADER], [
+        out += [f"## Sweep: {score}", markdown_table(["threshold", *STATS_HEADER], [
             [r["threshold"], *stats_cells(r)] for r in sweep(rows, score)])]
     return "\n\n".join(out) + "\n"
 
