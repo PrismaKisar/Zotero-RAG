@@ -40,10 +40,10 @@ from pathlib import Path
 
 import numpy as np
 
-from benchmark.ablation import load_jsonl
+from benchmark.reports import load_jsonl, markdown_table
 from benchmark.retrieval_metrics import bootstrap_ci, evidence_prf
-from benchmark.retrieval_score_distribution import _table
 from benchmark.threshold_search import SILENCE_TARGET, group_negatives, load_questions
+from zotero_rag.selection import rerank_floor
 
 # The gate reads the best candidate, so it lives on gte's upper range; keep is
 # free to sit far below it, which is the whole point of separating the two.
@@ -66,12 +66,10 @@ def kept(question: dict, gate: float, keep: float, qa: float, relative: bool = F
     ``relative``.
     """
     candidates = question["candidates"]
-    if not candidates:
+    floor_if_answered = rerank_floor((r for _, r, _ in candidates), gate, keep)
+    if floor_if_answered is None:
         return set()
-    best = max(r for _, r, _ in candidates)
-    if best < gate:
-        return set()
-    floor = best - keep if relative else keep
+    floor = floor_if_answered if relative else keep
     return {c for c, r, s in candidates if r >= floor and s >= qa}
 
 
@@ -167,15 +165,15 @@ def report(sets: dict[str, list[dict]], negatives: dict[str, list[dict]]) -> str
                 ("shipped", evaluate(sets[name], *SHIPPED, negatives.get(name, ()))),
                 ("chosen", triples(grid)[chosen[family][0]])]
             out += [f"## {name}, {family}: best {TOP} by evidence F1",
-                    _table(header, [_cells(r, keys) for r in grid[:TOP]]),
+                    markdown_table(header, [_cells(r, keys) for r in grid[:TOP]]),
                     f"## {name}, {family}: chosen against shipped",
-                    _table(["", *header], [[label, *_cells(r, keys)] for label, r in references])]
+                    markdown_table(["", *header], [[label, *_cells(r, keys)] for label, r in references])]
     out += ["## Each family's pick against the shipped pair",
             "Paired difference in evidence F1 per question, 95% bootstrap interval.",
-            _table(["family", "gate", "keep", "qa", *(f"Δ on {n}" for n in sets)],
-                   [[family, *triple,
-                     *(paired_delta(q, triple, SHIPPED, relative) for q in sets.values())]
-                    for family, (triple, relative) in chosen.items()])]
+            markdown_table(["family", "gate", "keep", "qa", *(f"Δ on {n}" for n in sets)],
+                           [[family, *triple,
+                             *(paired_delta(q, triple, SHIPPED, relative) for q in sets.values())]
+                            for family, (triple, relative) in chosen.items()])]
     return "\n\n".join(out) + "\n"
 
 

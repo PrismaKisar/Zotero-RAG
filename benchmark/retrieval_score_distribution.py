@@ -40,7 +40,7 @@ import numpy as np
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from benchmark.ablation import load_jsonl
+from benchmark.reports import load_jsonl, markdown_table
 
 PERCENTILES = (5, 25, 50, 75, 95)
 ABSOLUTE_THRESHOLDS = np.round(np.arange(0.34, 0.921, 0.02), 2)
@@ -109,13 +109,6 @@ def sweep(questions: list[dict], thresholds, relative: bool = False) -> list[dic
     return rows
 
 
-def _table(header: list[str], rows: list[list]) -> str:
-    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    lines += ["| " + " | ".join(f"{v:.3f}" if isinstance(v, float) else str(v)
-                                for v in row) + " |" for row in rows]
-    return "\n".join(lines)
-
-
 def report(questions: list[dict], limit: int) -> str:
     gold = np.concatenate([q["gold"] for q in questions])
     top_noise = np.concatenate([q["top"][~q["top_gold"]] for q in questions])
@@ -129,7 +122,7 @@ def report(questions: list[dict], limit: int) -> str:
                 *(float(v) for v in np.percentile(values, PERCENTILES)),
                 float(values.max())]
 
-    percentiles = _table(
+    percentiles = markdown_table(
         ["scores", "n", "min", *(f"p{p}" for p in PERCENTILES), "max"],
         [stats("gold chunks", gold), stats(f"non-gold in top-{limit}", top_noise),
          stats("non-gold, whole corpus", noise), stats("top-1 per question", top1),
@@ -139,7 +132,7 @@ def report(questions: list[dict], limit: int) -> str:
     edges = np.arange(low, top1.max() + HISTOGRAM_BIN, HISTOGRAM_BIN)
     gold_hist = np.histogram(gold, edges)[0] / len(gold)
     noise_hist = np.histogram(top_noise, edges)[0] / len(top_noise)
-    histogram = _table(
+    histogram = markdown_table(
         ["cosine bin", "gold share", f"top-{limit} non-gold share"],
         [[f"{a:.2f}-{a + HISTOGRAM_BIN:.2f}", float(g), float(n)]
          for a, g, n in zip(edges[:-1], gold_hist, noise_hist, strict=True)])
@@ -149,9 +142,9 @@ def report(questions: list[dict], limit: int) -> str:
                     f"recall@{limit} after cut"]
 
     def sweep_table(rows):
-        return _table(sweep_header, [[r["threshold"], r["gold_kept"], r["noise_kept"],
-                                      r["survivors"], r["empty"], r["recall"]]
-                                     for r in rows])
+        return markdown_table(sweep_header, [[r["threshold"], r["gold_kept"], r["noise_kept"],
+                                              r["survivors"], r["empty"], r["recall"]]
+                                             for r in rows])
 
     return "\n\n".join([
         "# Dense cosine score distribution (retrieval_threshold)",

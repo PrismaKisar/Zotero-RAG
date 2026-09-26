@@ -34,7 +34,6 @@ import numpy as np
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from benchmark.ablation import load_jsonl
 from benchmark.paraphrase_retrieval import (
     LIMIT,
     bm25,
@@ -42,9 +41,9 @@ from benchmark.paraphrase_retrieval import (
     inverted_index,
     retrieve,
 )
+from benchmark.reports import load_jsonl, markdown_table
 from benchmark.retrieval_metrics import bootstrap_ci, recall_at_k, reciprocal_rank
 from benchmark.retrieval_score_distribution import (
-    _table,
     gold_ids,
     load_corpus,
     unit_vectors,
@@ -138,9 +137,9 @@ def report(name: str, rows: dict, n_questions: int, costs: list[list]) -> str:
             cells += ["", "", ""] if arm == REFERENCE else [
                 delta(arm_rows, base, m) for m in ("recall@10", "recall@30", "mrr")]
             lines.append([arm, *cells])
-        out += [f"## scope: {scope}", _table(header, lines)]
+        out += [f"## scope: {scope}", markdown_table(header, lines)]
     out += ["## Encoding cost on this machine",
-            _table(["kind", "model", "chunks", "seconds", "chunks/s", "ms per query"], costs)]
+            markdown_table(["kind", "model", "chunks", "seconds", "chunks/s", "ms per query"], costs)]
     return "\n\n".join(out) + "\n"
 
 

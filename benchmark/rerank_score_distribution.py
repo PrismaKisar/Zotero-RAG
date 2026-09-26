@@ -28,7 +28,6 @@ from pathlib import Path
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from benchmark.ablation import load_jsonl
 from benchmark.paraphrase_retrieval import LIMIT, HybridSearch
 from benchmark.qa_score_distribution import (
     DISTRIBUTION_HEADER,
@@ -39,7 +38,8 @@ from benchmark.qa_score_distribution import (
     stats_cells,
     sweep,
 )
-from benchmark.retrieval_score_distribution import _table, gold_ids
+from benchmark.reports import load_jsonl, markdown_table
+from benchmark.retrieval_score_distribution import gold_ids
 
 # gte's probabilities crowd the top: on the hybrid top-30 non-gold chunks have a
 # median of 0.80-0.84 and gold ones 0.91-0.93, so every cut that acts is above 0.8.
@@ -89,19 +89,19 @@ def report(name: str, model: str, rows: list[dict], joined: list[dict]) -> str:
            (f"`{model}`, {n_questions} questions, hybrid top-{LIMIT} each, {len(gold)} gold and "
             f"{len(other)} non-gold chunks. Pooled AUC gold vs non-gold: {auc(gold, other):.3f}."),
            "## Distribution",
-           _table(DISTRIBUTION_HEADER, distribution_rows(rows, ("rerank",))),
+           markdown_table(DISTRIBUTION_HEADER, distribution_rows(rows, ("rerank",))),
            "## Sweep: rerank threshold alone",
-           _table(["threshold", *STATS_HEADER],
-                  [[r["threshold"], *stats_cells(r)] for r in sweep(rows, "rerank", RERANK_THRESHOLDS)])]
+           markdown_table(["threshold", *STATS_HEADER],
+                          [[r["threshold"], *stats_cells(r)] for r in sweep(rows, "rerank", RERANK_THRESHOLDS)])]
     if joined:
         out += ["## Joint sweep: rerank and QA thresholds together",
                 (f"{len(joined)} of {len(rows)} candidates carry a reader score "
                  "(qa_scores.jsonl, score `with_null`). Kept = highlighted."),
-                _table(["rerank", "qa", *STATS_HEADER],
-                       [[r["rerank"], r["qa"], *stats_cells(r)] for r in joint_sweep(joined)]),
+                markdown_table(["rerank", "qa", *STATS_HEADER],
+                               [[r["rerank"], r["qa"], *stats_cells(r)] for r in joint_sweep(joined)]),
                 "## Top-k per question by rerank score, with the QA cut",
-                _table(["k", "qa", *STATS_HEADER],
-                       [[r["k"], r["qa"], *stats_cells(r)] for r in top_k_sweep(joined)])]
+                markdown_table(["k", "qa", *STATS_HEADER],
+                               [[r["k"], r["qa"], *stats_cells(r)] for r in top_k_sweep(joined)])]
     return "\n\n".join(out) + "\n"
 
 

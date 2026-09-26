@@ -40,8 +40,8 @@ import numpy as np
 # appended, never prepended: the repo root must keep priority over this directory
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
-from benchmark.ablation import load_jsonl
 from benchmark.paraphrase_retrieval import LIMIT, HybridSearch, rrf
+from benchmark.reports import load_jsonl
 from benchmark.retrieval_metrics import bootstrap_ci, recall_at_k, reciprocal_rank
 from benchmark.retrieval_score_distribution import gold_ids
 

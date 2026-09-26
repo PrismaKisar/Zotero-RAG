@@ -30,10 +30,10 @@ from pathlib import Path
 
 import numpy as np
 
-from benchmark.ablation import load_jsonl
+from benchmark.reports import load_jsonl, markdown_table
 from benchmark.rerank_score_distribution import join_qa
 from benchmark.retrieval_metrics import bootstrap_ci, evidence_prf
-from benchmark.retrieval_score_distribution import _table, gold_ids, load_corpus
+from benchmark.retrieval_score_distribution import gold_ids, load_corpus
 
 # gte's probabilities crowd the top, so the rerank grid is fine above 0.8; 0.0 is "off"
 RERANK_GRID = (0.0, *(round(0.80 + 0.01 * i, 2) for i in range(17)))
@@ -167,28 +167,28 @@ def report(sets: dict[str, list[dict]], negatives: dict[str, list[dict]]) -> str
             ("reader only", max((r for r in grid if r["rerank"] == 0.0), key=lambda r: r["evidence_f1"])),
             ("chosen", next(r for r in grid if (r["rerank"], r["qa"]) == chosen))]
         out += [f"## {name}: best {TOP} by evidence F1",
-                _table(header, [_cells(r, keys) for r in grid[:TOP]]),
+                markdown_table(header, [_cells(r, keys) for r in grid[:TOP]]),
                 f"## {name}: references",
-                _table(["", *header], [[label, *_cells(r, keys)] for label, r in references])]
+                markdown_table(["", *header], [[label, *_cells(r, keys)] for label, r in references])]
     silent = over_sets(grids, "silent_offtopic", min)
     if silent:
         f1 = over_sets(grids, "evidence_f1", np.mean)
         per_set = {n: {(r["rerank"], r["qa"]): r for r in g} for n, g in grids.items()}
         out += ["## Frontier: mean evidence F1 against off-topic silence (worst set)",
-                _table(["rerank", "qa", "mean F1", "silent off-topic",
-                        *(f"F1 {n}" for n in names)],
-                       [[*p, f"{f1[p]:.3f}", f"{silent[p]:.1%}",
-                         *(f"{per_set[n][p]['evidence_f1']:.3f}" for n in names)]
-                        for p in pareto(f1, silent)])]
+                markdown_table(["rerank", "qa", "mean F1", "silent off-topic",
+                                *(f"F1 {n}" for n in names)],
+                               [[*p, f"{f1[p]:.3f}", f"{silent[p]:.1%}",
+                                 *(f"{per_set[n][p]['evidence_f1']:.3f}" for n in names)]
+                                for p in pareto(f1, silent)])]
     picks = [(f"best F1 on {n}", (grids[n][0]["rerank"], grids[n][0]["qa"])) for n in names]
     transfer = [[label, *pair, *(f"{evaluate(sets[t], *pair)['evidence_f1']:.3f}" for t in names)]
                 for label, pair in [*picks, ("chosen", chosen)]]
     out += ["## Transfer: each pick scored on every set",
-            _table(["picked by", "rerank", "qa", *(f"F1 on {n}" for n in names)], transfer),
+            markdown_table(["picked by", "rerank", "qa", *(f"F1 on {n}" for n in names)], transfer),
             f"## Chosen pair {chosen} against the pair shipped before {SHIPPED}",
             "Paired difference in evidence F1 per question, 95% bootstrap interval.",
-            _table(["set", "Δ evidence F1"],
-                   [[n, paired_delta(sets[n], chosen, SHIPPED)] for n in names])]
+            markdown_table(["set", "Δ evidence F1"],
+                           [[n, paired_delta(sets[n], chosen, SHIPPED)] for n in names])]
     return "\n\n".join(out) + "\n"
 
 

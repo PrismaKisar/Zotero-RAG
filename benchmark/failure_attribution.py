@@ -36,8 +36,9 @@ from pathlib import Path
 
 from benchmark.ablation import BASELINE
 from benchmark.answer_gate import kept
-from benchmark.retrieval_score_distribution import _table
+from benchmark.reports import markdown_table
 from benchmark.threshold_search import load_questions
+from zotero_rag.selection import rerank_floor
 
 STAGES = ("not retrieved", "question not answered", "cut by the margin",
           "cut by the reader", "kept")
@@ -52,12 +53,12 @@ def stage(question: dict, gate: float = GATE, margin: float = MARGIN, qa: float 
     gold = [(r, s) for c, r, s in candidates if c in question["gold"]]
     if not gold:
         return "not retrieved"
-    best = max(r for _, r, _ in candidates)
-    if best < gate:
+    floor = rerank_floor((r for _, r, _ in candidates), gate, margin)
+    if floor is None:
         return "question not answered"
-    if not any(r >= best - margin for r, _ in gold):
+    if not any(r >= floor for r, _ in gold):
         return "cut by the margin"
-    if not any(r >= best - margin and s >= qa for r, s in gold):
+    if not any(r >= floor and s >= qa for r, s in gold):
         return "cut by the reader"
     return "kept"
 
@@ -88,9 +89,9 @@ def report(sets: dict[str, list[dict]], gate: float = GATE, margin: float = MARG
         rows = attribute(questions, gate, margin, qa)
         empty = [row for row in rows if row["empty"]]
         out += [f"## {name}: all {len(rows)} answerable questions",
-                _table(["stage", "questions", "share"], shares(rows)),
+                markdown_table(["stage", "questions", "share"], shares(rows)),
                 f"## {name}: the {len(empty)} left empty ({len(empty) / len(rows):.1%})",
-                _table(["stage", "questions", "share"], shares(empty))]
+                markdown_table(["stage", "questions", "share"], shares(empty))]
     return "\n\n".join(out) + "\n"
 
 
