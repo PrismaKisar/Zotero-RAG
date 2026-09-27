@@ -210,215 +210,68 @@ class QAEngine:
             question: The question to answer.
             candidates: List of RerankedChunk objects to extract answers from.
             config: The resolved settings (see ``settings.resolve``).
-                Reads ``qa_score_threshold`` and ``section_diversity_enabled``.
+                Reads ``qa_score_threshold``.
             color: Highlight color for the answer (R, G, B).
             progress_callback: Optional callback for progress updates (batch_idx, total_batches, message).
 
         Returns:
-            List of Answer objects extracted from the candidates.
+            One answer per candidate that yields a span, best first, above the
+            threshold and without repeating a (title, text) pair.
         """
-        if self.model is None:
-            raise RuntimeError("QA model not loaded.")
-        
-        if not candidates:
-            logger.info("No candidates provided for QA extraction.")
-            return []
-        
-        # --- 0. INITIALIZE STATS & CONFIG ---
-        logger.info(f"QA Configuration -> Threshold: {config['qa_score_threshold']:.3f}")
-        
-        # Initialize tracking dictionaries
-        filter_stats = {
-            'total_inputs': 0,      # Candidates scored
-            'successful_raw': 0,    # Raw answers extracted from model
-            'below_threshold': 0,   # Filtered: Confidence too low
-            'duplicates': 0,        # Filtered: Duplicate content
-            'final_count': 0        # Final answers returned
-        }
-
-        # --- 1. PREPARE BATCH DATA ---
-        batch_contexts = []
-        metadata_map = [] 
-        
-        for i, candidate in enumerate(candidates):
-            chunk = candidate.chunk
-            combined_text = chunk.text
-            
-            batch_contexts.append(combined_text)
-            metadata_map.append({
-                'chunk': chunk,
-                'retrieval_score': candidate.retrieval_score,
-                'rerank_score': candidate.rerank_score,
-                'context_text': combined_text,
-                'candidate_idx': i
-            })
-        
-        filter_stats['total_inputs'] = len(batch_contexts)
-        logger.info(f"Preparing inference for {len(candidates)} candidates.")
-
-        # --- 2. BATCH TOKENIZATION & INFERENCE ---
-        BATCH_SIZE = self.batch_size
-        all_answers_raw = []
-        num_batches = (len(batch_contexts) + BATCH_SIZE - 1) // BATCH_SIZE
-        
-        for b in range(num_batches):
+        # candidate index -> (score, start_char, end_char) of its best window
+        best: dict[int, tuple[float, int, int]] = {}
+        num_batches = (len(candidates) + self.batch_size - 1) // self.batch_size
+        for b, first in enumerate(range(0, len(candidates), self.batch_size)):
             if progress_callback:
                 progress_callback(b, num_batches, f"Running Inference Batch {b+1}/{num_batches}")
-                
-            start_idx = b * BATCH_SIZE
-            end_idx = start_idx + BATCH_SIZE
-            
-            b_c = batch_contexts[start_idx:end_idx]
-
+            contexts = [c.chunk.text for c in candidates[first:first + self.batch_size]]
             try:
-                windows = self.score_windows(question, b_c)
-
-                # Extract spans from logits
-                for k, (start_logit, end_logit, offsets) in enumerate(
-                        zip(windows.start_logits, windows.end_logits, windows.offsets)):
-                    global_idx = start_idx + windows.sample_mapping[k]
-
-                    span = best_span(start_logit, end_logit, windows.sequence_ids[k])
-                    if span is None:
-                        continue
-
-                    start_token, end_token, score_norm = span
-                    start_char_idx = offsets[start_token][0]
-                    end_char_idx = offsets[end_token][1]
-
-                    if start_char_idx >= end_char_idx:
-                        continue
-
-                    meta = metadata_map[global_idx]
-                    ans_text = meta['context_text'][start_char_idx:end_char_idx]
-
-                    all_answers_raw.append({
-                        'text': ans_text,
-                        'start': start_char_idx,
-                        'end': end_char_idx,
-                        'score': score_norm,
-                        'meta': meta
-                    })
-                    filter_stats['successful_raw'] += 1
-
+                windows = self.score_windows(question, contexts)
             except Exception as e:  # noqa: BLE001 - per-batch: skip it and keep the others
                 logger.error(f"Batch {b} failed: {e}")
                 continue
 
-        # --- 3. RECONSTRUCT ---
-        grouped_results = {}
-        for res in all_answers_raw:
-            c_idx = res['meta']['candidate_idx']
-            if c_idx not in grouped_results: grouped_results[c_idx] = []
-            grouped_results[c_idx].append(res)
-            
-        answers = []
-        for c_idx, group in grouped_results.items():
-            # Best of this candidate's windows
-            best_res = max(group, key=lambda x: x['score'])
-            meta = best_res['meta']
-            
-            # Recalculate offsets relative to original chunk
-            chunk = meta['chunk']
-            raw_start, raw_end = best_res['start'], best_res['end']
-            
-            target_chunk = chunk
-            local_start, local_end = raw_start, raw_end
+            for k, offsets in enumerate(windows.offsets):
+                span = best_span(windows.start_logits[k], windows.end_logits[k],
+                                 windows.sequence_ids[k])
+                if span is None:
+                    continue
+                start_token, end_token, score = span
+                start_char, end_char = int(offsets[start_token][0]), int(offsets[end_token][1])
+                idx = first + windows.sample_mapping[k]
+                if start_char < end_char and score > best.get(idx, (-1.0,))[0]:
+                    best[idx] = (score, start_char, end_char)
 
-            # Sentence expansion
-            expanded = target_chunk.expand_to_sentences(local_start, local_end)
-            
+        answers = []
+        for idx, (score, start_char, end_char) in best.items():
+            candidate = candidates[idx]
+            chunk = candidate.chunk
+            expanded = chunk.expand_to_sentences(start_char, end_char)
             answers.append(Answer(
                 text=expanded.text,
-                context=target_chunk.text,
-                page_number=target_chunk.page_number,
-                title=target_chunk.title,
-                section=target_chunk.section,
+                context=chunk.text,
+                page_number=chunk.page_number,
+                title=chunk.title,
+                section=chunk.section,
                 start_char=expanded.start_char,
                 end_char=expanded.end_char,
-                score=best_res['score'],
+                score=score,
                 query=question,
                 color=color,
                 sentence_coords=expanded.sentence_coords,
-                retrieval_score=meta['retrieval_score'],
-                rerank_score=meta['rerank_score'],
-                pdf_hash=target_chunk.pdf_hash
+                retrieval_score=candidate.retrieval_score,
+                rerank_score=candidate.rerank_score,
+                pdf_hash=chunk.pdf_hash
             ))
-
-        # Sort by score descending
         answers.sort(key=lambda x: x.score, reverse=True)
-        
-        # --- 4. DEDUPLICATION & THRESHOLDING ---
-        unique_answers = []
-        
-        # Helper for stats counting within deduplication
-        def is_valid_score(ans):
-            if ans.score < config['qa_score_threshold']:
-                filter_stats['below_threshold'] += 1
-                return False
-            return True
 
-        if config.get('section_diversity_enabled', False):
-            # ... [Section Diversity Logic] ...
-            intro_sections = ['abstract', 'introduction', 'intro']
-            method_sections = ['methodology', 'methods', 'approach', 'algorithm', 'implementation']
-            
-            intro_answers, method_answers, other_answers = [], [], []
-            
-            for ans in answers:
-                if not is_valid_score(ans): continue
-                    
-                sec = (ans.section or '').lower()
-                if any(s in sec for s in intro_sections): intro_answers.append(ans)
-                elif any(s in sec for s in method_sections): method_answers.append(ans)
-                else: other_answers.append(ans)
-            
-            def dedup_list(alist):
-                seen, uniq = set(), []
-                for a in alist:
-                    sig = (a.title, " ".join(a.text.lower().split()))
-                    if sig not in seen:
-                        seen.add(sig)
-                        uniq.append(a)
-                    else:
-                        filter_stats['duplicates'] += 1
-                return uniq
+        unique_answers, seen = [], set()
+        for ans in answers:
+            sig = (ans.title, " ".join(ans.text.lower().split()))
+            if ans.score >= config['qa_score_threshold'] and sig not in seen:
+                seen.add(sig)
+                unique_answers.append(ans)
 
-            intro_u = dedup_list(intro_answers)
-            method_u = dedup_list(method_answers)
-            other_u = dedup_list(other_answers)
-            
-            # Interleave
-            max_len = max(len(intro_u), len(method_u))
-            for i in range(max_len):
-                if i < len(intro_u): unique_answers.append(intro_u[i])
-                if i < len(method_u): unique_answers.append(method_u[i])
-            unique_answers.extend(other_u)
-            
-        else:
-            # Standard Deduplication
-            seen_answers = set()
-            for ans in answers:
-                if not is_valid_score(ans): continue
-                
-                sig = (ans.title, " ".join(ans.text.lower().split()))
-                if sig not in seen_answers:
-                    seen_answers.add(sig)
-                    unique_answers.append(ans)
-                else:
-                    filter_stats['duplicates'] += 1
-
-        filter_stats['final_count'] = len(unique_answers)
-
-        # --- 5. FINAL SUMMARY LOG ---
-        logger.info("-" * 60)
-        logger.info("QA EXTRACTION SUMMARY")
-        logger.info(f"Input: {len(candidates)} candidates -> {filter_stats['total_inputs']} sequences (expanded)")
-        logger.info(f"Raw Outputs: {filter_stats['successful_raw']} spans found")
-        logger.info("Filtering:")
-        logger.info(f"  - Low Confidence (<{config['qa_score_threshold']:.2f}): {filter_stats['below_threshold']}")
-        logger.info(f"  - Duplicates: {filter_stats['duplicates']}")
-        logger.info(f"Final Results: {filter_stats['final_count']} unique answers")
-        logger.info("-" * 60)
-        
+        logger.info(f"QA: {len(candidates)} candidates -> {len(answers)} spans -> "
+                    f"{len(unique_answers)} answers (threshold {config['qa_score_threshold']:.2f})")
         return unique_answers

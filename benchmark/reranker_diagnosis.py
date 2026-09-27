@@ -42,7 +42,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from benchmark.paraphrase_retrieval import LIMIT, HybridSearch, rrf
 from benchmark.reports import load_jsonl
-from benchmark.retrieval_metrics import bootstrap_ci, recall_at_k, reciprocal_rank
+from benchmark.retrieval_metrics import format_delta, recall_at_k, reciprocal_rank
 from benchmark.retrieval_score_distribution import gold_ids
 
 KS = (1, 3, 5, 10)
@@ -119,10 +119,8 @@ def report(name: str, rows: dict, judged: dict, models: list[str]) -> str:
                 if order == "hybrid":
                     cells.append("")
                     continue
-                deltas = [a[metric] - b[metric]
-                          for a, b in zip(rows[(scope, order)], base, strict=True)]
-                low, high = bootstrap_ci(deltas)
-                cells.append(f"{np.mean(deltas):+.3f} [{low:+.3f}, {high:+.3f}]")
+                cells.append(format_delta([a[metric] - b[metric] for a, b
+                                           in zip(rows[(scope, order)], base, strict=True)]))
             lines.append(f"| {short(order)} | " + " | ".join(cells) + " |")
         out += [f"## scope: {scope}",
                 (f"{judged[scope]['judged']} of {judged[scope]['total']} questions have "

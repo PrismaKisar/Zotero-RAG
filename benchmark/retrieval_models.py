@@ -42,7 +42,7 @@ from benchmark.paraphrase_retrieval import (
     retrieve,
 )
 from benchmark.reports import load_jsonl, markdown_table
-from benchmark.retrieval_metrics import bootstrap_ci, recall_at_k, reciprocal_rank
+from benchmark.retrieval_metrics import format_delta, recall_at_k, reciprocal_rank
 from benchmark.retrieval_score_distribution import (
     gold_ids,
     load_corpus,
@@ -112,9 +112,7 @@ def ranking_scores(ranked: list, gold: set) -> dict[str, float]:
 
 
 def delta(rows: list[dict], base: list[dict], metric: str) -> str:
-    deltas = [a[metric] - b[metric] for a, b in zip(rows, base, strict=True)]
-    low, high = bootstrap_ci(deltas)
-    return f"{np.mean(deltas):+.3f} [{low:+.3f}, {high:+.3f}]"
+    return format_delta([a[metric] - b[metric] for a, b in zip(rows, base, strict=True)])
 
 
 def report(name: str, rows: dict, n_questions: int, costs: list[list]) -> str:

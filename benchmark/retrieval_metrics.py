@@ -89,6 +89,12 @@ def bootstrap_ci(values: Sequence[float], confidence: float = 0.95,
     return (lo, hi)
 
 
+def format_delta(deltas: Sequence[float]) -> str:
+    """Paired deltas as the reports print them: "+mean [low, high]"."""
+    low, high = bootstrap_ci(deltas)
+    return f"{sum(deltas) / len(deltas):+.3f} [{low:+.3f}, {high:+.3f}]"
+
+
 def per_question_scores(ranked_ids: Sequence[Hashable], gold_ids: Iterable[Hashable],
                         k: int, predicted_ids: Iterable[Hashable] | None = None) -> dict:
     """Every retrieval/attribution metric for a single question.

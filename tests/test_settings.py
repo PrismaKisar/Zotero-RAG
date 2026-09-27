@@ -8,7 +8,6 @@ def test_settings_carry_the_measured_values():
     assert SETTINGS["rerank_margin"] == 0.02
     assert SETTINGS["qa_score_threshold"] == 0.0
     assert SETTINGS["retrieval_mode"] == "hybrid"
-    assert SETTINGS["section_diversity_enabled"] is False
 
 
 def test_resolve_without_overrides_is_the_settings():

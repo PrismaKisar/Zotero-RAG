@@ -4,11 +4,19 @@ from benchmark.retrieval_metrics import (
     aggregate,
     bootstrap_ci,
     evidence_prf,
+    format_delta,
     per_question_scores,
     recall_at_k,
     reciprocal_rank,
     summarize,
 )
+
+
+def test_format_delta_is_the_signed_mean_and_its_bootstrap_ci():
+    deltas = [0.1, -0.05, 0.2, 0.0]
+    low, high = bootstrap_ci(deltas)
+    assert format_delta(deltas) == f"+0.062 [{low:+.3f}, {high:+.3f}]"
+    assert format_delta([-0.5]) == "-0.500 [-0.500, -0.500]"
 
 
 def test_recall_at_k_counts_fraction_of_gold_found():

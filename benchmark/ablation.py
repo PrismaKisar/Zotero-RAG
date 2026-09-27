@@ -152,7 +152,6 @@ GRID = {
     "rerank_gate": [0.85, 0.91],
     "rerank_margin": [0.005, 0.05],
     "qa_score_threshold": [0.01, 0.05],
-    "section_diversity_enabled": [True],
     # Phase-two intervention, not a preset field: keep the cross-encoder's
     # threshold and drop its ordering. Read through the attribution metrics and
     # recall@k, which is where the two uses of that score disagree.

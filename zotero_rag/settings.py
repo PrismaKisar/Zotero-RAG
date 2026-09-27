@@ -51,12 +51,12 @@ here is on the scales of gte-reranker-modernbert-base and
 deberta-v3-large-squad2, which is why neither model is configurable: changing one
 means re-running the search.
 
-``section_diversity_enabled`` is off: switched on in the ablation, it cost answer
-F1 on QASPER (0.123 to 0.092) and left attribution where it was. There is no
-minimum answer length: ``min_answer_words`` dropped a chunk whose span was
-shorter than N words, but the highlight is that span widened to whole sentences,
-so a correct short answer threw away the right evidence (+0.19 evidence recall
-at 1 against 3, on both sets). It was removed.
+Two filters were measured and removed. Section diversity, interleaving
+introduction and method answers, cost answer F1 on QASPER (0.123 to 0.092) and
+left attribution where it was. ``min_answer_words`` dropped a chunk whose span
+was shorter than N words, but the highlight is that span widened to whole
+sentences, so a correct short answer threw away the right evidence (+0.19
+evidence recall at 1 against 3, on both sets).
 """
 
 SETTINGS = {
@@ -66,7 +66,6 @@ SETTINGS = {
     "rerank_gate": 0.88,
     "rerank_margin": 0.02,
     "qa_score_threshold": 0.0,
-    "section_diversity_enabled": False,
 }
 
 

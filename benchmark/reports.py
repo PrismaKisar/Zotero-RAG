@@ -9,8 +9,9 @@ from pathlib import Path
 
 
 def load_jsonl(path: Path) -> list[dict]:
-    """One record per line of ``path``."""
-    return [json.loads(line) for line in path.open()]
+    """One record per non-blank line of ``path``."""
+    with path.open() as lines:
+        return [json.loads(line) for line in lines if line.strip()]
 
 
 def markdown_table(header: list[str], rows: list[list]) -> str:

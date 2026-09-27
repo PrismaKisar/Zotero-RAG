@@ -41,7 +41,7 @@ from pathlib import Path
 import numpy as np
 
 from benchmark.reports import load_jsonl, markdown_table
-from benchmark.retrieval_metrics import bootstrap_ci, evidence_prf
+from benchmark.retrieval_metrics import evidence_prf, format_delta
 from benchmark.threshold_search import SILENCE_TARGET, group_negatives, load_questions
 from zotero_rag.selection import rerank_floor
 
@@ -129,11 +129,9 @@ def common_best(grids: dict[str, list[dict]], target: float = SILENCE_TARGET) ->
 
 def paired_delta(questions: list[dict], triple: tuple, reference: tuple,
                  relative: bool = False) -> str:
-    deltas = [a["evidence_f1"] - b["evidence_f1"] for a, b in
-              zip(question_scores(questions, *triple, relative),
-                  question_scores(questions, *reference), strict=True)]
-    low, high = bootstrap_ci(deltas)
-    return f"{np.mean(deltas):+.3f} [{low:+.3f}, {high:+.3f}]"
+    return format_delta([a["evidence_f1"] - b["evidence_f1"] for a, b in
+                         zip(question_scores(questions, *triple, relative),
+                             question_scores(questions, *reference), strict=True)])
 
 
 HEADER = ["gate", "keep", "qa", "evidence F1", "precision", "recall", "left empty"]

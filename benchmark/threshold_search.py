@@ -32,7 +32,7 @@ import numpy as np
 
 from benchmark.reports import load_jsonl, markdown_table
 from benchmark.rerank_score_distribution import join_qa
-from benchmark.retrieval_metrics import bootstrap_ci, evidence_prf
+from benchmark.retrieval_metrics import evidence_prf, format_delta
 from benchmark.retrieval_score_distribution import gold_ids, load_corpus
 
 # gte's probabilities crowd the top, so the rerank grid is fine above 0.8; 0.0 is "off"
@@ -132,11 +132,9 @@ def pareto(f1: dict[tuple, float], silent: dict[tuple, float]) -> list[tuple]:
 
 
 def paired_delta(questions: list[dict], pair: tuple, reference: tuple) -> str:
-    deltas = [a["evidence_f1"] - b["evidence_f1"] for a, b in
-              zip(question_scores(questions, *pair), question_scores(questions, *reference),
-                  strict=True)]
-    low, high = bootstrap_ci(deltas)
-    return f"{np.mean(deltas):+.3f} [{low:+.3f}, {high:+.3f}]"
+    return format_delta([a["evidence_f1"] - b["evidence_f1"] for a, b in
+                         zip(question_scores(questions, *pair),
+                             question_scores(questions, *reference), strict=True)])
 
 
 BASE_HEADER = ["rerank", "qa", "evidence F1", "precision", "recall", "left empty"]

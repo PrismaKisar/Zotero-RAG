@@ -35,6 +35,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from benchmark.reports import load_jsonl
+
 # Overlap above which a chunk is accepted as covering an annotated paragraph.
 # Hand-validated on a sample, see the report produced by --sample.
 THRESHOLD = 0.8
@@ -169,7 +171,7 @@ def main():
                              "(it holds hand-validated judgements once reviewed, easy to lose otherwise)")
     args = parser.parse_args()
 
-    records = [json.loads(line) for line in Path(args.golden_set).read_text().splitlines() if line]
+    records = load_jsonl(Path(args.golden_set))
     chunks_by_paper = load_chunks(Path(args.chunks_dir))
     aligned, dropped, stats = align_records(records, chunks_by_paper, args.threshold)
 

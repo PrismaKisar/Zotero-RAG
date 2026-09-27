@@ -234,6 +234,31 @@ def test_extract_answers_reads_each_candidate_s_span_off_its_windows():
     assert all((a.start_char, a.end_char) == (0, 5) for a in answers)
 
 
+def _two_candidate_engine(texts, titles):
+    from models import Chunk, RerankedChunk
+
+    engine = _engine_with(_CountingModel())
+    engine.device = "cpu"
+    engine.batch_size = 8
+    engine.tokenizer = _FakeTokenizer([0, 1])
+    engine.tokenizer.encoding["offset_mapping"][:, 2] = torch.tensor([0, 5])
+    candidates = [RerankedChunk(Chunk(text=text, page_number=1, chunk_index=i,
+                                      title=title, pdf_hash="h"), 0.5, 0.9)
+                  for i, (text, title) in enumerate(zip(texts, titles))]
+    return engine, candidates
+
+
+def test_extract_answers_drops_spans_below_the_threshold():
+    engine, candidates = _two_candidate_engine(["alpha beta", "gamma delta"], ["A", "B"])
+    assert engine.extract_answers("q", candidates, {"qa_score_threshold": 0.99}) == []
+
+
+def test_extract_answers_keeps_one_of_two_identical_spans_from_one_paper():
+    engine, candidates = _two_candidate_engine(["Alpha beta", "alpha  gamma"], ["A", "A"])
+    answers = engine.extract_answers("q", candidates, {"qa_score_threshold": 0.0})
+    assert [a.text for a in answers] == ["Alpha"]
+
+
 def test_the_extractive_reader_is_its_model_and_never_quotes_or_fails(monkeypatch):
     """The Reader seam's shared fields: the ablation reads them on every reader."""
     monkeypatch.setattr(QAEngine, "_load_model_direct", lambda self: None)

@@ -15,12 +15,12 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
+from benchmark.reports import load_jsonl
 from benchmark.retrieval_metrics import bootstrap_ci
 
 # recall@1 is here because the protocol names it the primary retrieval metric,
@@ -35,8 +35,7 @@ DEFAULT_METRICS = ("answer_f1", "answer_em", "recall@1", "recall@10",
 
 def load_per_question(path: Path) -> dict[str, dict]:
     """Map question_id -> metric row, for one config's JSONL dump."""
-    rows = [json.loads(line) for line in path.open()]
-    return {row["record"]["question_id"]: row for row in rows}
+    return {row["record"]["question_id"]: row for row in load_jsonl(path)}
 
 
 def paired_deltas(baseline: dict[str, dict], other: dict[str, dict],

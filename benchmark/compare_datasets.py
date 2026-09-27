@@ -21,6 +21,8 @@ import statistics
 from collections import Counter
 from pathlib import Path
 
+from benchmark.reports import load_jsonl
+
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]+")
 SENT_RE = re.compile(r"[.!?]+\s")
 # rough markers of formal / notation-heavy prose
@@ -113,8 +115,7 @@ def cliffs_delta(x, y):
 
 def load_dataset(out_dir):
     out_dir = Path(out_dir)
-    records = [json.loads(line) for line in
-               (out_dir / "golden_set_aligned.jsonl").read_text().splitlines() if line.strip()]
+    records = load_jsonl(out_dir / "golden_set_aligned.jsonl")
     chunks = {p.stem: json.loads(p.read_text()) for p in (out_dir / "chunks").glob("*.json")}
     return records, chunks
 

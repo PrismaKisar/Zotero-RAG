@@ -47,7 +47,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
 
 from benchmark.reports import load_jsonl
-from benchmark.retrieval_metrics import bootstrap_ci, recall_at_k
+from benchmark.retrieval_metrics import format_delta, recall_at_k
 from benchmark.retrieval_score_distribution import gold_ids, load_corpus, unit_vectors
 
 LIMIT = 30         # result_limit: the depth of every per-variant list
@@ -251,9 +251,8 @@ def report(rows: dict, produced: dict) -> str:
         for arm in arms:
             cells = [f"{np.mean([r[k] for r in rows[(mode, arm)]]):.3f}" for k in KS]
             for k in (10, LIMIT, DEEP):
-                deltas = [a[k] - b[k] for a, b in zip(rows[(mode, arm)], base, strict=True)]
-                low, high = bootstrap_ci(deltas)
-                cells.append(f"{np.mean(deltas):+.3f} [{low:+.3f}, {high:+.3f}]")
+                cells.append(format_delta(
+                    [a[k] - b[k] for a, b in zip(rows[(mode, arm)], base, strict=True)]))
             lines.append(f"| {arm} | " + " | ".join(cells) + " |")
         out += [f"## {mode}", "\n".join(lines)]
     return "\n\n".join(out) + "\n"
