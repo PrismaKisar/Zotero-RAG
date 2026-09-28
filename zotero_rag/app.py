@@ -9,19 +9,16 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import defaultdict
 
 import streamlit as st
 from embedding_manager import DEFAULT_DENSE_MODEL, DEFAULT_ENCODE_BATCH_SIZE
+from highlighter import highlight_pdf
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
 from reranker import DEFAULT_RERANK_BATCH_SIZE
 from zotero_db import ZoteroDatabase
 
-
-def rgb_to_hex(rgb):
-    """Convert RGB tuple (0-1) to hex color"""
-    r, g, b = [int(x * 255) for x in rgb]
-    return f'#{r:02x}{g:02x}{b:02x}'
 
 def load_zotero_collections():
     try:
@@ -55,6 +52,21 @@ def load_zotero_collections():
         st.info("Make sure Zotero is installed and the database is accessible")
 
 
+def show_renamed_titles(items, summary, label):
+    """List ``{input_title, indexed_title}`` entries, showing a rename as ``a -> b``."""
+    if not items:
+        return
+    st.info(f"{len(items)} {summary}")
+    with st.expander(label):
+        for item in items:
+            input_title = item.get("input_title", "")
+            indexed_title = item.get("indexed_title", "")
+            if indexed_title and indexed_title != input_title:
+                st.write(f"- {input_title} -> {indexed_title}")
+            else:
+                st.write(f"- {input_title or indexed_title}")
+
+
 def run_ingest_and_index(result):
     if result is None:
         st.warning("No ingest result returned.")
@@ -66,13 +78,13 @@ def run_ingest_and_index(result):
             for item in result.failed_pdfs:
                 st.write(f"- {item.get('title', 'Unknown file')}: {item.get('error', 'Unknown error')}")
 
-    ingested_pdfs = getattr(result, "ingested_pdfs", [])
+    ingested_pdfs = result.ingested_pdfs
 
     if not ingested_pdfs:
         st.info("No new PDF to index.")
         return
 
-    newly_cached_count = len([item for item in ingested_pdfs if getattr(item, "newly_cached", False)])
+    newly_cached_count = sum(item.newly_cached for item in ingested_pdfs)
     if newly_cached_count < len(ingested_pdfs):
         st.info(
             f"Using cache for {len(ingested_pdfs) - newly_cached_count} PDF(s) already stored by hash."
@@ -102,25 +114,14 @@ def run_ingest_and_index(result):
             progress_callback=progress_callback
         )
 
-        indexed_chunks = int(getattr(upsert_report, "indexed_chunks", 0))
-        processed_pdfs = int(getattr(upsert_report, "processed_pdfs", 0))
-        failed_pdfs = getattr(upsert_report, "failed_pdfs", [])
-        already_indexed = getattr(upsert_report, "already_indexed", [])
-        title_overrides = getattr(upsert_report, "title_overrides", [])
-        duplicate_titles = getattr(upsert_report, "duplicate_titles", [])
+        indexed_chunks = upsert_report.indexed_chunks
+        processed_pdfs = upsert_report.processed_pdfs
+        failed_pdfs = upsert_report.failed_pdfs
+        duplicate_titles = upsert_report.duplicate_titles
 
-        if already_indexed:
-            st.info(
-                f"{len(already_indexed)} PDF(s) skipped because already indexed in Qdrant."
-            )
-            with st.expander("Show Qdrant duplicates"):
-                for item in already_indexed:
-                    input_title = item.get("input_title", "")
-                    indexed_title = item.get("indexed_title", "")
-                    if indexed_title and indexed_title != input_title:
-                        st.write(f"- {input_title} -> {indexed_title}")
-                    else:
-                        st.write(f"- {input_title or indexed_title}")
+        show_renamed_titles(upsert_report.already_indexed,
+                            "PDF(s) skipped because already indexed in Qdrant.",
+                            "Show Qdrant duplicates")
 
         if duplicate_titles:
             st.warning(
@@ -130,18 +131,9 @@ def run_ingest_and_index(result):
                 for title in duplicate_titles:
                     st.write(f"- {title}")
 
-        if title_overrides:
-            st.info(
-                f"{len(title_overrides)} PDF(s) use existing registry titles."
-            )
-            with st.expander("Show registry title overrides"):
-                for item in title_overrides:
-                    input_title = item.get("input_title", "")
-                    indexed_title = item.get("indexed_title", "")
-                    if indexed_title and indexed_title != input_title:
-                        st.write(f"- {input_title} -> {indexed_title}")
-                    else:
-                        st.write(f"- {input_title or indexed_title}")
+        show_renamed_titles(upsert_report.title_overrides,
+                            "PDF(s) use existing registry titles.",
+                            "Show registry title overrides")
 
         if failed_pdfs:
             st.warning(f"{len(failed_pdfs)} PDF failed during processing.")
@@ -204,27 +196,19 @@ def main():
     )
     st.session_state.output_dir = output_dir or "./output"
 
-    # Initialize session state
-    if 'rag' not in st.session_state:
-        st.session_state.rag = None
-    if 'search_results' not in st.session_state:
-        st.session_state.search_results = []
-    if 'current_answer' not in st.session_state:
-        st.session_state.current_answer = 0
-    if 'indexed' not in st.session_state:
-        st.session_state.indexed = False
-    if 'zotero_collections_loaded' not in st.session_state:
-        st.session_state.zotero_collections_loaded = False
-    if 'zotero_collections' not in st.session_state:
-        st.session_state.zotero_collections = []
-    if 'zotero_collection' not in st.session_state:
-        st.session_state.zotero_collection = None
-    if 'dense_model_name' not in st.session_state:
-        st.session_state.dense_model_name = DEFAULT_DENSE_MODEL
-    if 'model_loaded' not in st.session_state:
-        st.session_state.model_loaded = False
-    if 'model_device' not in st.session_state:
-        st.session_state.model_device = None  # auto-select
+    for key, default in {
+        'rag': None,
+        'search_results': [],
+        'current_answer': 0,
+        'indexed': False,
+        'zotero_collections_loaded': False,
+        'zotero_collections': [],
+        'zotero_collection': None,
+        'dense_model_name': DEFAULT_DENSE_MODEL,
+        'model_loaded': False,
+        'model_device': None,  # auto-select
+    }.items():
+        st.session_state.setdefault(key, default)
 
     # Main tabs - only show after model is loaded and indexed
     if st.session_state.model_loaded and st.session_state.indexed:
@@ -603,21 +587,40 @@ def show_setup_tab():
         st.rerun()
 
 def format_time(seconds: float) -> str:
-    """Format time in seconds to human-readable string."""
+    """Format a stage duration: seconds, or minutes and seconds."""
     if seconds < 60:
         return f"{seconds:.1f}s"
-    elif seconds < 3600:  # less than 1 hour
-        minutes = int(seconds // 60)
-        secs = seconds % 60
-        return f"{minutes}m {secs:.0f}s"
-    elif seconds < 86400:  # less than 1 day
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        return f"{hours}h {minutes}m"
-    else:  # 1 day or more
-        days = int(seconds // 86400)
-        hours = int((seconds % 86400) // 3600)
-        return f"{days}d {hours}h"
+    return f"{int(seconds // 60)}m {seconds % 60:.0f}s"
+
+
+def stage_progress(label):
+    """A status line and a bar for one stage, and the (current, total, message)
+    callback that drives them with elapsed and remaining time."""
+    status, bar = st.empty(), st.progress(0)
+    started = None
+
+    def update(current, total, message):
+        nonlocal started
+        if started is None:
+            started = time.time()
+        progress = current / total if total > 0 else 0.0
+        bar.progress(progress)
+        elapsed = time.time() - started
+        if progress >= 1.0:
+            time_info = f"Completed in {format_time(elapsed)}"
+        elif current > 0:
+            time_info = (f"Elapsed: {format_time(elapsed)} | "
+                         f"Remaining: ~{format_time(elapsed / progress - elapsed)}")
+        else:
+            time_info = ""
+        status.text(f"{label}: {message} {time_info}")
+
+    return status, bar, update
+
+
+def hex_to_rgb(color: str) -> tuple[float, float, float]:
+    """``#rrggbb`` as an RGB tuple in 0-1, the form PyMuPDF takes."""
+    return tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))
 
 
 def show_search_tab():
@@ -633,29 +636,6 @@ def show_search_tab():
         key="search_input"
     )
 
-    # Predefined color presets (defined here for use in search)
-    COLOR_PRESETS = {
-        'Yellow': (1.0, 1.0, 0.0),
-        'Cyan': (0.0, 1.0, 1.0),
-        'Orange': (1.0, 0.5, 0.0),
-        'Green': (0.5, 1.0, 0.5),
-        'Pink': (1.0, 0.7, 0.8),
-        'Purple': (0.7, 0.5, 1.0),
-        'Custom': None  # Will be set via RGB picker
-    }
-
-    # Initialize session state for color
-    if 'highlight_color_preset' not in st.session_state:
-        st.session_state.highlight_color_preset = 'Yellow'
-    if 'highlight_color_custom' not in st.session_state:
-        st.session_state.highlight_color_custom = (1.0, 1.0, 0.0)
-
-    def get_selected_highlight_color():
-        color_preset = st.session_state.get('highlight_color_preset', 'Yellow')
-        if color_preset == 'Custom':
-            return st.session_state.get('highlight_color_custom', (1.0, 1.0, 0.0))
-        return COLOR_PRESETS.get(color_preset, (1.0, 1.0, 0.0))
-
     st.markdown("---")
 
     col_search, col_clear = st.columns([1, 4])
@@ -668,68 +648,9 @@ def show_search_tab():
             st.rerun()
 
     if search_clicked and query:
-        import time
-
-        # Create separate progress tracking for each stage
         st.markdown("#### Processing Pipeline")
-
-        rerank_status = st.empty()
-        rerank_progress_bar = st.progress(0)
-
-        qa_status = st.empty()
-        qa_progress_bar = st.progress(0)
-
-        # Track timing for each stage
-        rerank_start_time = [None]  # Use list for mutability in nested function
-        qa_start_time = [None]
-
-        def rerank_callback(current, total, message):
-            if rerank_start_time[0] is None:
-                rerank_start_time[0] = time.time()
-
-            if total > 0:
-                progress = current / total
-                rerank_progress_bar.progress(progress)
-
-                # Calculate time estimates
-                elapsed = time.time() - rerank_start_time[0]
-                if current > 0 and progress < 1.0:
-                    estimated_total = elapsed / progress
-                    remaining = estimated_total - elapsed
-                    time_info = f"Elapsed: {format_time(elapsed)} | Remaining: ~{format_time(remaining)}"
-                elif progress >= 1.0:
-                    time_info = f"Completed in {format_time(elapsed)}"
-                else:
-                    time_info = ""
-            else:
-                rerank_progress_bar.progress(0)
-                time_info = ""
-
-            rerank_status.text(f"Stage 1 - Reranking: {message} {time_info}")
-
-        def qa_callback(current, total, message):
-            if qa_start_time[0] is None:
-                qa_start_time[0] = time.time()
-
-            if total > 0:
-                progress = current / total
-                qa_progress_bar.progress(progress)
-
-                # Calculate time estimates
-                elapsed = time.time() - qa_start_time[0]
-                if current > 0 and progress < 1.0:
-                    estimated_total = elapsed / progress
-                    remaining = estimated_total - elapsed
-                    time_info = f"Elapsed: {format_time(elapsed)} | Remaining: ~{format_time(remaining)}"
-                elif progress >= 1.0:
-                    time_info = f"Completed in {format_time(elapsed)}"
-                else:
-                    time_info = ""
-            else:
-                qa_progress_bar.progress(0)
-                time_info = ""
-
-            qa_status.text(f"Stage 2 - QA Extraction: {message} {time_info}")
+        rerank_status, rerank_progress_bar, rerank_callback = stage_progress("Stage 1 - Reranking")
+        qa_status, qa_progress_bar, qa_callback = stage_progress("Stage 2 - QA Extraction")
 
         try:
             st.session_state.search_results = st.session_state.rag.answer_question(
@@ -819,49 +740,17 @@ def show_search_tab():
         st.write("")
         st.subheader("Highlight Color")
 
-        col_preset, col_rgb, col_highlight = st.columns([1, 2, 1], gap="large")
+        col_color, col_highlight = st.columns([3, 1], gap="large")
 
-        with col_preset:
-            color_preset = st.selectbox(
-                "Color Preset",
-                options=list(COLOR_PRESETS.keys()),
-                index=list(COLOR_PRESETS.keys()).index(st.session_state.highlight_color_preset),
-                help="Choose a predefined color or select 'Custom' to use RGB picker",
-                key="color_preset_results"
-            )
-            st.session_state.highlight_color_preset = color_preset
-
-        with col_rgb:
-            if color_preset == 'Custom':
-                # Show RGB sliders for custom color
-                col_r, col_g, col_b = st.columns(3)
-                with col_r:
-                    r = st.slider("R", 0.0, 1.0, st.session_state.highlight_color_custom[0], 0.05, key="r_results")
-                with col_g:
-                    g = st.slider("G", 0.0, 1.0, st.session_state.highlight_color_custom[1], 0.05, key="g_results")
-                with col_b:
-                    b = st.slider("B", 0.0, 1.0, st.session_state.highlight_color_custom[2], 0.05, key="b_results")
-                highlight_color_next = (r, g, b)
-                st.session_state.highlight_color_custom = highlight_color_next
-            else:
-                highlight_color_next = COLOR_PRESETS[color_preset]
-
-            # Show color preview
-            color_hex_next = rgb_to_hex(highlight_color_next)
-            st.markdown(
-                f"**Preview:** <span style='background-color: {color_hex_next}; padding: 5px 20px; border: 1px solid #ccc;'>&nbsp;&nbsp;&nbsp;&nbsp;</span>",
-                unsafe_allow_html=True
-            )
+        with col_color:
+            highlight_color = hex_to_rgb(st.color_picker(
+                "Highlight color", value="#ffff00", key="highlight_color"))
 
         with col_highlight:
             if st.button("Highlight Selected Articles", width="stretch"):
-                highlight_color_override = get_selected_highlight_color()
-                selected_indices = [
-                    i for i, selected in st.session_state.highlight_selected.items() if selected
-                ]
                 selected_answers = [
                     ans for i, ans in enumerate(st.session_state.search_results)
-                    if i in selected_indices
+                    if st.session_state.highlight_selected.get(i)
                 ]
 
                 if not selected_answers:
@@ -870,12 +759,9 @@ def show_search_tab():
                     output_dir = os.path.join(st.session_state.output_dir, "highlighted_results")
                     os.makedirs(output_dir, exist_ok=True)
 
-                    # Group answers by PDF
-                    pdfs_answers = {}
+                    pdfs_answers = defaultdict(list)
                     for answer in selected_answers:
-                        answer.color = highlight_color_override
-                        if answer.pdf_path not in pdfs_answers:
-                            pdfs_answers[answer.pdf_path] = []
+                        answer.color = highlight_color
                         pdfs_answers[answer.pdf_path].append(answer)
 
                     highlighted_paths = []
@@ -888,7 +774,7 @@ def show_search_tab():
                         output_filename = f"{safe_title}_highlighted.pdf"
                         output_path = os.path.join(output_dir, output_filename)
 
-                        result_path = st.session_state.rag.highlight_pdf(answers, output_path)
+                        result_path = highlight_pdf(answers, output_path)
                         if result_path:
                             highlighted_paths.append(result_path)
                         else:
@@ -955,18 +841,8 @@ def show_search_tab():
 
     elif query and search_clicked:
         st.warning("No results found")
-        st.info("""
-        **Possible reasons:**
-        - QA score threshold too high (try 0.0)
-        - Rerank threshold too high (the cross-encoder is conservative)
-        - No semantically similar chunks found
-        - Question format doesn't match extractive QA style
-
-        **Try:**
-        - Lower the QA Score Threshold to 0.0
-        - Lower the Rerank Threshold to 0.0001
-        - Rephrase as a specific question (e.g., "What is X?" instead of "Tell me about X")
-        """)
+        st.info("No passage in the library is relevant enough to answer this. "
+                'Try a specific question (e.g., "What is X?" instead of "Tell me about X").')
     elif not query and search_clicked:
         st.info("Enter a question above and click Search to get started")
 

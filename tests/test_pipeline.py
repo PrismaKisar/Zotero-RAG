@@ -27,8 +27,8 @@ class _Qdrant:
         self._indexed = indexed or {}
         self.fetched = None
 
-    def search_batch(self, embeddings, result_limit, mode, pdf_hashes=None):
-        return [self._results for _ in embeddings]
+    def search(self, embedding, result_limit, mode, pdf_hashes=None):
+        return list(self._results)
 
     def fetch_chunks(self, ids):
         self.fetched = list(ids)
@@ -250,14 +250,12 @@ class _IndexQdrant:
         return title
 
     def upsert_chunks(self, chunks, dense_embeddings, sparse_embeddings,
-                      contextual_texts=None, progress_callback=None):
-        self.upserted = (chunks, contextual_texts)
+                      progress_callback=None):
+        self.upserted = chunks
         return len(chunks), []
 
 
 class _Processor:
-    CONTENT_SECTIONS = {"references": False}
-
     def __init__(self, documents):
         # pdf_hash -> (document_text, [(section, text), ...]); a missing hash fails
         self.documents = documents
@@ -274,17 +272,16 @@ class _Processor:
 
 
 class _Contextualizer:
-    def __init__(self, drop_for=()):
-        self.drop_for = set(drop_for)  # documents whose result comes back short
-
     def contextualize(self, document_text, all_texts):
-        if document_text in self.drop_for:
-            return all_texts[:-1]
         return [f"ctx|{t}" for t in all_texts]
 
 
 class _Embedder:
+    def __init__(self):
+        self.encoded = None
+
     def encode_chunks(self, progress_callback, all_texts):
+        self.encoded = list(all_texts)
         return {"dense": [[0.0]] * len(all_texts), "sparse": [{}] * len(all_texts)}
 
 
@@ -309,7 +306,7 @@ def _pdf(pdf_hash, title, newly_cached=True):
 
 def test_upsert_skips_duplicates_and_indexed_pdfs_and_rolls_back_failures():
     qdrant = _IndexQdrant(titles={"Taken": "other"}, indexed={"old"})
-    processor = _Processor({"new": ("doc", [("intro", "a"), ("references", "refs")])})
+    processor = _Processor({"new": ("doc", [("intro", "a")])})
     rag = _indexing_rag(qdrant, processor)
 
     result = rag.upsert_pdfs([_pdf("dup", "Taken"), _pdf("old", "Old"),
@@ -319,8 +316,7 @@ def test_upsert_skips_duplicates_and_indexed_pdfs_and_rolls_back_failures():
     assert [e["pdf_hash"] for e in result.already_indexed] == ["old"]
     assert [f["pdf_hash"] for f in result.failed_pdfs] == ["broken"]
     assert result.processed_pdfs == 1 and result.indexed_chunks == 1
-    # the reference section is filtered out before indexing
-    assert [c.text for c in qdrant.upserted[0]] == ["a"]
+    assert [c.text for c in qdrant.upserted] == ["a"]
     # the duplicate is removed once, at skip time; the failure by the rollback
     assert rag.pdf_cache.removed == ["dup", "broken"]
     assert processor.tei_removed == ["broken"]
@@ -332,25 +328,25 @@ def test_upsert_raises_when_nothing_could_be_extracted():
         rag.upsert_pdfs([_pdf("e", "Empty")])
 
 
-def test_contextualization_falls_back_per_pdf_and_indexes_what_was_embedded():
+def test_contextualization_embeds_the_contextualized_texts_but_indexes_the_originals():
     processor = _Processor({
         "ok": ("doc ok", [("intro", "a"), ("intro", "b")]),
         "blank": ("   ", [("intro", "c")]),
-        "short": ("doc short", [("intro", "d"), ("intro", "e")]),
     })
     qdrant = _IndexQdrant()
-    rag = _indexing_rag(qdrant, processor, _Contextualizer(drop_for={"doc short"}))
+    rag = _indexing_rag(qdrant, processor, _Contextualizer())
 
-    rag.upsert_pdfs([_pdf("ok", "Ok"), _pdf("blank", "Blank"), _pdf("short", "Short")])
+    rag.upsert_pdfs([_pdf("ok", "Ok"), _pdf("blank", "Blank")])
 
-    assert qdrant.upserted[1] == ["ctx|a", "ctx|b", "c", "d", "e"]
+    # a PDF without document text keeps its original chunks
+    assert rag.embedding_manager.encoded == ["ctx|a", "ctx|b", "c"]
+    assert [c.text for c in qdrant.upserted] == ["a", "b", "c"]
 
 
 def test_contextualization_is_skipped_when_disabled():
-    qdrant = _IndexQdrant()
-    rag = _indexing_rag(qdrant, _Processor({"ok": ("doc", [("intro", "a")])}))
+    rag = _indexing_rag(_IndexQdrant(), _Processor({"ok": ("doc", [("intro", "a")])}))
     rag.upsert_pdfs([_pdf("ok", "Ok")])
-    assert qdrant.upserted[1] == ["a"]
+    assert rag.embedding_manager.encoded == ["a"]
 
 
 class _ReversedFetch(_Qdrant):

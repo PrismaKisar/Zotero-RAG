@@ -172,8 +172,7 @@ Then navigate to `http://localhost:8501`
    - Click "Open PDF" to view in default viewer
 
 3. **Highlight Color**
-   - Choose from presets (Yellow, Cyan, Orange, Green, Pink, Purple)
-   - Or use custom RGB color picker
+   - Pick any color with the color picker (default yellow)
 
 4. **Highlight PDF**
    - Select only the answers you like to highlight

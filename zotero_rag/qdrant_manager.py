@@ -53,7 +53,6 @@ class QdrantManager:
             "zotero_rag_" + self._sanitize_model_name(dense_model_name) + collection_suffix)
         self.registry_collection = "zotero_rag_registry" + collection_suffix
         self.vector_size = vector_size
-        self.chunks: list[Chunk] = []
         self._client: qc.QdrantClient | None = None
         self._collections_ready = False
     
@@ -168,7 +167,7 @@ class QdrantManager:
                 field_name="pdf_hash",
                 field_schema=qmodels.KeywordIndexParams(
                     type="keyword",
-                    # ponytail: search_batch(pdf_hashes=...) *is* a filtered vector
+                    # ponytail: search(pdf_hashes=...) *is* a filtered vector
                     # search, so this is no longer free - without the filterable
                     # sub-index Qdrant falls back to exact search on the filtered
                     # set. At benchmark scale (~5k chunks) that is fine; flip to
@@ -233,24 +232,14 @@ class QdrantManager:
             ]
         )
 
-        next_offset = None
-        while True:
-            points, next_offset = self.client.scroll(
-                collection_name=self.registry_collection,
-                scroll_filter=flt,
-                limit=1,
-                with_payload=False,
-                with_vectors=False,
-                offset=next_offset,
-            )
-
-            if points:
-                return True
-
-            if not next_offset or not points:
-                break
-
-        return False
+        points, _ = self.client.scroll(
+            collection_name=self.registry_collection,
+            scroll_filter=flt,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return bool(points)
     
     @_reports_unreachable
     def list_indexed_pdfs(self) -> list[dict[str, str]]:
@@ -296,7 +285,6 @@ class QdrantManager:
                         chunks: list[Chunk],
                         dense_embeddings: list[list[float]],
                         sparse_embeddings: list[dict[str, list[float]]],
-                        contextual_texts: list[str] | None = None, #:FIXME: debug
                         progress_callback=None) -> tuple[int, list[dict[str, str]]]:
         """Upsert chunks into Qdrant chunk collection with hybrid vectors (dense + sparse).
 
@@ -318,20 +306,12 @@ class QdrantManager:
         if len(sparse_embeddings) != len(chunks):
             raise ValueError("Sparse embeddings count does not match chunks count.")
 
-        if contextual_texts is None:    #FIXME: debug
-            contextual_texts = [p.text for p in chunks]
-        elif len(contextual_texts) != len(chunks):
-            raise ValueError("Contextual texts count does not match chunks count.")
-        
-        self.chunks = chunks
-
         points = []
         pdf_indexed_titles: dict[str, str] = {}
-        for i, chunk in enumerate(self.chunks):
+        for i, chunk in enumerate(chunks):
             point_id = QdrantManager._generate_point_id(chunk.pdf_hash, chunk.chunk_index)
-            if chunk.pdf_hash not in pdf_indexed_titles:
-                pdf_indexed_titles[chunk.pdf_hash] = chunk.title
-                        
+            pdf_indexed_titles.setdefault(chunk.pdf_hash, chunk.title)
+
             vector_config = {
                 "": dense_embeddings[i],
                 "text-sparse": sparse_embeddings[i]
@@ -342,13 +322,11 @@ class QdrantManager:
                 vector=vector_config,
                 payload={
                     'text': chunk.text,
-                    'contextual_text': contextual_texts[i], #FIXME: debug
                     'page_number': chunk.page_number,
                     'chunk_index': chunk.chunk_index,
                     'title': chunk.title,
                     'pdf_hash': chunk.pdf_hash,
                     'section': chunk.section,
-                    'sentence_count': chunk.sentence_count,
                     'sentences': chunk.sentences
                 }
             )
@@ -406,7 +384,8 @@ class QdrantManager:
         payload = (existing[0].payload or {}) if existing else {}
         current_title = (payload.get("title") or "").strip() or None
 
-        if normalized_title and self._title_in_use_by_other_hash(normalized_title, pdf_hash):
+        owner = self.find_pdf_hash_by_title(normalized_title, filter_by_model=False)
+        if owner and owner != pdf_hash:
             logger.warning(
                 "Title '%s' already in use; skipping registry update for hash %s",
                 normalized_title,
@@ -416,8 +395,6 @@ class QdrantManager:
 
         if existing:
             models = payload.get("models") or []
-            if isinstance(models, str):
-                models = [models]
             if self.dense_model_name not in models:
                 models.append(self.dense_model_name)
 
@@ -449,22 +426,6 @@ class QdrantManager:
             ],
         )
         return normalized_title or None
-
-    def _title_in_use_by_other_hash(self, title: str, pdf_hash: str) -> bool:
-        """Check if a given title is already associated with a different PDF hash in the registry collection.
-        
-        Args:
-            title: Title to check for usage.
-            pdf_hash: PDF hash to exclude from the check (i.e., allow if the title is used by the same hash).
-            
-        Returns:
-            True if the title is in use by a different PDF hash, False otherwise.
-        """
-        if not title:
-            return False
-
-        match = self.find_pdf_hash_by_title(title, filter_by_model=False)
-        return bool(match and match != pdf_hash)
 
     @_reports_unreachable
     def find_pdf_hash_by_title(self, title: str, filter_by_model: bool = True) -> str | None:
@@ -511,14 +472,17 @@ class QdrantManager:
         return payload.get("pdf_hash")
 
     @_reports_unreachable
-    def delete_pdf_from_index(self, pdf_hash: str) -> dict[str, bool]:
-        """Delete all chunks associated with a specific PDF hash from the Qdrant collection.
-        
+    def delete_pdf_from_index(self, pdf_hash: str) -> bool:
+        """Delete a PDF's chunks and drop this model from its registry entry.
+
         Args:
             pdf_hash: Hash of the PDF whose chunks should be deleted.
 
         Returns:
-            Dictionary indicating whether the entry was deleted and if it had other models.
+            True if another model still indexes the PDF, so its cached files must stay.
+
+        Raises:
+            ValueError: If the PDF has no registry entry.
         """
         flt = qmodels.Filter(
             must=[
@@ -528,27 +492,11 @@ class QdrantManager:
                 )
             ]
         )
-
-        delete_result = self.client.delete(
+        self.client.delete(
             collection_name=self.chunk_collection,
             points_selector=qmodels.FilterSelector(filter=flt)
         )
 
-        if delete_result:
-            res = self.delete_registry_entry(pdf_hash)
-            if res["deleted"]:
-                return res
-        raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
-    
-    @_reports_unreachable
-    def delete_registry_entry(self, pdf_hash: str) -> dict[str, bool]:
-        """Delete the registry entry for a specific PDF hash from the registry collection.
-        
-        Args:
-            pdf_hash: Hash of the PDF whose registry entry should be deleted.
-        Returns:
-            Dictionary indicating whether the entry was deleted and if it had other models.
-        """
         registry_id = QdrantManager._generate_point_id(pdf_hash, None)
         existing = self.client.retrieve(
             collection_name=self.registry_collection,
@@ -556,30 +504,23 @@ class QdrantManager:
             with_payload=True,
             with_vectors=False,
         )
+        if not existing:
+            raise ValueError(f"Failed to delete PDF with hash '{pdf_hash}' from index.")
 
-        if existing:
-            payload = existing[0].payload or {}
-            models = payload.get("models") or []
-            if isinstance(models, str):
-                models = [models]
-
-            models = [m for m in models if m != self.dense_model_name]
-
-            if not models:
-
-                self.client.delete(
-                    collection_name=self.registry_collection,
-                    points_selector=qmodels.PointIdsList(points=[registry_id]),
-                )
-                return {"deleted": True, "had_other_models": False}
-            else:
-                self.client.set_payload(
-                    collection_name=self.registry_collection,
-                    payload={"models": models},
-                    points=[registry_id],
-                )
-            return {"deleted": True, "had_other_models": True}
-        return {"deleted": False, "had_other_models": False}
+        models = [m for m in (existing[0].payload or {}).get("models") or []
+                  if m != self.dense_model_name]
+        if models:
+            self.client.set_payload(
+                collection_name=self.registry_collection,
+                payload={"models": models},
+                points=[registry_id],
+            )
+        else:
+            self.client.delete(
+                collection_name=self.registry_collection,
+                points_selector=qmodels.PointIdsList(points=[registry_id]),
+            )
+        return bool(models)
 
     @_reports_unreachable
     def clear_chunk_collection(self) -> dict[str, str]:
@@ -592,10 +533,8 @@ class QdrantManager:
         deleted_entries: dict[str, str] = {}
         for item in indexed_pdfs:
             pdf_hash = item.get("pdf_hash")
-            if pdf_hash:
-                res = self.delete_pdf_from_index(pdf_hash)
-                if res["deleted"] and not res["had_other_models"]:
-                    deleted_entries[pdf_hash] = item.get("title", "")
+            if pdf_hash and not self.delete_pdf_from_index(pdf_hash):
+                deleted_entries[pdf_hash] = item.get("title", "")
 
         self.client.delete_collection(self.chunk_collection)
         self._collections_ready = False
@@ -679,7 +618,6 @@ class QdrantManager:
             title=payload.get('title', ''),
             pdf_hash=payload.get('pdf_hash', ''),
             section=payload.get('section', ''),
-            sentence_count=payload.get('sentence_count', 0),
             sentences=payload.get('sentences', [])
         )
 
@@ -698,51 +636,25 @@ class QdrantManager:
         return [QdrantManager._chunk_from_payload(p.payload or {}) for p in points]
 
     @_reports_unreachable
-    def search_batch(self,
-                    query_embeddings: list[dict[str, list[float]]],
-                    result_limit: int = 30,
-                    mode: str = "hybrid",
-                    pdf_hashes: list[str] | None = None) -> list[list[Chunk]]:
-        """Batch search for relevant chunks using Hybrid Search (Dense + Sparse BM25).
+    def search(self,
+               query_embedding: dict[str, list[float]],
+               result_limit: int = 30,
+               mode: str = "hybrid",
+               pdf_hashes: list[str] | None = None) -> list[tuple[Chunk, float]]:
+        """Search for relevant chunks using Hybrid Search (Dense + Sparse BM25).
 
         Args:
-            query_embeddings: List of query embedding dicts with 'dense' and 'sparse' keys.
-            result_limit: Max results per query (the ``result_limit`` preset field).
+            query_embedding: Query embedding dict with 'dense' and 'sparse' keys.
+            result_limit: Max results (the ``result_limit`` preset field).
             mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
             pdf_hashes: Restrict the search to these documents (None = whole corpus).
 
         Returns:
-            List of lists of (Chunk, score) tuples, aligned to query order.
+            (Chunk, score) pairs, best first.
         """
-        if not query_embeddings:
-            return []
-
-        requests = []
-        for query_embedding in query_embeddings:
-            dense_query = query_embedding.get("dense")
-            sparse_query = query_embedding.get("sparse")
-            if dense_query is None or sparse_query is None:
-                raise ValueError("Each query embedding must include 'dense' and 'sparse' keys.")
-            requests.append(QdrantManager._build_query_request(
-                dense_query, sparse_query, result_limit, mode, pdf_hashes))
-
-        search_results = self.client.query_batch_points(
-            collection_name=self.chunk_collection,
-            requests=requests,
-        )
-
-        if hasattr(search_results, "result"):
-            search_results = search_results.result
-
-        if not isinstance(search_results, list):
-            search_results = [search_results]
-
-        relevant_batches = []
-        for response in search_results:
-            relevant_chunks = []
-            for result in response.points:
-                chunk = QdrantManager._chunk_from_payload(result.payload or {})
-                relevant_chunks.append((chunk, result.score))
-            relevant_batches.append(relevant_chunks)
-
-        return relevant_batches
+        request = QdrantManager._build_query_request(
+            query_embedding["dense"], query_embedding["sparse"], result_limit, mode, pdf_hashes)
+        [response] = self.client.query_batch_points(
+            collection_name=self.chunk_collection, requests=[request])
+        return [(QdrantManager._chunk_from_payload(p.payload or {}), p.score)
+                for p in response.points]

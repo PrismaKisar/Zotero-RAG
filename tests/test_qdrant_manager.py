@@ -154,6 +154,54 @@ def test_service_lost_mid_session_raises_connection_error(fake_client):
         manager.list_indexed_pdfs()
 
 
+def test_search_returns_chunks_with_their_scores_in_order(fake_client):
+    from types import SimpleNamespace
+    manager = QdrantManager("m")
+    manager.list_indexed_pdfs()
+    points = [SimpleNamespace(payload={"text": "a", "pdf_hash": "h", "chunk_index": 1}, score=0.9),
+              SimpleNamespace(payload={"text": "b", "pdf_hash": "h", "chunk_index": 2}, score=0.4)]
+    fake_client.instances[0].query_batch_points = (
+        lambda collection_name, requests: [SimpleNamespace(points=points)])
+
+    hits = manager.search({"dense": DENSE, "sparse": SPARSE})
+
+    assert [(c.text, c.chunk_index, s) for c, s in hits] == [("a", 1, 0.9), ("b", 2, 0.4)]
+
+
+def _registry_client(fake_client, models):
+    from types import SimpleNamespace
+    manager = QdrantManager("m")
+    manager.list_indexed_pdfs()
+    client = fake_client.instances[0]
+    client.calls = []
+    client.delete = lambda collection_name, points_selector: client.calls.append(
+        ("delete", collection_name))
+    client.set_payload = lambda collection_name, payload, points: client.calls.append(
+        ("set_payload", payload["models"]))
+    client.retrieve = lambda **kw: ([SimpleNamespace(payload={"models": models})]
+                                    if models is not None else [])
+    return manager, client
+
+
+def test_deleting_the_last_model_drops_the_registry_entry(fake_client):
+    manager, client = _registry_client(fake_client, ["m"])
+    assert manager.delete_pdf_from_index("h") is False
+    assert client.calls == [("delete", manager.chunk_collection),
+                            ("delete", manager.registry_collection)]
+
+
+def test_deleting_one_of_two_models_keeps_the_other(fake_client):
+    manager, client = _registry_client(fake_client, ["m", "other"])
+    assert manager.delete_pdf_from_index("h") is True
+    assert client.calls[-1] == ("set_payload", ["other"])
+
+
+def test_deleting_an_unregistered_pdf_raises(fake_client):
+    manager, _ = _registry_client(fake_client, None)
+    with pytest.raises(ValueError, match="Failed to delete"):
+        manager.delete_pdf_from_index("h")
+
+
 def test_non_transport_failures_are_not_reported_as_unreachable(fake_client):
     from qdrant_client.http.exceptions import ResponseHandlingException
     manager = QdrantManager("m")

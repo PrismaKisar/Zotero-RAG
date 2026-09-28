@@ -13,7 +13,6 @@ import warnings
 
 from contextualizer import ChunkContextualizer
 from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
-from highlighter import PDFHighlighter
 from models import (
     Answer,
     CachedPDF,
@@ -102,11 +101,7 @@ class ZoteroRAG:
                 separate corpora out of each other's retrieval pool.
         """
         self.output_base_dir = output_base_dir
-        self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
-
-        pdf_cache = PDFCacheManager(
-            folder_path=self.pdf_cache_dir
-        )
+        pdf_cache = PDFCacheManager(folder_path=os.path.join(output_base_dir, "pdf_cache"))
 
         pdf_processor = PDFProcessor(
             grobid_url=grobid_url,
@@ -143,14 +138,12 @@ class ZoteroRAG:
                 device=model_device,
                 batch_size=qa_batch_size,
             ),
-            highlighter=PDFHighlighter(),
         )
 
     @classmethod
     def from_components(cls, *, qdrant_manager=None, embedding_manager=None,
                         reranker=None, reader: Reader | None = None, pdf_cache=None,
-                        pdf_processor=None, contextualizer=None,
-                        highlighter=None) -> "ZoteroRAG":
+                        pdf_processor=None, contextualizer=None) -> "ZoteroRAG":
         """A pipeline over components built elsewhere, loading no model itself.
 
         The seam for the tests, which pass stand-ins for only the components the
@@ -160,12 +153,11 @@ class ZoteroRAG:
         rag = cls.__new__(cls)
         rag._assemble(pdf_cache=pdf_cache, pdf_processor=pdf_processor,
                       embedding_manager=embedding_manager, contextualizer=contextualizer,
-                      qdrant_manager=qdrant_manager, reranker=reranker, reader=reader,
-                      highlighter=highlighter)
+                      qdrant_manager=qdrant_manager, reranker=reranker, reader=reader)
         return rag
 
     def _assemble(self, *, pdf_cache, pdf_processor, embedding_manager, contextualizer,
-                  qdrant_manager, reranker, reader, highlighter) -> None:
+                  qdrant_manager, reranker, reader) -> None:
         """Wire the components and the per-instance state every constructor needs.
 
         ``reader`` is public: the benchmarks point it at the reader a config asks
@@ -179,32 +171,10 @@ class ZoteroRAG:
         self.qdrant_manager = qdrant_manager
         self.reranker = reranker
         self.reader = reader
-        self.highlighter = highlighter
 
-        # Color management for multi-query highlighting
-        self.query_colors = [
-            (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.5, 0.0),
-            (0.5, 1.0, 0.5), (1.0, 0.7, 0.8), (0.7, 0.5, 1.0),
-        ]
-        self.query_color_map = {}
-        
         # What the last answer_question call did at each stage, for the
         # benchmarks: see QuestionTrace.
         self.last_trace = QuestionTrace()
-    
-    def get_query_color(self, query: str) -> tuple[float, float, float]:
-        """Get a consistent color for a query string.
-        
-        Args:
-            query: Query string.
-            
-        Returns:
-            RGB color tuple.
-        """
-        if query not in self.query_color_map:
-            color_idx = len(self.query_color_map) % len(self.query_colors)
-            self.query_color_map[query] = self.query_colors[color_idx]
-        return self.query_color_map[query]
     
     def get_indexed_pdfs(self) -> list[dict[str, str]]:
         """Get list of indexed PDFs.
@@ -212,35 +182,22 @@ class ZoteroRAG:
         Returns:
             List of dictionaries with title and pdf_hash.
         """
-        try:
-            return self.qdrant_manager.list_indexed_pdfs()
-        except Exception as e:
-            logger.error(f"Error during get_indexed_pdfs: {e!s}")
-            raise
+        return self.qdrant_manager.list_indexed_pdfs()
 
     def consistency_check(self, indexed_pdfs: list[dict[str, str]]) -> bool:
         """Check consistency between indexed PDFs and cached PDFs.
-        
+
         Args:
-            indexed_pdfs: List of dicts or hashes for PDFs indexed in Qdrant.
-        
+            indexed_pdfs: The PDFs indexed in Qdrant, as ``list_indexed_pdfs`` returns them.
+
         Returns:
             True if all indexed PDFs have corresponding cache entries, False otherwise.
         """
         if not indexed_pdfs:
             return True
 
-        cached_hashes = set(self.pdf_cache.get_cached_items())
-        indexed_hashes = set()
-        for item in indexed_pdfs:
-            if isinstance(item, dict):
-                pdf_hash = item.get("pdf_hash")
-                if pdf_hash:
-                    indexed_hashes.add(pdf_hash)
-            elif isinstance(item, str):
-                indexed_hashes.add(item)
-
-        missing_in_cache = indexed_hashes - cached_hashes
+        indexed_hashes = {item["pdf_hash"] for item in indexed_pdfs if item.get("pdf_hash")}
+        missing_in_cache = indexed_hashes - set(self.pdf_cache.get_cached_items())
 
         if missing_in_cache:
             logger.warning(f"Consistency check failed: {len(missing_in_cache)} indexed PDFs missing in cache: {missing_in_cache}")
@@ -324,29 +281,20 @@ class ZoteroRAG:
 
         return self._ingest_pdfs(items)
 
-    def _rollback_pdfs(self, newly_cached_hashes: set[str], failed_hashes: set[str]) -> bool:
+    def _rollback_pdfs(self, newly_cached_hashes: set[str], failed_hashes: set[str]) -> None:
         """Rollback cached PDFs that were newly cached during the current upsert if they failed to index.
 
         Args:
             newly_cached_hashes: Set of PDF hashes that were newly cached during the current upsert.
             failed_hashes: Set of PDF hashes that failed to index during the current upsert.
-
-        Returns:
-            True if any rollbacks were performed, False otherwise.
         """
-        to_remove = newly_cached_hashes & failed_hashes
-        if not to_remove:
-            return False
-
-        for pdf_hash in to_remove:
+        for pdf_hash in newly_cached_hashes & failed_hashes:
             try:
                 self.pdf_cache.remove_pdf(pdf_hash)
                 self.pdf_processor.remove_tei_cache(pdf_hash)
                 logger.debug("Rolled back PDF from cache: %s", pdf_hash)
             except Exception as e:  # noqa: BLE001 - rollback is best-effort
                 logger.error("Error rolling back PDF '%s': %s", pdf_hash, str(e))
-
-        return True
 
     def _skip_message(self, item: CachedPDF, result: UpsertResult,
                     newly_cached_hashes: set[str]) -> str | None:
@@ -442,10 +390,6 @@ class ZoteroRAG:
                     }
 
                 for extracted in extracted_chunks:
-                    # Filter by section type if needed
-                    if not self.pdf_processor.CONTENT_SECTIONS.get(extracted.section, True):
-                        continue
-
                     chunk = Chunk(
                         text=extracted.text,
                         page_number=extracted.page_number,
@@ -453,7 +397,6 @@ class ZoteroRAG:
                         title=title,
                         pdf_hash=pdf_hash,
                         section=extracted.section,
-                        sentence_count=len(extracted.sentences),
                         sentences=extracted.sentences
                     )
                     all_chunks.append(chunk)
@@ -475,9 +418,9 @@ class ZoteroRAG:
                        progress_callback=None) -> None:
         """Stage 2: replace each PDF's texts in ``all_texts`` with contextualized ones.
 
-        Best-effort, per PDF: a PDF with no document text or a mismatched
-        result keeps its original texts, and an unexpected error stops here
-        leaving the PDFs already done contextualized.
+        Best-effort, per PDF: a PDF with no document text keeps its original
+        texts, and an unexpected error stops here leaving the PDFs already done
+        contextualized.
         """
         try:
             pdf_hashes_with_chunks = [
@@ -503,23 +446,12 @@ class ZoteroRAG:
                     logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
                     continue
 
-                base_chunks = [all_texts[i] for i in chunk_indices]
                 contextualized_chunks = self.contextualizer.contextualize(
                     document_text=document_text,
-                    all_texts=base_chunks,
+                    all_texts=[all_texts[i] for i in chunk_indices],
                 )
-
-                if len(contextualized_chunks) != len(chunk_indices):
-                    logger.warning(
-                        "Contextualization size mismatch for %s (%s vs %s), using original chunks",
-                        pdf_title,
-                        len(contextualized_chunks),
-                        len(chunk_indices),
-                    )
-                    continue
-
-                for offset, chunk_abs_idx in enumerate(chunk_indices):
-                    all_texts[chunk_abs_idx] = contextualized_chunks[offset]
+                for chunk_abs_idx, text in zip(chunk_indices, contextualized_chunks, strict=True):
+                    all_texts[chunk_abs_idx] = text
 
                 if progress_callback:
                     progress_callback(
@@ -577,21 +509,17 @@ class ZoteroRAG:
                 all_chunks,
                 dense_embeddings=hybrid_embeddings["dense"],
                 sparse_embeddings=hybrid_embeddings["sparse"],
-                contextual_texts=all_texts, #FIXME: debug
                 progress_callback=progress_callback,
             )
             result.indexed_chunks = indexed_chunks
             result.title_overrides = title_overrides
-        except Exception as e:
-            logger.error(f"Error during upsert_chunks: {e!s}")
-            raise
         finally:
             failed_hashes = {
                 item.get("pdf_hash")
                 for item in result.failed_pdfs
                 if item.get("pdf_hash")
             }
-            _ = self._rollback_pdfs(newly_cached_hashes, failed_hashes)
+            self._rollback_pdfs(newly_cached_hashes, failed_hashes)
 
         return result
     
@@ -602,7 +530,7 @@ class ZoteroRAG:
             pdf_title: Title of the PDF to delete.
         
         Returns:
-            Number of deleted PDFs.
+            True if the PDF was deleted, False otherwise.
         """
         try:
             pdf_hash = self.qdrant_manager.find_pdf_hash_by_title(
@@ -613,17 +541,11 @@ class ZoteroRAG:
                 logger.warning("No chunks found to delete for PDF: %s", pdf_title)
                 return False
 
-            delete_result = self.qdrant_manager.delete_pdf_from_index(pdf_hash)
-            deleted = delete_result.get("deleted", False)
-            if deleted:
-                if not delete_result.get("had_other_models", False):
-                    self.pdf_processor.remove_tei_cache(pdf_hash)
-                    self.pdf_cache.remove_pdf(pdf_hash)
-                logger.info("Successfully deleted chunks for PDF: %s", pdf_title)
-                return True
-
-            logger.warning("No chunks found to delete for PDF: %s", pdf_title)
-            return False
+            if not self.qdrant_manager.delete_pdf_from_index(pdf_hash):
+                self.pdf_processor.remove_tei_cache(pdf_hash)
+                self.pdf_cache.remove_pdf(pdf_hash)
+            logger.info("Successfully deleted chunks for PDF: %s", pdf_title)
+            return True
         except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
             logger.error(f"Error during delete_pdf_from_index: {e!s}")
             return False
@@ -721,7 +643,7 @@ class ZoteroRAG:
                 benchmarks that vary them one at a time. The product passes none.
             progress_callback: Function(current, total, message) for QA progress.
             rerank_callback: Function(current, total, message) for rerank progress.
-            highlight_color: RGB tuple (0-1) for highlighting. If None, use query-based color.
+            highlight_color: RGB tuple (0-1) for highlighting. If None, yellow.
             pdf_hashes: Restrict retrieval to these documents. None searches the
                 whole library, which is the product's default; scoping it is what
                 the benchmark needs to separate picking the right paper from
@@ -747,13 +669,12 @@ class ZoteroRAG:
         # Stage 1: Retrieve candidate chunks (Qdrant). One query: expanding it
         # with paraphrases was measured, never added recall, and was removed.
         try:
-            [hits] = self.qdrant_manager.search_batch(
-                [self.embedding_manager.encode_query(question)],
+            hits = self.qdrant_manager.search(
+                self.embedding_manager.encode_query(question),
                 result_limit=config['result_limit'],
                 mode=config['retrieval_mode'],
                 pdf_hashes=pdf_hashes,
             )
-            hits = list(hits)
             seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in hits}
 
             # Best first, ties broken by chunk id. RRF gives equal scores to
@@ -812,49 +733,15 @@ class ZoteroRAG:
             return []
         
         # Stage 3: Extract answers (QA Model)
-        # Use provided color or get a query-based color
-        if highlight_color is None:
-            color = self.get_query_color(question)
-        else:
-            color = highlight_color
-        
         answers = self.reader.extract_answers(
             question,
             reranked,
             config,
-            color=color,
+            color=highlight_color or (1.0, 1.0, 0.0),
             progress_callback=progress_callback,
         )
         mark("read")
 
-        return self._attach_pdf_paths(answers)
-    
-    def _attach_pdf_paths(self, answers: list[Answer]) -> list[Answer]:
-        """Resolve cached PDF paths for extracted answers.
-        
-        Args:
-            answers: List of Answer objects with title but no pdf_path.
-        
-        Returns:
-            List of Answer objects with pdf_path set where available."""
-        
         for ans in answers:
-            pdf_path = self.pdf_cache.get_pdf_path(ans.pdf_hash)
-            if pdf_path:
-                ans.pdf_path = pdf_path
-            else:
-                ans.pdf_path = None
-
+            ans.pdf_path = self.pdf_cache.get_pdf_path(ans.pdf_hash)
         return answers
-    
-    def highlight_pdf(self, answers_for_pdf: list[Answer], output_path: str) -> str:
-        """Highlight PDF using TEI sentence coordinates.
-        
-        Args:
-            answers_for_pdf: List of Answer objects from the same PDF.
-            output_path: Path where the highlighted PDF should be saved.
-            
-        Returns:
-            Path to the highlighted PDF, or None if highlighting failed.
-        """
-        return self.highlighter.highlight_pdf(answers_for_pdf, output_path)

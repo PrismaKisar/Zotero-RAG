@@ -114,6 +114,34 @@ def test_the_reader_and_reranker_models_are_not_configurable(tmp_path):
     assert not {"qa_model", "reranker_model"} & set(calls["init"])
 
 
+def test_answer_to_dict_keeps_what_the_results_file_documents():
+    from models import Answer
+    from run_from_config import answer_to_dict
+    answer = Answer(text="t", context="c", page_number=2, title="T", score=0.5, query="q",
+                    sentence_coords=["1,1,1,1,1"], pdf_path="/p.pdf", pdf_hash="h")
+    assert answer_to_dict(answer) == {
+        "text": "t", "context": "c", "pdf_path": "/p.pdf", "page_number": 2, "title": "T",
+        "section": "body", "start_char": 0, "end_char": 0, "score": 0.5, "query": "q",
+        "color": (1, 1, 0), "retrieval_score": 0.0, "rerank_score": 0.0}
+
+
+def test_highlighting_writes_one_pdf_per_source_pdf(tmp_path, monkeypatch):
+    import run_from_config as runner
+    from models import Answer
+
+    answers = [Answer(text=t, context=t, page_number=0, title=t, pdf_path=p)
+               for t, p in (("a", "/x/one.pdf"), ("b", "/x/two.pdf"), ("c", "/x/one.pdf"))]
+    monkeypatch.setattr(_FakeRag, "answer_question", lambda self, **kw: answers)
+    written = {}
+    monkeypatch.setattr(runner, "highlight_pdf",
+                        lambda group, out: written.setdefault(Path(out).name,
+                                                              [a.text for a in group]))
+
+    run_from_config(str(_write_config(tmp_path, create_highlighted_pdfs=True)))
+
+    assert written == {"one_highlighted.pdf": ["a", "c"], "two_highlighted.pdf": ["b"]}
+
+
 def test_missing_questions_is_reported_not_crashed(tmp_path):
     path = _write_config(tmp_path)
     config = yaml.safe_load(path.read_text())

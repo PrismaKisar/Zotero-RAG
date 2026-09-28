@@ -2,11 +2,14 @@ import json
 import logging
 import os
 import sys
+from collections import defaultdict
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import yaml
 from embedding_manager import DEFAULT_DENSE_MODEL
+from highlighter import highlight_pdf
 from models import Answer
 from pipeline import ZoteroRAG
 
@@ -54,29 +57,10 @@ def load_config(config_path: str) -> dict[str, Any]:
 
 
 def answer_to_dict(answer: Answer) -> dict[str, Any]:
-    """Convert Answer object to dictionary for JSON serialization.
-    
-    Args:
-        answer: Answer object.
-        
-    Returns:
-        Dictionary representation of the answer.
-    """
-    return {
-        'text': answer.text,
-        'context': answer.context,
-        'pdf_path': answer.pdf_path,
-        'page_number': answer.page_number,
-        'title': answer.title,
-        'section': answer.section,
-        'start_char': answer.start_char,
-        'end_char': answer.end_char,
-        'score': answer.score,
-        'query': answer.query,
-        'color': answer.color,
-        'retrieval_score': answer.retrieval_score,
-        'rerank_score': answer.rerank_score
-    }
+    """The answer as the results file stores it: everything but the highlighting internals."""
+    record = asdict(answer)
+    del record['sentence_coords'], record['pdf_hash']
+    return record
 
 
 def run_from_config(config_path: str) -> dict[str, list[Answer]]:
@@ -176,21 +160,17 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
     if config['create_highlighted_pdfs']:
         logger.info("Creating highlighted PDFs")
         
-        # Group answers by PDF
-        answers_by_pdf = {}
-        for question, answers in all_results.items():
+        answers_by_pdf = defaultdict(list)
+        for answers in all_results.values():
             for answer in answers:
-                pdf_path = answer.pdf_path
-                if pdf_path not in answers_by_pdf:
-                    answers_by_pdf[pdf_path] = []
-                answers_by_pdf[pdf_path].append(answer)
-        
+                answers_by_pdf[answer.pdf_path].append(answer)
+
         for pdf_path, pdf_answers in answers_by_pdf.items():
             pdf_filename = Path(pdf_path).stem
             output_path = os.path.join(output_dir, f"{pdf_filename}_highlighted.pdf")
-            
+
             logger.info(f"Highlighting {pdf_filename} with {len(pdf_answers)} answers")
-            result_path = rag.highlight_pdf(pdf_answers, output_path)
+            result_path = highlight_pdf(pdf_answers, output_path)
             
             if result_path:
                 logger.info(f"  Saved to: {result_path}")
