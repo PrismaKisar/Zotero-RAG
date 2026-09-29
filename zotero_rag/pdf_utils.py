@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from typing import BinaryIO
-
-logger = logging.getLogger(__name__)
 
 _DEFAULT_NAME = "_All_Library"
 
@@ -50,48 +47,15 @@ def is_pdf_hash(name: str) -> bool:
     return re.fullmatch(r"[a-fA-F0-9]{64}", name or "") is not None
 
 
-def compute_stream_hash(stream: BinaryIO, buffer_size: int = 1024 * 1024) -> str:
-    """Compute SHA-256 hash from a binary stream.
-    
-    Args:
-        stream: A binary stream to read from.
-        buffer_size: Bytes read per iteration (default is 1 MB).
-        
-    Returns:
-        The SHA-256 hash of the stream as a hexadecimal string.
-    """
-    h = hashlib.sha256()
-    can_seek = hasattr(stream, "seek")
-
-    if can_seek:
-        try:
-            stream.seek(0)
-        except (OSError, ValueError):
-            can_seek = False
-
-    for block in iter(lambda: stream.read(buffer_size), b""):
-        if not block:
-            break
-        h.update(block)
-
-    if can_seek:
-        try:
-            stream.seek(0)
-        except Exception:
-            logger.debug("Unable to reset stream position", exc_info=True)
-
-    return h.hexdigest()
+def compute_stream_hash(stream: BinaryIO) -> str:
+    """SHA-256 hex digest of a whole seekable stream, left rewound for the next reader."""
+    stream.seek(0)
+    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    stream.seek(0)
+    return digest
 
 
-def compute_file_hash(file_path: str, buffer_size: int = 1024 * 1024) -> str:
-    """Compute SHA-256 hash of a file.
-    
-    Args:
-        file_path: The path to the file to hash.
-        buffer_size: Bytes read per iteration (default is 1 MB).
-        
-    Returns:
-        The SHA-256 hash of the file as a hexadecimal string.
-    """
+def compute_file_hash(file_path: str) -> str:
+    """SHA-256 hex digest of the file at ``file_path``."""
     with open(file_path, "rb") as f:
-        return compute_stream_hash(f, buffer_size=buffer_size)
+        return hashlib.file_digest(f, "sha256").hexdigest()

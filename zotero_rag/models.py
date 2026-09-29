@@ -27,24 +27,7 @@ class Chunk:
     title: str
     pdf_hash: str
     section: str = "body"  # section type: body, abstract, intro, etc.
-    sentence_count: int = 0  # number of sentences in this chunk
     sentences: list[tuple[str, str]] = field(default_factory=list)  # List of (sentence_text, coords)
-    
-    def __reduce__(self):
-        """Custom pickle support for dataclass."""
-        return (
-            self.__class__,
-            (
-                self.text,
-                self.page_number,
-                self.chunk_index,
-                self.title,
-                self.pdf_hash,
-                self.section,
-                self.sentence_count,
-                self.sentences,
-            )
-        )
 
     def expand_to_sentences(self, start_char: int, end_char: int) -> "ExpandedAnswerSpan":
         """Widen a character span to the complete sentences it touches.
@@ -189,15 +172,6 @@ class Answer:
     rerank_score: float = 0.0  # CrossEncoder reranking score
     pdf_path: str | None = None
     pdf_hash: str | None = None
-    
-    def __reduce__(self):
-        """Custom pickle support for dataclass."""
-        return (
-            self.__class__,
-            (self.text, self.context, self.page_number, self.title,
-             self.section, self.start_char, self.end_char, self.score, self.query, self.color,
-             self.sentence_coords, self.retrieval_score, self.rerank_score, self.pdf_path, self.pdf_hash)
-        )
 
 
 class Reader(Protocol):
@@ -260,10 +234,10 @@ class UpsertResult:
 class PDFSource(Protocol):
     """Strategy interface for PDF ingestion sources."""
 
-    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
+    def compute_hash(self) -> str:
         ...
 
-    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str) -> None:
         ...
 
 
@@ -272,13 +246,13 @@ class UploadSource:
     """PDF source backed by an in-memory upload."""
     uploaded_file: Any
 
-    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
-        return compute_stream_hash(self.uploaded_file, buffer_size=buffer_size)
+    def compute_hash(self) -> str:
+        return compute_stream_hash(self.uploaded_file)
 
-    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str) -> None:
         self.uploaded_file.seek(0)
         with open(dest_path, "wb") as out_file:
-            shutil.copyfileobj(self.uploaded_file, out_file, length=buffer_size)
+            shutil.copyfileobj(self.uploaded_file, out_file)
         self.uploaded_file.seek(0)
 
 
@@ -287,10 +261,10 @@ class PathSource:
     """PDF source backed by a file path."""
     path: str
 
-    def compute_hash(self, buffer_size: int = 1024 * 1024) -> str:
-        return compute_file_hash(self.path, buffer_size=buffer_size)
+    def compute_hash(self) -> str:
+        return compute_file_hash(self.path)
 
-    def write_to(self, dest_path: str, buffer_size: int = 1024 * 1024) -> None:
+    def write_to(self, dest_path: str) -> None:
         shutil.copy2(self.path, dest_path)
 
 

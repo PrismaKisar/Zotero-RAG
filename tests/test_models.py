@@ -49,7 +49,7 @@ def test_path_source_write_to_copies_file(tmp_path):
 def test_chunk_survives_pickle_roundtrip():
     original = Chunk(
         text="some text", page_number=1, chunk_index=2, title="Title",
-        pdf_hash="abc123", section="abstract", sentence_count=3,
+        pdf_hash="abc123", section="abstract",
         sentences=[("s1", "coords1")],
     )
     restored = pickle.loads(pickle.dumps(original))

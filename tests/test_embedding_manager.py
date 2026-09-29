@@ -94,6 +94,7 @@ def test_encode_chunks_uses_the_document_prompt_in_configured_batches():
 
     assert manager.dense_model.calls == [("document", 3), ("document", 3), ("document", 1)]
     assert len(encoded["dense"]) == len(encoded["sparse"]) == 7
+    assert encoded["sparse"][0] == {"indices": [0], "values": [1.0]}
 
 
 def test_encode_query_uses_the_query_prompt():
@@ -103,6 +104,7 @@ def test_encode_query_uses_the_query_prompt():
 
     assert manager.dense_model.calls == [("query", 1)]
     assert len(encoded["dense"]) == DIM
+    assert encoded["sparse"] == {"indices": [0], "values": [1.0]}
 
 
 def test_each_model_default_is_named_in_one_module_only():

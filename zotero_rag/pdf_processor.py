@@ -6,29 +6,16 @@ import shutil
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
-from typing import ClassVar
 
 import requests
 from grobid_client.grobid_client import GrobidClient
 from models import ExtractedChunk
-from pdf_utils import compute_file_hash, is_pdf_hash
 
 logger = logging.getLogger(__name__)
 
 
 class PDFProcessor:
     """Handles PDF parsing and text extraction using GROBID."""
-    
-    # Section types to include in chunking (can be customized)
-    CONTENT_SECTIONS: ClassVar[dict[str, bool]] = {
-        'body': True,
-        'abstract': True,
-        'introduction': True,
-        'conclusion': True,
-        'results': True,
-        'methods': True,
-        'discussion': True,
-    }
 
     # Minimum word count before a paragraph is treated as standalone.
     MIN_PARAGRAPH_WORDS = 10
@@ -51,9 +38,9 @@ class PDFProcessor:
         self.grobid_timeout = grobid_timeout
         self.grobid_client = None  # Lazy initialization only when needed
 
-        self.output_base_dir = output_base_dir 
-        self.pdf_cache_dir = os.path.join(self.output_base_dir, "pdf_cache") or "pdf_cache"
-        self.tei_cache_dir = os.path.join(output_base_dir, "tei_cache") or "tei_cache"
+        self.output_base_dir = output_base_dir
+        self.pdf_cache_dir = os.path.join(output_base_dir, "pdf_cache")
+        self.tei_cache_dir = os.path.join(output_base_dir, "tei_cache")
         os.makedirs(self.tei_cache_dir, exist_ok=True)
 
         logger.info(f"Initialized PDFProcessor with folder: {self.tei_cache_dir}")
@@ -120,23 +107,17 @@ class PDFProcessor:
                 continue
             self.remove_tei_cache(pdf_hash)
 
-    def _parse_pdf(self, pdf_path: str, pdf_hash: str | None = None) -> ET.Element | None:
+    def _parse_pdf(self, pdf_path: str, pdf_hash: str) -> ET.Element | None:
         """Parse a single PDF using GROBID and return TEI XML root.
-        
+
         Args:
             pdf_path: Path to the PDF file.
-            pdf_hash: Precomputed hash for TEI cache naming.
-            
+            pdf_hash: Hash naming the PDF's TEI cache entry.
+
         Returns:
             XML Element root of the TEI document, or None if parsing failed.
         """
         try:
-            if not pdf_hash:
-                base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-                if is_pdf_hash(base_name):
-                    pdf_hash = base_name.lower()
-                else:
-                    pdf_hash = compute_file_hash(pdf_path)
             cache_path = os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml")
             
             if os.path.exists(cache_path):
@@ -344,12 +325,10 @@ class PDFProcessor:
         Returns:
             Extracted title text or empty string if not found.
         """
+        # Most specific first; the header before any biblStruct in the body.
         title_xpaths = [
             ".//tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:title[@type='main']",
-            ".//tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:title",
             ".//tei:teiHeader//tei:titleStmt/tei:title",
-            ".//tei:teiHeader//tei:sourceDesc//tei:biblStruct/tei:analytic/tei:title",
-            ".//tei:teiHeader//tei:sourceDesc//tei:biblStruct/tei:monogr/tei:title",
             ".//tei:teiHeader//tei:biblStruct/tei:analytic/tei:title",
             ".//tei:teiHeader//tei:biblStruct/tei:monogr/tei:title",
             ".//tei:biblStruct/tei:analytic/tei:title",
