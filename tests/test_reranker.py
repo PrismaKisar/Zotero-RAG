@@ -129,3 +129,12 @@ def test_the_rerank_score_is_still_reported_when_ordering_by_retrieval(reranker)
     reranker.model.probabilities = [0.1, 0.9]
     out = reranker.rerank("q", scored_candidates([0.9, 0.1]), order_by_retrieval=True)
     assert [round(c.rerank_score, 3) for c in out] == [0.1, 0.9]
+
+
+def test_the_absolute_cut_keeps_what_the_margin_would_drop(reranker):
+    reranker.model.probabilities = [0.99, 0.91]
+    relative = reranker.rerank("q", scored_candidates([0.5, 0.5]), gate=0.9, margin=0.02)
+    reranker.model.probabilities = [0.99, 0.91]
+    absolute = reranker.rerank("q", scored_candidates([0.5, 0.5]), gate=0.9, margin=0.02,
+                               absolute_cut=True)
+    assert len(relative) == 1 and len(absolute) == 2

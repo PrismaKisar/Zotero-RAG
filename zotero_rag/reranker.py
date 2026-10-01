@@ -48,7 +48,8 @@ class Reranker:
             gate: float = 0.0,
             margin: float = 1.0,
             progress_callback=None,
-            order_by_retrieval: bool = False) -> list[RerankedChunk]:
+            order_by_retrieval: bool = False,
+            absolute_cut: bool = False) -> list[RerankedChunk]:
         """Rerank candidates using cross-encoder scores.
 
         Args:
@@ -72,6 +73,9 @@ class Reranker:
                 puts gold evidence below where reciprocal-rank fusion had it on
                 every row where retrieval found enough to judge. Off by default,
                 since it is an intervention and not yet an accepted default.
+            absolute_cut: Keep every candidate at or above ``gate`` instead of
+                those within ``margin`` of the best: the rule the margin
+                replaced, for the benchmarks only (see ``selection``).
 
         Returns:
             List of (Chunk, retrieval_score, rerank_score) tuples, empty when no
@@ -109,7 +113,7 @@ class Reranker:
         
         best = max(item.rerank_score for item in scored_candidates)
         # best is already in hand for the log below; the floor only reads the best
-        floor = rerank_floor((best,), gate, margin)
+        floor = rerank_floor((best,), gate, margin, absolute=absolute_cut)
         filtered_candidates = [] if floor is None else [
             item for item in scored_candidates if item.rerank_score >= floor
         ]

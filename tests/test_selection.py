@@ -23,3 +23,11 @@ def test_a_best_exactly_on_the_gate_is_answered():
 
 def test_no_candidates_leave_nothing_to_keep():
     assert rerank_floor([], gate=0.0, margin=1.0) is None
+
+
+def test_the_absolute_rule_keeps_everything_at_the_gate_whatever_the_best():
+    assert rerank_floor([0.99, 0.5], gate=0.9, margin=0.02, absolute=True) == 0.9
+
+
+def test_the_absolute_rule_still_leaves_a_question_below_the_gate_unanswered():
+    assert rerank_floor([0.8], gate=0.9, margin=0.02, absolute=True) is None
