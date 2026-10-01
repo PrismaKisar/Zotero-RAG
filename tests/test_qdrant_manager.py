@@ -5,8 +5,16 @@ is where a scoped search can go silently wrong - a filter that lands in the
 wrong place returns fewer results rather than an error.
 """
 
+import sys
+from pathlib import Path
+from typing import ClassVar
+
 import pytest
 from qdrant_client import models as qmodels
+
+sys.path.append(str(Path(__file__).resolve().parent.parent / "zotero_rag"))
+
+from models import Chunk
 
 from zotero_rag.qdrant_manager import QdrantManager
 
@@ -15,7 +23,7 @@ SPARSE = qmodels.SparseVector(indices=[1], values=[1.0])
 
 
 def build(mode, pdf_hashes=None):
-    return QdrantManager._build_query_request(
+    return QdrantManager._build_query_requests(
         DENSE, SPARSE, result_limit=30, mode=mode, pdf_hashes=pdf_hashes)
 
 
@@ -30,36 +38,35 @@ def test_no_filter_when_no_documents_are_named():
 
 
 @pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid"])
-def test_every_mode_scopes_to_the_named_documents(mode):
-    assert hashes_in(build(mode, ["a", "b"]).filter) == ["a", "b"]
+def test_every_branch_scopes_to_the_named_documents(mode):
+    """A filter on only some branches would let the others fill their depth
+    with out-of-scope chunks."""
+    assert all(hashes_in(r.filter) == ["a", "b"] for r in build(mode, ["a", "b"]))
 
 
 @pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid"])
 def test_every_mode_searches_the_whole_corpus_by_default(mode):
-    assert build(mode).filter is None
+    assert all(r.filter is None for r in build(mode))
 
 
-def test_hybrid_filters_inside_each_prefetch_not_only_after_fusion():
-    """Filtering only after RRF would let both prefetches fill their limit with
-    out-of-scope chunks and fuse down to an empty result."""
-    request = build("hybrid", ["a"])
-    assert len(request.prefetch) == 2
-    assert all(hashes_in(p.filter) == ["a"] for p in request.prefetch)
+def test_hybrid_is_one_request_per_vector():
+    assert [r.using for r in build("hybrid")] == ["", "text-sparse"]
+
+
+def test_each_branch_is_fetched_deeper_than_the_cut_to_settle_ties():
+    assert all(r.limit == 60 for r in build("hybrid"))
 
 
 @pytest.mark.parametrize("mode", ["dense", "hybrid"])
 def test_no_request_cuts_by_cosine_score(mode):
     """retrieval_threshold was removed: result_limit is the only stage-1 cut."""
-    request = build(mode)
-    assert request.score_threshold is None
-    assert all(p.score_threshold is None for p in request.prefetch or [])
+    assert all(r.score_threshold is None for r in build(mode))
 
 
 def test_dense_search_is_exact_not_approximate():
     """A library past Qdrant's indexing threshold must not turn approximate."""
-    assert build("dense").params.exact is True
-    dense_prefetch = build("hybrid").prefetch[0]
-    assert dense_prefetch.using == "" and dense_prefetch.params.exact is True
+    assert build("dense")[0].params.exact is True
+    assert build("hybrid")[0].params.exact is True
 
 
 def test_unknown_mode_is_rejected():
@@ -67,10 +74,32 @@ def test_unknown_mode_is_rejected():
         build("bm25")
 
 
+def _hit(index, score):
+    return (Chunk(text=str(index), page_number=0, chunk_index=index, title="t", pdf_hash="h"),
+            score)
+
+
+def test_a_branch_breaks_ties_by_chunk_id_not_arrival_order():
+    ranked = QdrantManager.rank_branch([_hit(9, 0.5), _hit(2, 0.5), _hit(7, 0.8)], limit=2)
+    assert [c.chunk_index for c, _ in ranked] == [7, 2]
+
+
+def test_fusion_scores_as_qdrant_does():
+    """Qdrant's RRF: k=2, ranks from zero, so first in both branches is 1.0."""
+    fused = QdrantManager.rrf_fuse([[_hit(1, 0.9), _hit(2, 0.8)],
+                                    [_hit(1, 5.0), _hit(3, 4.0)]], limit=3)
+    assert [(c.chunk_index, round(s, 4)) for c, s in fused] == [(1, 1.0), (2, 0.3333), (3, 0.3333)]
+
+
+def test_fused_ties_are_broken_by_chunk_id_at_the_cut():
+    fused = QdrantManager.rrf_fuse([[_hit(5, 0.9)], [_hit(4, 0.9)]], limit=1)
+    assert [c.chunk_index for c, _ in fused] == [4]
+
+
 class _FakeClient:
     """Stands in for QdrantClient: counts connects and collection creations."""
 
-    instances = []
+    instances: ClassVar[list] = []
 
     def __init__(self, url, fail=None):
         self.collections = set()
@@ -163,7 +192,7 @@ def test_search_returns_chunks_with_their_scores_in_order(fake_client):
     fake_client.instances[0].query_batch_points = (
         lambda collection_name, requests: [SimpleNamespace(points=points)])
 
-    hits = manager.search({"dense": DENSE, "sparse": SPARSE})
+    hits = manager.search({"dense": DENSE, "sparse": SPARSE}, mode="dense")
 
     assert [(c.text, c.chunk_index, s) for c, s in hits] == [("a", 1, 0.9), ("b", 2, 0.4)]
 

@@ -13,6 +13,9 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 logger = logging.getLogger(__name__)
 
+# Qdrant's own RRF constant, kept so client-side fusion ranks exactly as it did.
+RRF_K = 2
+
 
 def _reports_unreachable(method):
     """Raise a Qdrant that went away mid-session as the ConnectionError a failed
@@ -550,18 +553,18 @@ class QdrantManager:
             key="pdf_hash", match=qmodels.MatchAny(any=list(pdf_hashes)))])
 
     @staticmethod
-    def _build_query_request(dense_query, sparse_query, result_limit: int, mode: str,
-                            pdf_hashes: list[str] | None = None) -> qmodels.QueryRequest:
-        """One Qdrant query request for ``mode`` ('hybrid', 'dense' or 'sparse').
+    def _build_query_requests(dense_query, sparse_query, result_limit: int, mode: str,
+                              pdf_hashes: list[str] | None = None) -> list[qmodels.QueryRequest]:
+        """The Qdrant requests for ``mode``: one branch, or two to fuse for 'hybrid'.
 
-        'hybrid' RRF-fuses both prefetches; the single-vector modes query that
-        vector directly, which is what makes retrieval_mode an ablation knob
-        that genuinely reorders results rather than just filtering them.
+        Hybrid is fused here rather than by Qdrant (see ``rrf_fuse``), so it is
+        two plain requests, one per vector. Each branch asks for twice
+        ``result_limit``: the extra depth is what lets ``rank_branch`` decide
+        ties at the cut by chunk id instead of taking whichever equal-scored
+        points Qdrant returned first.
 
-        ``pdf_hashes`` scopes the search to those documents. In hybrid mode the
-        filter goes on each prefetch, not only on the fused query: filtering
-        after fusion would let both prefetches spend their whole ``limit`` on
-        out-of-scope documents and fuse down to nothing.
+        ``pdf_hashes`` scopes every branch to those documents, so neither branch
+        can spend its depth on out-of-scope chunks.
 
         No request carries a ``score_threshold``: ``result_limit`` is the only
         cut. A cosine floor used to sit on the dense side and was removed - see
@@ -575,39 +578,46 @@ class QdrantManager:
         cost is linear in the chunk count: milliseconds up to ~1e5 chunks. The
         sparse side needs no flag, its inverted index is exact already.
         """
-        flt = QdrantManager._pdf_hash_filter(pdf_hashes)
-        exact = qmodels.SearchParams(exact=True)
-        if mode == "dense":
-            return qmodels.QueryRequest(
-                query=dense_query, using="", limit=result_limit, params=exact,
-                with_payload=True, filter=flt)
-        if mode == "sparse":
-            return qmodels.QueryRequest(
-                query=sparse_query, using="text-sparse",
-                limit=result_limit, with_payload=True, filter=flt)
-        if mode != "hybrid":
+        if mode not in ("dense", "sparse", "hybrid"):
             raise ValueError(f"unknown retrieval_mode: {mode!r}")
-        return qmodels.QueryRequest(
-            prefetch=[
-                qmodels.Prefetch(
-                    query=dense_query,
-                    using="",
-                    limit=result_limit,
-                    params=exact,
-                    filter=flt,
-                ),
-                qmodels.Prefetch(
-                    query=sparse_query,
-                    using="text-sparse",
-                    limit=result_limit,
-                    filter=flt,
-                ),
-            ],
-            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-            limit=result_limit,
-            with_payload=True,
-            filter=flt,
-        )
+        flt = QdrantManager._pdf_hash_filter(pdf_hashes)
+        # ponytail: twice the limit settles ties unless more than result_limit
+        # points share the score at the cut, which a BM25 tail could; deepen then.
+        depth = 2 * result_limit
+        requests = []
+        if mode in ("dense", "hybrid"):
+            requests.append(qmodels.QueryRequest(
+                query=dense_query, using="", limit=depth,
+                params=qmodels.SearchParams(exact=True), with_payload=True, filter=flt))
+        if mode in ("sparse", "hybrid"):
+            requests.append(qmodels.QueryRequest(
+                query=sparse_query, using="text-sparse", limit=depth,
+                with_payload=True, filter=flt))
+        return requests
+
+    @staticmethod
+    def rank_branch(hits: list[tuple[Chunk, float]], limit: int) -> list[tuple[Chunk, float]]:
+        """The top ``limit`` of one branch, best first, ties broken by chunk id."""
+        return sorted(hits, key=lambda h: (-h[1], h[0].pdf_hash, h[0].chunk_index))[:limit]
+
+    @staticmethod
+    def rrf_fuse(branches: list[list[tuple[Chunk, float]]], limit: int,
+                 k: int = RRF_K) -> list[tuple[Chunk, float]]:
+        """Reciprocal-rank fusion of ranked branches, as Qdrant computes it.
+
+        A chunk scores the sum over branches of ``1 / (k + rank)``, rank from
+        zero, which is Qdrant's RRF with its default k=2 (checked against the
+        stored scores: 1.0 for a chunk first in both branches). Done here so
+        the fused ties are broken by chunk id: Qdrant returns equal fused scores
+        in no stable order, and that decided who entered the top ``limit`` on
+        ~15% of questions between otherwise identical runs.
+        """
+        fused: dict[tuple[str, int], list] = {}
+        for branch in branches:
+            for rank, (chunk, _) in enumerate(branch):
+                entry = fused.setdefault((chunk.pdf_hash, chunk.chunk_index), [chunk, 0.0])
+                entry[1] += 1.0 / (k + rank)
+        return QdrantManager.rank_branch([(c, s) for c, s in fused.values()], limit)
 
     @staticmethod
     def _chunk_from_payload(payload: dict) -> Chunk:
@@ -652,9 +662,14 @@ class QdrantManager:
         Returns:
             (Chunk, score) pairs, best first.
         """
-        request = QdrantManager._build_query_request(
+        requests = QdrantManager._build_query_requests(
             query_embedding["dense"], query_embedding["sparse"], result_limit, mode, pdf_hashes)
-        [response] = self.client.query_batch_points(
-            collection_name=self.chunk_collection, requests=[request])
-        return [(QdrantManager._chunk_from_payload(p.payload or {}), p.score)
-                for p in response.points]
+        responses = self.client.query_batch_points(
+            collection_name=self.chunk_collection, requests=requests)
+        branches = [QdrantManager.rank_branch(
+            [(QdrantManager._chunk_from_payload(p.payload or {}), p.score)
+             for p in response.points], result_limit)
+            for response in responses]
+        if len(branches) == 1:
+            return branches[0]
+        return QdrantManager.rrf_fuse(branches, result_limit)
