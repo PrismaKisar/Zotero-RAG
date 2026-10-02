@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 # appended, never prepended: the repo root must keep priority over this directory
@@ -44,7 +45,15 @@ def index_pdfs(pdf_dir: Path, work_dir: Path, grobid_url: str, qdrant_url: str,
     for failure in ingest_result.failed_pdfs:
         print(f"  ingest failed: {failure['title']}: {failure['error']}")
 
-    rag.upsert_pdfs(ingest_result.ingested_pdfs)
+    # One PDF per upsert: a contextualized index takes hours and a failed
+    # generation aborts its upsert, so batching every PDF would lose all of
+    # them to one error. Indexed PDFs are skipped, so a rerun resumes.
+    chunks, started = 0, time.perf_counter()
+    for cached in ingest_result.ingested_pdfs:
+        chunks += rag.upsert_pdfs([cached]).indexed_chunks
+    elapsed = time.perf_counter() - started
+    if chunks:
+        print(f"indexed {chunks} chunks in {elapsed:.0f}s ({elapsed / chunks:.2f}s per chunk)")
     return {cached.title: cached.pdf_hash for cached in ingest_result.ingested_pdfs}
 
 

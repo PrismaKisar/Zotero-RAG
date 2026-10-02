@@ -59,3 +59,31 @@ def test_zotero_rag_name_resolves_to_the_package():
     from zotero_rag.settings import SETTINGS
 
     assert SETTINGS
+
+
+def test_each_pdf_is_upserted_on_its_own(monkeypatch, tmp_path):
+    """One failed contextualization must not cost every other PDF its index."""
+    import sys
+    import types
+
+    upserts = []
+
+    class _FakeRag:
+        def __init__(self, **kwargs):
+            pass
+
+        def ingest_pdfs_from_folder(self, folder_path):
+            pdfs = [types.SimpleNamespace(title=t, pdf_hash=t + "-hash") for t in ("a", "b")]
+            return types.SimpleNamespace(failed_pdfs=[], ingested_pdfs=pdfs)
+
+        def upsert_pdfs(self, pdfs):
+            upserts.append([p.title for p in pdfs])
+            return types.SimpleNamespace(indexed_chunks=3)
+
+    monkeypatch.setitem(sys.modules, "zotero_rag.pipeline",
+                        types.SimpleNamespace(ZoteroRAG=_FakeRag))
+
+    from benchmark.index_pdfs import index_pdfs
+
+    assert index_pdfs(tmp_path, tmp_path, "g", "q") == {"a": "a-hash", "b": "b-hash"}
+    assert upserts == [["a"], ["b"]]

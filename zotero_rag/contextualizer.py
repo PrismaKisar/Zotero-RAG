@@ -1,8 +1,9 @@
 """Chunk contextualization with a local LLM, before a chunk is embedded.
 
 Each chunk is prefixed with one line saying what it is about, written by the
-model from a summary of the whole document. Best-effort throughout: a failed
-summary leaves the prompt without one and a failed chunk is indexed raw.
+model from a summary of the whole document. A failed generation raises: falling
+back to the raw chunk would let two indexes that declare the same configuration
+differ by whether Ollama happened to answer, which nothing downstream can see.
 """
 
 import logging
@@ -50,21 +51,17 @@ class ChunkContextualizer:
             f"<document>\n{document_text}\n</document>"
         )
 
-        try:
-            response = self.client.generate(
-                model=self.model_name,
-                prompt=prompt,
-                options={
-                    "temperature": 0.1,
-                    "num_predict": 400,
-                    "num_ctx": optimal_num_ctx
-                },
-                keep_alive=-1
-            )
-            return response['response'].strip()
-        except Exception as e:  # noqa: BLE001 - Ollama optional: degrade to no summary
-            logger.warning(f"Document summary generation failed: {e}")
-            return ""
+        response = self.client.generate(
+            model=self.model_name,
+            prompt=prompt,
+            options={
+                "temperature": 0.1,
+                "num_predict": 400,
+                "num_ctx": optimal_num_ctx
+            },
+            keep_alive=-1
+        )
+        return response['response'].strip()
 
     def contextualize(self, document_text: str, all_texts: list[str]) -> list[str]:
         """Generate contextualized chunks by prompting an LLM to provide succinct context for each chunk.
@@ -102,32 +99,28 @@ class ChunkContextualizer:
             "Context sentence:"
         )
 
-        for i, chunk in enumerate(all_texts):
+        for chunk in all_texts:
             formatted_prompt = prompt_template.format(
                 doc_summary=doc_summary,
                 chunk=chunk.strip()
             )
 
-            try:
-                response = self.client.generate(
-                    model=self.model_name,
-                    prompt=formatted_prompt,
-                    options={
-                        "temperature": 0.1,
-                        "num_predict": 100,
-                        "num_ctx": optimal_num_ctx
-                    },
-                    keep_alive=-1
-                )
+            response = self.client.generate(
+                model=self.model_name,
+                prompt=formatted_prompt,
+                options={
+                    "temperature": 0.1,
+                    "num_predict": 100,
+                    "num_ctx": optimal_num_ctx
+                },
+                keep_alive=-1
+            )
 
-                context_prefix = response["response"].strip().strip('"').strip("'")
-                context_prefix = context_prefix.replace("```", "").strip()
+            context_prefix = response["response"].strip().strip('"').strip("'")
+            context_prefix = context_prefix.replace("```", "").strip()
 
-                full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
-                contextualized_results.append(full_chunk)
-            except Exception as e:  # noqa: BLE001 - Ollama optional: keep the raw chunk
-                logger.warning(f"Contextual chunk generation failed for chunk index {i}: {e}")
-                contextualized_results.append(chunk)
+            full_chunk = f"{context_prefix}\n\n{chunk}" if context_prefix else chunk
+            contextualized_results.append(full_chunk)
 
         self._flush_ollama_cache()
 
