@@ -35,3 +35,11 @@ def test_answer_question_gets_neither_overrides_nor_a_question_type():
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "answer_question":
             passed = {keyword.arg for keyword in node.keywords}
             assert not passed & {"overrides", "question_type"}, passed
+
+
+def test_the_app_chooses_none_of_the_models():
+    """The thresholds are calibrated on the pipeline's own models."""
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "ZoteroRAG":
+            passed = {keyword.arg for keyword in node.keywords}
+            assert not passed & {"dense_model_name", "qa_model", "reranker_model"}, passed

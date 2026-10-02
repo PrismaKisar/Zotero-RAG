@@ -4,9 +4,7 @@
 zotero_collection: "Machine Learning Papers"  # Optional, use specific collection
 output_base_dir: ./ml_papers_output
 
-# Embedding model (the reranker and the reader are fixed: the thresholds are
-# calibrated on them)
-dense_model_name: google/embeddinggemma-300m
+# The models are fixed: the thresholds are calibrated on them
 model_device: mps  # Use 'cpu', 'cuda', 'mps', or null for auto-detect
 
 # Batch sizes (null = library default of 32)

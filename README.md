@@ -21,7 +21,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - Zotero (with local PDF storage) **OR** PDF files on your device
 - GROBID server (Docker)
 - Qdrant server (Docker)
-- Ollama server (Docker)
+- Ollama server (Docker), only for the optional chunk contextualization
 - PyTorch with MPS/CUDA support (optional, CPU works too)
 
 ## Project Structure
@@ -32,13 +32,15 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── app.py                  # Streamlit web interface
 │   ├── contextualizer.py       # Ollama context line per chunk, before embedding
 │   ├── embedding_manager.py    # Dense and sparse embeddings
+│   ├── generative_reader.py    # Benchmark reader: answer + cited passages (Ollama)
 │   ├── highlighter.py          # PDF annotation using coordinates
 │   ├── models.py               # Data classes
 │   ├── pdf_cache_manager.py    # Local PDF cache management
 │   ├── pdf_processor.py        # GROBID client and TEI parsing
 │   ├── pdf_utils.py            # PDF utilities
+│   ├── hybrid_reader.py        # Benchmark reader: generative choice, extractive span
 │   ├── pipeline.py             # Main orchestration class
-│   ├── qa_engine.py            # Extractive QA
+│   ├── qa_engine.py            # Extractive QA, the delivered reader
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
@@ -143,10 +145,10 @@ Then navigate to `http://localhost:8501`
 4. **Ollama Configuration (Optional)**
     - Service URL (default: `http://localhost:11434`)
     - Leave default if running locally
-    - Used for chunk contextualization before embedding
+    - Used for chunk contextualization before embedding, off by default (unmeasured; indexing fails if Ollama does not answer)
 
-5. **Select Embedding Model**
-   - Model name: Any HuggingFace SentenceTransformer (e.g., `google/embeddinggemma-300m`)
+5. **Load Models**
+   - The models are fixed (`google/embeddinggemma-300m` for embeddings): the settings are calibrated on them
    - Device: auto/cpu/mps/cuda
    - Batch sizes: encoding and reranking (default 32)
    - Click "Load Model"
@@ -208,9 +210,9 @@ Qdrant Hybrid Index
 ```
 User Question
     ↓
-Qdrant Hybrid Retrieval (dense + sparse)
+Qdrant Hybrid Retrieval (dense + sparse, fused client-side)
     ↓
-CrossEncoder Reranking (probability threshold)
+CrossEncoder Reranking (gate on the best candidate, margin below it)
     ↓
 Extractive QA (overlapping 512-token windows, joint span search)
     ↓

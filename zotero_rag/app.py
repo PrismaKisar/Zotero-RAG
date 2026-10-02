@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 
 import streamlit as st
-from embedding_manager import DEFAULT_DENSE_MODEL, DEFAULT_ENCODE_BATCH_SIZE
+from embedding_manager import DEFAULT_ENCODE_BATCH_SIZE
 from highlighter import highlight_pdf
 from pdf_utils import sanitize_filename
 from pipeline import ZoteroRAG
@@ -204,7 +204,6 @@ def main():
         'zotero_collections_loaded': False,
         'zotero_collections': [],
         'zotero_collection': None,
-        'dense_model_name': DEFAULT_DENSE_MODEL,
         'model_loaded': False,
         'model_device': None,  # auto-select
     }.items():
@@ -256,7 +255,7 @@ def show_setup_tab():
         st.markdown("##### Optional Contextualization")
         use_chunk_contextualization = st.checkbox(
             "Enable chunk contextualization before upsert",
-            value=st.session_state.get("use_chunk_contextualization", True),
+            value=st.session_state.get("use_chunk_contextualization", False),
             key="use_chunk_contextualization_chk",
             help="When enabled, each chunk is enriched with document-level context before vectorization."
         )
@@ -264,8 +263,8 @@ def show_setup_tab():
         st.session_state.use_chunk_contextualization = use_chunk_contextualization
 
         st.info(
-            "Chunk contextualization can improve retrieval precision by enriching each chunk with global document context. "
-            "However, it may significantly increase indexing time and computational cost, especially for long PDFs."
+            "Chunk contextualization enriches each chunk with global document context. "
+            "It is unmeasured, slow on long PDFs, and indexing fails if Ollama does not answer."
         )
 
         ollama_url = st.text_input(
@@ -279,7 +278,7 @@ def show_setup_tab():
     st.markdown("---")
 
     # Model Selection
-    st.subheader("2⃣ Select Embedding Model")
+    st.subheader("2⃣ Load Models")
 
     st.markdown(
         """
@@ -297,12 +296,8 @@ def show_setup_tab():
     model_col_left, model_col_right = st.columns([4, 1], gap="large")
 
     with model_col_left:
-        model_input = st.text_input(
-            "Dense model name",
-            value=st.session_state.dense_model_name,
-            placeholder=f"e.g., {DEFAULT_DENSE_MODEL}",
-            help=f"Enter a sentence-transformers dense model (for example '{DEFAULT_DENSE_MODEL}' or 'BAAI/bge-base-en-v1.5')"
-        )
+        # No model choice: the settings are calibrated on the pipeline's own models.
+        st.text("The models are fixed; choose where they run.")
 
         col_device, col_encode_batch, col_rerank_batch = st.columns(3)
 
@@ -346,42 +341,33 @@ def show_setup_tab():
         )
 
     if load_model_clicked:
-        if model_input:
-            with st.spinner(f"Loading model: {model_input}..."):
-                try:
-                    st.session_state.dense_model_name = model_input
-                    st.session_state.model_device = None if device_choice == "auto" else device_choice
-                    st.session_state.encode_batch_size = encode_batch_size
-                    st.session_state.rerank_batch_size = rerank_batch_size
+        with st.spinner("Loading models..."):
+            try:
+                st.session_state.model_device = None if device_choice == "auto" else device_choice
+                st.session_state.encode_batch_size = encode_batch_size
+                st.session_state.rerank_batch_size = rerank_batch_size
 
-                    st.session_state.rag = ZoteroRAG(
-                        dense_model_name=model_input,
-                        grobid_url=grobid_url,
-                        qdrant_url=qdrant_url,
-                        ollama_url=ollama_url,
-                        output_base_dir=st.session_state.output_dir,
-                        model_device=st.session_state.model_device,
-                        encode_batch_size=encode_batch_size,
-                        rerank_batch_size=rerank_batch_size,
-                        use_chunk_contextualization=st.session_state.use_chunk_contextualization
-                    )
+                st.session_state.rag = ZoteroRAG(
+                    grobid_url=grobid_url,
+                    qdrant_url=qdrant_url,
+                    ollama_url=ollama_url,
+                    output_base_dir=st.session_state.output_dir,
+                    model_device=st.session_state.model_device,
+                    encode_batch_size=encode_batch_size,
+                    rerank_batch_size=rerank_batch_size,
+                    use_chunk_contextualization=st.session_state.use_chunk_contextualization
+                )
 
-                    st.session_state.model_loaded = True
-                    st.session_state.indexed = False  # Reset indexed status
+                st.session_state.model_loaded = True
+                st.session_state.indexed = False  # Reset indexed status
 
-                    st.success(
-                        f"Model loaded: {model_input}\n\n"
-                        f"**Batch sizes:** Encoding: {encode_batch_size} | Reranking: {rerank_batch_size}"
-                    )
-                    st.rerun()
-                except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
-                    st.error(f"Error loading model: {e}")
-                    st.info("Make sure the model name is correct and loadable by sentence-transformers")
-        else:
-            st.error("Please enter a model name")
-
-    if st.session_state.model_loaded:
-        st.info(f"Current model: **{st.session_state.dense_model_name}**")
+                st.success(
+                    "Models loaded\n\n"
+                    f"**Batch sizes:** Encoding: {encode_batch_size} | Reranking: {rerank_batch_size}"
+                )
+                st.rerun()
+            except Exception as e:  # noqa: BLE001 - UI boundary: report, never crash the app
+                st.error(f"Error loading models: {e}")
 
     st.markdown("---")
 

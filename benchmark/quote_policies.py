@@ -84,9 +84,9 @@ def main():
 
     rag = ZoteroRAG(grobid_url=args.grobid_url, qdrant_url=args.qdrant_url,
                     output_base_dir=args.work_dir,
-                    qdrant_collection_suffix=args.collection_suffix)
-    rag.reader = GenerativeReader(ollama_url=args.ollama_url,
-                                 citation_quote=QUOTE_LENIENT)
+                    qdrant_collection_suffix=args.collection_suffix,
+                    reader=GenerativeReader(ollama_url=args.ollama_url,
+                                            citation_quote=QUOTE_LENIENT))
     print(f"scoring {len(questions)} aligned questions, one generation each")
 
     rows = {"baseline": [], "citation_quote_strict": []}

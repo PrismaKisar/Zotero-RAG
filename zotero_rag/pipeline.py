@@ -28,7 +28,7 @@ from models import (
 )
 from pdf_cache_manager import PDFCacheManager
 from pdf_processor import PDFProcessor
-from qa_engine import DEFAULT_QA_MODEL, QAEngine
+from qa_engine import QAEngine
 from qdrant_manager import QdrantManager
 from reranker import DEFAULT_RERANKER_MODEL, Reranker
 from settings import resolve
@@ -68,7 +68,6 @@ class ZoteroRAG:
     
     def __init__(self, 
                 dense_model_name: str = DEFAULT_DENSE_MODEL,
-                qa_model: str = DEFAULT_QA_MODEL,
                 reranker_model: str = DEFAULT_RERANKER_MODEL,
                 grobid_url: str = "http://localhost:8070", 
                 grobid_timeout: int = 180,
@@ -78,14 +77,14 @@ class ZoteroRAG:
                 encode_batch_size: int | None = None,
                 qa_batch_size: int | None = None,
                 rerank_batch_size: int | None = None,
-                use_chunk_contextualization: bool = True,
+                use_chunk_contextualization: bool = False,
                 output_base_dir: str = "output",
-                qdrant_collection_suffix: str = ""):
+                qdrant_collection_suffix: str = "",
+                reader: Reader | None = None):
         """Initialize the RAG system.
         
         Args:
             dense_model_name: Name of the sentence-transformers dense model for embeddings.
-            qa_model: Name of the QA model for answer extraction.
             reranker_model: Name of the cross-encoder model for reranking.
             grobid_url: URL of the GROBID service.
             grobid_timeout: Timeout in seconds for GROBID requests.
@@ -95,10 +94,14 @@ class ZoteroRAG:
             encode_batch_size: Batch size for encoding. Module default if None.
             qa_batch_size: Batch size for QA extraction. Module default if None.
             rerank_batch_size: Batch size for reranking. Module default if None.
-            use_chunk_contextualization: Whether to contextualize chunks with Ollama before embedding.
+            use_chunk_contextualization: Whether to contextualize chunks with Ollama
+                before embedding. Off by default: no benchmark measured it, so it
+                does not ship as the default.
             output_base_dir: Base directory for storing outputs.
             qdrant_collection_suffix: Appended to the Qdrant collection names, to keep
                 separate corpora out of each other's retrieval pool.
+            reader: The reader to answer with. None builds the delivered one,
+                the extractive reader; a benchmark passes the reader it measures.
         """
         self.output_base_dir = output_base_dir
         pdf_cache = PDFCacheManager(folder_path=os.path.join(output_base_dir, "pdf_cache"))
@@ -133,11 +136,7 @@ class ZoteroRAG:
                 device=model_device,
                 batch_size=rerank_batch_size
             ),
-            reader=QAEngine(
-                model_name=qa_model,
-                device=model_device,
-                batch_size=qa_batch_size,
-            ),
+            reader=reader or QAEngine(device=model_device, batch_size=qa_batch_size),
         )
 
     @classmethod
@@ -418,50 +417,47 @@ class ZoteroRAG:
                        progress_callback=None) -> None:
         """Stage 2: replace each PDF's texts in ``all_texts`` with contextualized ones.
 
-        Best-effort, per PDF: a PDF with no document text keeps its original
-        texts, and an unexpected error stops here leaving the PDFs already done
-        contextualized.
+        A PDF with no document text keeps its original texts. A failed
+        generation propagates and nothing is upserted, rather than indexing
+        raw chunks under a configuration that says they were contextualized.
         """
-        try:
-            pdf_hashes_with_chunks = [
-                pdf_hash
-                for pdf_hash, context_info in per_pdf_context.items()
-                if context_info.get("chunk_indices")
-            ]
+        pdf_hashes_with_chunks = [
+            pdf_hash
+            for pdf_hash, context_info in per_pdf_context.items()
+            if context_info.get("chunk_indices")
+        ]
 
-            for pdf_idx, pdf_hash in enumerate(pdf_hashes_with_chunks):
-                context_info = per_pdf_context[pdf_hash]
-                pdf_title = context_info.get("title", pdf_hash)
-                if progress_callback:
-                    progress_callback(
-                        "contextualization",
-                        pdf_idx,
-                        len(pdf_hashes_with_chunks),
-                        f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                    )
-                chunk_indices = context_info.get("chunk_indices", [])
-
-                document_text = context_info.get("document_text", "")
-                if not document_text.strip():
-                    logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
-                    continue
-
-                contextualized_chunks = self.contextualizer.contextualize(
-                    document_text=document_text,
-                    all_texts=[all_texts[i] for i in chunk_indices],
+        for pdf_idx, pdf_hash in enumerate(pdf_hashes_with_chunks):
+            context_info = per_pdf_context[pdf_hash]
+            pdf_title = context_info.get("title", pdf_hash)
+            if progress_callback:
+                progress_callback(
+                    "contextualization",
+                    pdf_idx,
+                    len(pdf_hashes_with_chunks),
+                    f"Contextualizing PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
                 )
-                for chunk_abs_idx, text in zip(chunk_indices, contextualized_chunks, strict=True):
-                    all_texts[chunk_abs_idx] = text
+            chunk_indices = context_info.get("chunk_indices", [])
 
-                if progress_callback:
-                    progress_callback(
-                        "contextualization",
-                        pdf_idx + 1,
-                        len(pdf_hashes_with_chunks),
-                        f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
-                    )
-        except Exception as e:  # noqa: BLE001 - contextualization optional: keep the original chunks
-            logger.warning("Contextual chunk generation failed, falling back to original chunks: %s", str(e))
+            document_text = context_info.get("document_text", "")
+            if not document_text.strip():
+                logger.warning("Skipping contextualization for %s due to empty document text", pdf_title)
+                continue
+
+            contextualized_chunks = self.contextualizer.contextualize(
+                document_text=document_text,
+                all_texts=[all_texts[i] for i in chunk_indices],
+            )
+            for chunk_abs_idx, text in zip(chunk_indices, contextualized_chunks, strict=True):
+                all_texts[chunk_abs_idx] = text
+
+            if progress_callback:
+                progress_callback(
+                    "contextualization",
+                    pdf_idx + 1,
+                    len(pdf_hashes_with_chunks),
+                    f"Contextualized PDF {pdf_idx + 1}/{len(pdf_hashes_with_chunks)}: {pdf_title[:80]}",
+                )
 
     def upsert_pdfs(self, target_pdfs: list[CachedPDF], progress_callback=None) -> UpsertResult:
         """Process PDFs, extract chunks, and upsert into Qdrant index.
@@ -633,9 +629,9 @@ class ZoteroRAG:
         """Answer a question using the full RAG pipeline.
 
         Pipeline stages:
-        1. Qdrant Retrieval (Cosine Similarity)
-        2. CrossEncoder Reranking (Threshold Filtering)
-        3. QA Extraction (with Context Overlap/Sliding Window)
+        1. Hybrid retrieval (Qdrant, fused client-side)
+        2. Cross-encoder reranking (gate and margin)
+        3. Reading (``self.reader``)
 
         Args:
             question: The question to answer.
@@ -713,10 +709,10 @@ class ZoteroRAG:
                 config['rerank_gate'],
                 config['rerank_margin'],
                 progress_callback=rerank_callback,
-                # Read with a default rather than added to every preset: this is
-                # a phase-two intervention, and a preset field would ship it as a
-                # default before it has been accepted as one.
-                order_by_retrieval=config.get('rerank_order_by_retrieval', False)
+                # Read with defaults rather than added to settings: both exist for
+                # the benchmarks alone, and a setting would ship them as defaults.
+                order_by_retrieval=config.get('rerank_order_by_retrieval', False),
+                absolute_cut=config.get('rerank_absolute', False),
             )
         else:
             # ponytail: bypass keeps the retrieval order so the ablation can

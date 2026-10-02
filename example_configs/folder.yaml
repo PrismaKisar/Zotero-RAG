@@ -7,9 +7,6 @@ folder_path: /path/to/your/pdf/folder  # Replace with your actual folder path
 # Output directory for indexes and highlighted PDFs
 output_base_dir: ./output
 
-# Embedding model (the reranker and the reader are fixed)
-dense_model_name: google/embeddinggemma-300m
-
 # GROBID service for PDF parsing
 grobid_url: http://localhost:8070
 grobid_timeout: 180

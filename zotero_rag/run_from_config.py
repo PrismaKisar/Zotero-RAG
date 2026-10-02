@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from embedding_manager import DEFAULT_DENSE_MODEL
 from highlighter import highlight_pdf
 from models import Answer
 from pipeline import ZoteroRAG
@@ -45,10 +44,11 @@ def load_config(config_path: str) -> dict[str, Any]:
     config['defaults'].setdefault('highlight_color', [1, 1, 0])
     
     config.setdefault('output_base_dir', './output')
-    config.setdefault('dense_model_name', DEFAULT_DENSE_MODEL)
-    # No reader or reranker model here: the thresholds in settings.py are
-    # calibrated on the pipeline's own two, so a config cannot swap them.
+    # No model here: the thresholds in settings.py are calibrated on the
+    # pipeline's own models, and the dense one was chosen by the same campaign.
     config.setdefault('grobid_url', 'http://localhost:8070')
+    config.setdefault('ollama_url', os.environ.get('OLLAMA_URL', 'http://localhost:11434'))
+    config.setdefault('use_chunk_contextualization', False)
     config.setdefault('grobid_timeout', 180)
     config.setdefault('create_highlighted_pdfs', True)
     config.setdefault('rebuild_index', False)
@@ -79,9 +79,10 @@ def run_from_config(config_path: str) -> dict[str, list[Answer]]:
     logger.info("Initializing RAG system")
 
     rag = ZoteroRAG(
-        dense_model_name=config['dense_model_name'],
         grobid_url=config['grobid_url'],
         grobid_timeout=config['grobid_timeout'],
+        ollama_url=config['ollama_url'],
+        use_chunk_contextualization=config['use_chunk_contextualization'],
         model_device=config.get('model_device'),
         encode_batch_size=config.get('encode_batch_size'),
         rerank_batch_size=config.get('rerank_batch_size'),

@@ -47,7 +47,7 @@ def _rag(results, answers=None):
         reader=types.SimpleNamespace(extract_answers=lambda *a, **k: answers or []),
         reranker=types.SimpleNamespace(
             rerank=lambda question, candidates, gate=0.0, margin=1.0, progress_callback=None,
-            order_by_retrieval=False: [
+            order_by_retrieval=False, absolute_cut=False: [
                 RerankedChunk(chunk=c, retrieval_score=s, rerank_score=s)
                 for c, s in candidates]),
         pdf_cache=types.SimpleNamespace(get_pdf_path=lambda h: None))
@@ -341,6 +341,26 @@ def test_contextualization_embeds_the_contextualized_texts_but_indexes_the_origi
     # a PDF without document text keeps its original chunks
     assert rag.embedding_manager.encoded == ["ctx|a", "ctx|b", "c"]
     assert [c.text for c in qdrant.upserted] == ["a", "b", "c"]
+
+
+def test_a_failed_contextualization_upserts_nothing():
+    """Raw chunks under a contextualized configuration would be a silent mismatch."""
+    class _Down:
+        def contextualize(self, document_text, all_texts):
+            raise ConnectionError("Ollama down")
+
+    qdrant = _IndexQdrant()
+    rag = _indexing_rag(qdrant, _Processor({"ok": ("doc", [("intro", "a")])}), _Down())
+    with pytest.raises(ConnectionError):
+        rag.upsert_pdfs([_pdf("ok", "Ok")])
+    assert not qdrant.upserted
+
+
+def test_contextualization_is_off_by_default():
+    """No benchmark measured it, so it does not ship switched on."""
+    import inspect
+    default = inspect.signature(ZoteroRAG.__init__).parameters["use_chunk_contextualization"]
+    assert default.default is False
 
 
 def test_contextualization_is_skipped_when_disabled():

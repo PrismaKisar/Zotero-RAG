@@ -19,9 +19,8 @@ output_base_dir: ./output
 # Model Settings
 # ============================================================================
 
-# Embedding model for semantic search. The reranker and the reader are not
-# configurable: the pipeline's thresholds are calibrated on its own two.
-dense_model_name: google/embeddinggemma-300m
+# The models themselves are fixed: the pipeline's thresholds are calibrated on
+# them (zotero_rag/settings.py).
 
 # Device to use: 'cpu', 'cuda', 'mps', or null for auto-detect
 model_device: null
@@ -38,6 +37,15 @@ rerank_batch_size: 32
 
 grobid_url: http://localhost:8070
 grobid_timeout: 180
+
+# ============================================================================
+# Chunk Contextualization (Ollama)
+# ============================================================================
+
+# Prefix each chunk with an LLM-written context line before embedding. Off by
+# default: no benchmark measured it. Indexing fails if Ollama does not answer.
+use_chunk_contextualization: false
+ollama_url: http://localhost:11434  # default: $OLLAMA_URL, else this
 
 # ============================================================================
 # Index Settings

@@ -3,9 +3,9 @@ of the pipeline's fixed settings.
 
 `load_config` does no key validation, so a dead key rides along looking like a
 tuning dial that does nothing. The thresholds are fixed and calibrated on the
-pipeline's own reranker and reader (zotero_rag/settings.py), so a config may set
-neither the thresholds nor those two models, nor the question types and
-overrides that used to carry them.
+pipeline's own models (zotero_rag/settings.py), so a config may set neither the
+thresholds nor any model, nor the question types and overrides that used to
+carry them.
 """
 
 import ast
@@ -17,7 +17,8 @@ import yaml
 from zotero_rag.settings import SETTINGS
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "example_configs"
-FIXED = {*SETTINGS, "question_type", "overrides", "qa_model", "reranker_model"}
+FIXED = {*SETTINGS, "question_type", "overrides", "qa_model", "reranker_model",
+         "dense_model_name"}
 # What run_from_config reads from `defaults` and from each question.
 RUNNER_DEFAULTS = {"highlight_color"}
 RUNNER_QUESTION_KEYS = {"question", "highlight_color"}

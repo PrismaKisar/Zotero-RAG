@@ -42,6 +42,16 @@ latency from 3.1s to 2.5s a question by handing the reader fewer chunks. On 340
 held-out QASPER questions, tuned on nothing, it is +0.017 [+0.000, +0.034]: the
 direction holds where the gain is small.
 
+The reader is the extractive one, chosen over the generative reader with the
+one-sentence rule by crossing the two with the cut (output_*/crossed). Under the
+relative cut the extractive reader attributes better on QASA, +0.030 [+0.010,
++0.049] evidence F1 and +0.113 recall, marking half the text at a third of the
+latency; on QASPER the generative reader's answer-F1 edge, +0.027 [-0.001,
++0.055], does not separate, and neither does any attribution difference. The
+relative cut was measured on the extractive reader and helps the generative one
+far less (+0.030 evidence F1 on QASA against +0.160), so the two effects do not
+add and the pair adopted is the one measured together.
+
 ``qa_score_threshold`` is 0, which switches the reader's veto off: it is kept as
 a setting because the ablation varies it, and because with the relative cut it
 only removed evidence. What buys the silence is the gate, which leaves 97.5% of
