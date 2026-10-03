@@ -96,7 +96,8 @@ def test_every_stratum_reads_keys_the_scored_record_actually_carries():
 
     scored = {"question_id": "q1", "question": "What is the model?",
               "evidence": ["e"], "answer_type": "extractive",
-              **retrieval_trace([("h", 4), ("h", 5)], [], set(), {("h", 4), ("h", 5)})}
+              **retrieval_trace([(("h", 4), 0.9), (("h", 5), 0.8)], [], set(),
+                                    {("h", 4), ("h", 5)})}
 
     assert {name: fn(scored) for name, fn in STRATA.items()} == {
         "question_form": "what/which (factual)",

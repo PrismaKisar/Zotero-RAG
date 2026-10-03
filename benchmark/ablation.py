@@ -125,6 +125,7 @@ from benchmark.retrieval_metrics import (
     per_question_scores,
     summarize,
 )
+from benchmark.sentence_gold import sentence_highlight_precision
 from benchmark.stratify import stratify, to_markdown
 
 BASELINE = SETTINGS
@@ -180,6 +181,26 @@ GRID = {
     # and this axis is what tells the two apart. 8 is the shipped default and is
     # already measured by the reader row, so it is not repeated here.
     "max_context_chunks": [4, 16, 30],
+}
+
+# Arms that move two things at once, which the one-at-a-time grid cannot express.
+# They cross the cut with the reader: every measurement of the relative cut used
+# the extractive reader, the system delivers the generative one with the
+# one-sentence rule, and the two effects were never measured together. Run them
+# with ``--only baseline,absolute_cut,delivered,delivered_absolute_cut``.
+#
+# The absolute arm is the pair the margin replaced (answer_gate.SHIPPED), not a
+# new one, so its extractive row reproduces the e2e_v4 reference. The reader's
+# veto in it only reaches the extractive reader: a generated answer has no span
+# probability to veto.
+ABSOLUTE_CUT = {"rerank_absolute": True, "rerank_gate": 0.90, "qa_score_threshold": 0.05}
+CROSSED_ARMS = {
+    "absolute_cut": ABSOLUTE_CUT,
+    "delivered": {"answer_style": "one_sentence"},
+    "delivered_absolute_cut": {"answer_style": "one_sentence", **ABSOLUTE_CUT},
+    # The generative reader chooses the chunks, the extractive one marks the
+    # span inside them: read through highlight_sentence_precision.
+    "delivered_hybrid": {"reader": "hybrid", "answer_style": "one_sentence"},
 }
 
 # Axes the harness applies itself: not question-preset fields, so they are split
@@ -271,8 +292,10 @@ def load_completed_configs(out_path: Path) -> set[tuple[str, str]]:
         return {(row["param"], row["value"]) for row in csv.DictReader(f)}
 
 
-def build_configs(baseline: dict, grid: dict, score_answers: bool = True) -> list[dict]:
-    """Baseline, oracle-context reference, then one config per (param, value).
+def build_configs(baseline: dict, grid: dict, score_answers: bool = True,
+                  arms: dict | None = None) -> list[dict]:
+    """Baseline, oracle-context reference, one config per (param, value), then
+    one config per named arm in ``arms``, each its overrides over the baseline.
 
     The oracle-context rows are dropped when ``score_answers`` is False. They
     bypass retrieval and hand the reader the gold chunks, so Answer F1 is the
@@ -295,6 +318,8 @@ def build_configs(baseline: dict, grid: dict, score_answers: bool = True) -> lis
             config = dict(baseline)
             config[param] = value
             configs.append({"param": param, "value": value, "config": config})
+    configs += [{"param": name, "value": None, "config": dict(baseline, **overrides)}
+                for name, overrides in (arms or {}).items()]
     return configs
 
 
@@ -344,9 +369,14 @@ def answer_f1(predicted_answer: str, references: list[dict]) -> tuple[float, str
     return max(scored, key=lambda x: x[0])
 
 
+def top_answer(answers) -> str:
+    """The answer text every answer metric scores: the first answer's, or empty."""
+    return answers[0].text if answers else ""
+
+
 def answer_scores(answers, references: list[dict]) -> tuple[dict, str]:
     """Answer F1 and EM of the top answer, and the type of the reference it matched."""
-    predicted_answer = answers[0].text if answers else ""
+    predicted_answer = top_answer(answers)
     f1, answer_type = answer_f1(predicted_answer, references)
     return ({"answer_f1": f1, "answer_em": answer_exact_match(predicted_answer, references)},
             answer_type)
@@ -378,6 +408,14 @@ def attributed_ids(answers, reranked) -> set[tuple[str, int]]:
     return {by_text[a.context] for a in answers if a.context in by_text}
 
 
+def highlight_marks(answers, reranked) -> set[tuple[tuple[str, int], int, int]]:
+    """``(chunk_id, start, end)`` per mark, deduplicated as the page shows them."""
+    by_text = {c.chunk.text: (c.chunk.pdf_hash, c.chunk.chunk_index)
+               for c in reranked}
+    return {(by_text[a.context], a.start_char, a.end_char)
+            for a in answers if a.context in by_text}
+
+
 def highlight_scores(answers, reranked, gold_ids) -> dict:
     """How much text the highlighter marks, and how much of it lands on gold.
 
@@ -392,14 +430,11 @@ def highlight_scores(answers, reranked, gold_ids) -> dict:
     Marks are deduplicated by (chunk, start, end) because two answers extracted
     from the same sentences put one highlight on the page, not two.
 
-    ponytail: gold is known per chunk, not per sentence, so a mark inside a gold
-    chunk counts wholly on-gold. This measures ink wasted on the wrong chunks,
-    not ink wasted inside the right one; sub-chunk gold would be needed for that.
+    Gold is known per chunk here, so a mark inside a gold chunk counts wholly
+    on-gold: this measures ink wasted on the wrong chunks. Ink wasted inside the
+    right one is benchmark/sentence_gold.py, where the set annotates spans.
     """
-    by_text = {c.chunk.text: (c.chunk.pdf_hash, c.chunk.chunk_index)
-               for c in reranked}
-    marks = {(by_text[a.context], a.start_char, a.end_char)
-             for a in answers if a.context in by_text}
+    marks = highlight_marks(answers, reranked)
     total = sum(end - start for _, start, end in marks)
     on_gold = sum(end - start for chunk_id, start, end in marks if chunk_id in gold_ids)
     return {"highlighted_chars": float(total),
@@ -424,24 +459,32 @@ def quote_scores(rag) -> dict:
 TRACE_DEPTH = 30  # deepest k anyone can recompute offline; the sweep cuts at 10
 
 
-def retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids) -> dict:
+def retrieval_trace(ranked, reranked, predicted_ids, gold_ids) -> dict:
     """The ranked lists themselves, so the sweep never has to be re-run for a metric.
 
     The first campaign could not report recall@1 - the protocol's own primary
     metric - because only the k=10 *scores* were kept, and a mean cannot be
     un-aggregated. Storing the ids costs a few hundred KB and makes every
-    rank-based metric (any k, MAP, nDCG) recomputable from the dump.
+    rank-based metric (any k, MAP, nDCG) recomputable from the dump. The scores
+    that ordered them come too, so a cut on either stage (``result_limit``, a
+    rerank threshold) is a recomputation over the dump rather than a new run.
+
+    ``ranked`` and ``reranked`` are ``(chunk_id, score)`` pairs, best first: the
+    retrieval score for the first, the rerank score for the second.
 
     ``gold_paper`` is what separates the two ways retrieval fails: picking the
     wrong paper out of the corpus, or the wrong chunk inside the right one.
     """
     gold_papers = {pdf_hash for pdf_hash, _ in gold_ids}
+    ranked, reranked = ranked[:TRACE_DEPTH], reranked[:TRACE_DEPTH]
     return {
-        "ranked_ids": [list(i) for i in ranked_ids[:TRACE_DEPTH]],
-        "reranked_ids": [list(i) for i in reranked_ids[:TRACE_DEPTH]],
+        "ranked_ids": [list(i) for i, _ in ranked],
+        "ranked_scores": [score for _, score in ranked],
+        "reranked_ids": [list(i) for i, _ in reranked],
+        "reranked_scores": [score for _, score in reranked],
         "predicted_ids": _id_list(predicted_ids),
         "gold_ids": _id_list(gold_ids),
-        "gold_paper_in_top10": any(h in gold_papers for h, _ in ranked_ids[:10]),
+        "gold_paper_in_top10": any(h in gold_papers for (h, _), _ in ranked[:10]),
     }
 
 
@@ -449,18 +492,22 @@ def _id_list(ids) -> list[list]:
     return [list(i) for i in sorted(ids)]
 
 
-def question_record(question: dict, answer_type: str, gold_ids,
-                    ranked_ids=None, reranked_ids=None, predicted_ids=None) -> dict:
+def question_record(question: dict, answer_type: str, predicted_answer: str,
+                    gold_ids, ranked=None, reranked=None, predicted_ids=None) -> dict:
     """What the per-question dump keeps of a question besides its metrics.
 
-    Without ranked_ids no retrieval ran - the oracle rows - and only the gold
-    ids are kept; otherwise the ranked lists come too (see retrieval_trace).
+    The predicted answer is kept verbatim: without it no answer metric is
+    recomputable afterwards, and a generative reader that samples would not
+    even reproduce it on a rerun. Without ``ranked`` no retrieval ran - the
+    oracle rows - and only the gold ids are kept; otherwise the ranked lists
+    and their scores come too (see retrieval_trace).
     """
-    if ranked_ids is None:
+    if ranked is None:
         trace = {"gold_ids": _id_list(gold_ids)}
     else:
-        trace = retrieval_trace(ranked_ids, reranked_ids, predicted_ids, gold_ids)
-    return dict(question, answer_type=answer_type, **trace)
+        trace = retrieval_trace(ranked, reranked, predicted_ids, gold_ids)
+    return dict(question, answer_type=answer_type, predicted_answer=predicted_answer,
+                **trace)
 
 
 def stage_latencies(trace) -> dict[str, float]:
@@ -485,8 +532,12 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
         answers, gold_answers.get(question["question_id"], []))
 
     trace = rag.last_trace
-    ranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.retrieved]
-    reranked_ids = [(c.chunk.pdf_hash, c.chunk.chunk_index) for c in trace.reranked]
+    ranked = [((c.chunk.pdf_hash, c.chunk.chunk_index), c.retrieval_score)
+              for c in trace.retrieved]
+    reranked = [((c.chunk.pdf_hash, c.chunk.chunk_index), c.rerank_score)
+                for c in trace.reranked]
+    ranked_ids = [i for i, _ in ranked]
+    reranked_ids = [i for i, _ in reranked]
     predicted_ids = attributed_ids(answers, trace.reranked)
 
     row = answer_row if score_answers else {}
@@ -497,6 +548,12 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
             continue
         row[f"recall@{k}"] = per_question_scores(ranked_ids, gold_ids, k)[f"recall@{k}"]
     row.update(highlight_scores(answers, trace.reranked, gold_ids))
+    # Per question only, not a CSV column: it exists only where the set
+    # annotates answer spans, and a new column would refuse to resume old CSVs.
+    row.update(sentence_highlight_precision(
+        highlight_marks(answers, trace.reranked),
+        {(c.chunk.pdf_hash, c.chunk.chunk_index): c.chunk for c in trace.reranked},
+        gold_ids, question.get("gold_spans", [])))
     row.update(quote_scores(rag))
     # Every k, not just the deepest. The reranker is invisible to the plain
     # recall columns, which score the pre-rerank list, so these are the only
@@ -509,8 +566,8 @@ def score_question(question: dict, answers, rag, gold_chunks: dict,
             reranked_ids, gold_ids, k)[f"recall@{k}"]
     row["mrr_reranked"] = per_question_scores(
         reranked_ids, gold_ids, RECALL_K)["mrr"]
-    row["record"] = question_record(question, answer_type, gold_ids,
-                                    ranked_ids, reranked_ids, predicted_ids)
+    row["record"] = question_record(question, answer_type, top_answer(answers), gold_ids,
+                                    ranked, reranked, predicted_ids)
     return row
 
 
@@ -537,6 +594,9 @@ def wanted_reader(harness: dict, baseline_model: str) -> str:
     quote = harness.get("citation_quote", QUOTE_DEFAULT)
     style = harness.get("answer_style", ANSWER_STYLE_DEFAULT)
     chunks = harness.get("max_context_chunks", CONTEXT_CHUNKS_DEFAULT)
+    if harness.get("reader") == "hybrid":
+        return (f"hybrid:generative:{quote}:{style}:{chunks}"
+                f":{harness.get('qa_model', baseline_model)}")
     if (harness.get("reader", "extractive") == "generative"
             or quote != QUOTE_DEFAULT or style != ANSWER_STYLE_DEFAULT
             or chunks != CONTEXT_CHUNKS_DEFAULT):
@@ -557,20 +617,23 @@ def apply_reader(rag, baseline_engine, harness: dict, ollama_url: str) -> None:
 
     import torch
     from generative_reader import GenerativeReader
+    from hybrid_reader import HybridReader
     from qa_engine import QAEngine
 
     qa_model = harness.get("qa_model", baseline_engine.model_name)
-    if wanted.startswith("generative"):
-        rag.reader = GenerativeReader(
+    extractive = (baseline_engine if qa_model == baseline_engine.model_name
+                  else QAEngine(model_name=qa_model))
+    if wanted.startswith(("generative", "hybrid")):
+        generative = GenerativeReader(
             ollama_url=ollama_url,
             citation_quote=harness.get("citation_quote", QUOTE_DEFAULT),
             answer_style=harness.get("answer_style", ANSWER_STYLE_DEFAULT),
             max_context_chunks=harness.get("max_context_chunks",
                                            CONTEXT_CHUNKS_DEFAULT))
-    elif qa_model == baseline_engine.model_name:
-        rag.reader = baseline_engine
+        rag.reader = (HybridReader(generative, extractive) if wanted.startswith("hybrid")
+                      else generative)
     else:
-        rag.reader = QAEngine(model_name=qa_model)
+        rag.reader = extractive
 
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
@@ -641,7 +704,8 @@ def run_oracle(rag, questions: list[dict], config: dict, gold_chunks: dict,
         elapsed = time.perf_counter() - started
         answer_row, answer_type = answer_scores(answers, gold_answers.get(q["question_id"], []))
         rows.append({**answer_row, "latency_s": elapsed,
-                     "record": question_record(q, answer_type, gold_ids)})
+                     "record": question_record(q, answer_type, top_answer(answers),
+                                               gold_ids)})
     return rows
 
 
@@ -780,7 +844,8 @@ def main():
     if done:
         print(f"resuming: {len(done)} configs already in {out_path}")
 
-    for entry in select_configs(build_configs(BASELINE, GRID, score_answers), args.only):
+    for entry in select_configs(build_configs(BASELINE, GRID, score_answers, CROSSED_ARMS),
+                                 args.only):
         key = (entry["param"], "" if entry["value"] is None else str(entry["value"]))
         if key in done:
             continue

@@ -7,6 +7,7 @@ import pytest
 
 from benchmark.ablation import (
     CI_METRICS,
+    CROSSED_ARMS,
     HARNESS_PARAMS,
     LATENCY_STAGES,
     RECALL_K,
@@ -45,11 +46,14 @@ class _FakeChunk:
         self.pdf_hash = pdf_hash
         self.chunk_index = chunk_index
         self.text = text
+        self.sentences = []
 
 
 class _FakeReranked:
-    def __init__(self, pdf_hash, chunk_index, text=""):
+    def __init__(self, pdf_hash, chunk_index, text="", retrieval_score=0.0, rerank_score=0.0):
         self.chunk = _FakeChunk(pdf_hash, chunk_index, text)
+        self.retrieval_score = retrieval_score
+        self.rerank_score = rerank_score
 
 
 class _FakeAnswer:
@@ -71,8 +75,10 @@ class _FakeRag:
         self.reader = types.SimpleNamespace(last_quote_stats={"cited": 0, "matched": 0})
         self.seen_call = None
         self.last_trace = types.SimpleNamespace(
-            retrieved=[_FakeReranked("h", 2, "ctx-2"), _FakeReranked("h", 1, "ctx-1")],
-            reranked=[_FakeReranked("h", 1, "ctx-1"), _FakeReranked("h", 2, "ctx-2")],
+            retrieved=[_FakeReranked("h", 2, "ctx-2", retrieval_score=0.7),
+                       _FakeReranked("h", 1, "ctx-1", retrieval_score=0.6)],
+            reranked=[_FakeReranked("h", 1, "ctx-1", rerank_score=0.9),
+                      _FakeReranked("h", 2, "ctx-2", rerank_score=0.8)],
             stage_times={"retrieval": 0.2, "rerank": 0.3, "read": 0.4}
             if stage_times is None else stage_times)
 
@@ -586,9 +592,32 @@ def test_run_config_stores_the_ranked_ids_so_new_metrics_need_no_rerun():
     assert row["record"]["gold_ids"] == [["h", 1]]
 
 
+def test_run_config_stores_the_scores_next_to_the_ids_they_ordered():
+    """A cut on either stage is then a recomputation over the dump, not a rerun."""
+    rag = _FakeRag()
+    record = run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]["record"]
+    assert record["ranked_scores"] == [c.retrieval_score for c in rag.last_trace.retrieved]
+    assert record["reranked_scores"] == [c.rerank_score for c in rag.last_trace.reranked]
+    assert len(record["ranked_scores"]) == len(record["ranked_ids"])
+
+
+def test_run_config_stores_the_predicted_answer_so_answer_metrics_need_no_rerun():
+    row = run_config(_FakeRag(), QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["record"]["predicted_answer"] == "some answer"
+
+
+def test_run_oracle_stores_the_predicted_answer_too():
+    from models import Chunk
+
+    gold_chunk = Chunk(text="gold text", page_number=1, chunk_index=1, title="T", pdf_hash="h")
+    rag = _OracleRag([gold_chunk], [_FakeAnswer(text="oracle answer")])
+    row = run_oracle(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["record"]["predicted_answer"] == "oracle answer"
+
+
 def test_retrieval_trace_separates_wrong_paper_from_wrong_chunk():
-    right_paper = retrieval_trace([("h", 9)], [], set(), {("h", 1)})
-    wrong_paper = retrieval_trace([("other", 9)], [], set(), {("h", 1)})
+    right_paper = retrieval_trace([(("h", 9), 0.5)], [], set(), {("h", 1)})
+    wrong_paper = retrieval_trace([(("other", 9), 0.5)], [], set(), {("h", 1)})
     assert right_paper["gold_paper_in_top10"]
     assert not wrong_paper["gold_paper_in_top10"]
 
@@ -738,16 +767,20 @@ def test_no_answer_scores_zero_against_the_references():
 
 
 def test_an_oracle_record_carries_only_the_gold_ids():
-    record = question_record(QUESTIONS[0], "extractive", {("h", 2), ("h", 1)})
-    assert list(record) == ["question_id", "question", "answer_type", "gold_ids"]
+    record = question_record(QUESTIONS[0], "extractive", "an answer", {("h", 2), ("h", 1)})
+    assert list(record) == ["question_id", "question", "answer_type", "predicted_answer",
+                            "gold_ids"]
     assert record["gold_ids"] == [["h", 1], ["h", 2]]
 
 
 def test_a_retrieval_record_carries_the_ranked_lists():
-    ranked, reranked, predicted, gold = [("h", 2), ("h", 1)], [("h", 1)], {("h", 1)}, {("h", 1)}
-    record = question_record(QUESTIONS[0], "none", gold, ranked, reranked, predicted)
-    assert record == dict(QUESTIONS[0], answer_type="none",
+    ranked = [(("h", 2), 0.9), (("h", 1), 0.4)]
+    reranked, predicted, gold = [(("h", 1), 0.95)], {("h", 1)}, {("h", 1)}
+    record = question_record(QUESTIONS[0], "none", "", gold, ranked, reranked, predicted)
+    assert record == dict(QUESTIONS[0], answer_type="none", predicted_answer="",
                           **retrieval_trace(ranked, reranked, predicted, gold))
+    assert record["ranked_scores"] == [0.9, 0.4]
+    assert record["reranked_scores"] == [0.95]
 
 
 def test_every_stage_gets_a_latency_column_even_when_never_reached():
@@ -755,3 +788,40 @@ def test_every_stage_gets_a_latency_column_even_when_never_reached():
     assert stage_latencies(trace) == {f"latency_{stage}_s": 0.5 if stage == "retrieval" else 0.0
                                       for stage in LATENCY_STAGES}
     assert list(stage_latencies(trace)) == [f"latency_{stage}_s" for stage in LATENCY_STAGES]
+
+
+def test_the_crossed_arms_come_after_the_grid_as_overrides_on_the_baseline():
+    configs = build_configs({"a": 1}, {"a": [2]}, arms={"both": {"a": 3, "b": 4}})
+    assert configs[-1] == {"param": "both", "value": None, "config": {"a": 3, "b": 4}}
+
+
+def test_the_crossed_arms_cover_both_readers_under_both_cuts():
+    """The 2x2: the baseline is the extractive reader under the relative cut."""
+    readers = {name: wanted_reader(split_harness_params(arm)[1], "deberta")
+               for name, arm in CROSSED_ARMS.items()}
+    assert readers["absolute_cut"] == "deberta"
+    assert readers["delivered"] == readers["delivered_absolute_cut"]
+    assert readers["delivered"].startswith("generative:off:one_sentence")
+    cut = {name: split_harness_params(arm)[0].get("rerank_absolute", False)
+           for name, arm in CROSSED_ARMS.items()}
+    assert cut == {"absolute_cut": True, "delivered": False, "delivered_absolute_cut": True,
+                   "delivered_hybrid": False}
+
+
+def test_the_hybrid_arm_asks_for_a_reader_of_its_own():
+    """Its identity carries both halves, so it never reuses a plain generative load."""
+    arm = split_harness_params(CROSSED_ARMS["delivered_hybrid"])[1]
+    assert wanted_reader(arm, "deberta") == "hybrid:generative:off:one_sentence:8:deberta"
+    assert wanted_reader(arm, "deberta") != wanted_reader(
+        split_harness_params(CROSSED_ARMS["delivered"])[1], "deberta")
+
+
+def test_sentence_precision_reaches_the_row_only_where_spans_are_annotated():
+    rag = _FakeRag()
+    for c in rag.last_trace.reranked:
+        c.chunk.sentences = [(c.chunk.text, "")]
+    with_spans = [dict(QUESTIONS[0], gold_spans=["ctx-1"])]
+    row = run_config(rag, with_spans, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert row["highlight_sentence_precision"] == 1.0
+    row = run_config(rag, QUESTIONS, {}, {"q1": {("h", 1)}}, GOLD_ANSWERS)[0]
+    assert "highlight_sentence_precision" not in row
