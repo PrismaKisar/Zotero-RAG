@@ -75,3 +75,20 @@ def test_resolve_arxiv_id_rejects_a_different_top_result():
 
 def test_resolve_arxiv_id_handles_no_results():
     assert resolve_arxiv_id("Nothing Like This", fetch=lambda url: ATOM_EMPTY) is None
+
+
+def test_papers_already_used_are_never_sampled():
+    records, stats = build(QASA, papers=1, seed=42, exclude={"paper_1"})
+    assert {r["paper_id"] for r in records} == {"paper_2"}
+    assert stats["papers_excluded_as_used"] == 1
+
+
+def test_a_short_unused_pool_is_topped_up_from_used_papers_and_counted():
+    records, stats = build(QASA, papers=2, seed=0, exclude={"paper_1"}, top_up={"paper_1": "h"})
+    assert {r["paper_id"] for r in records} == {"paper_1", "paper_2"}
+    assert stats["papers_reused_from_development"] == 1
+
+
+def test_no_top_up_when_the_unused_pool_is_enough():
+    _, stats = build(QASA, papers=1, seed=0, exclude={"paper_1"}, top_up={"paper_1": "h"})
+    assert stats["papers_reused_from_development"] == 0

@@ -138,6 +138,55 @@ evidenza multi-chunk che il criterio ora esclude per scelta. Tasso d'errore
 sul campione di validazione a mano (n=30, seed 42), col criterio definitivo:
 **0% (0/30)**.
 
+## Set di test finale (costruito dopo il lavoro)
+
+Il held-out QASPER è speso due volte (cap. 8 e `sec:comp_relative`), quindi la
+misura che chiude la tesi gira su un set nuovo, fatto solo di paper che nessun
+set precedente ha usato (`--exclude-papers`). Le due metà restano in directory e
+collection separate e si riportano separate: l'unità di evidenza di QASA non è
+confrontabile con quella di QASPER.
+
+```
+python -m benchmark.build_qasper_golden_set qasper-dev-v0.3.json \
+    --out-dir output_final_qasper --seed 42 --pdf-dir output_final_qasper/pdfs \
+    --exclude-papers output_qasper/golden_set.jsonl output_qasper_test/golden_set.jsonl
+python -m benchmark.build_qasa_golden_set testset_answerable_1554_v1.1.json \
+    --out-dir output_final_qasa --seed 42 --pdf-dir output_final_qasa/pdfs \
+    --exclude-papers output_qasa/golden_set.jsonl
+```
+
+Risultato: QASPER **137 paper** (tutti i paper del dev con domande ammesse, meno
+i 100 usati; test e dev sono disgiunti per costruzione), **318 domande**, 137/137
+PDF. QASA **12 paper** (gli unici 12 dei 112 mai usati), **172 domande**, 11/12
+PDF (`paper_22` non risolto su arXiv). Lo squilibrio è nei dataset: QASA pubblica
+solo 112 paper e lo sviluppo ne ha usati 100, mentre a QASPER resta anche tutto
+il train (888 paper). La metà QASA ha 94 domande allineate da 11 paper, quindi
+correlate: vale come conferma di direzione, con intervalli larghi.
+Allineamento: QASPER 163/318 domande, QASA 94/172; tasso d'errore sul campione
+di validazione a mano (n=30, seed 42) **0% (0/30)** su entrambe le metà.
+Su indicazione della relatrice la run finale usa invece un held-out bilanciato,
+**50 paper QASPER + 50 paper QASA** (`output_heldout_*`, collection
+`_heldout_*`):
+
+```
+python -m benchmark.build_qasper_golden_set qasper-dev-v0.3.json \
+    --out-dir output_heldout_qasper --papers 50 --seed 42 \
+    --exclude-papers output_qasper/golden_set.jsonl output_qasper_test/golden_set.jsonl
+python -m benchmark.build_qasa_golden_set testset_answerable_1554_v1.1.json \
+    --out-dir output_heldout_qasa --papers 51 --seed 42 \
+    --exclude-papers output_qasa/golden_set.jsonl --top-up-from output_qasa/pdf_hash_map.json
+```
+
+QASPER: 50 paper mai usati, 114 domande. QASA: i 12 paper mai usati (uno,
+`paper_22`, senza PDF) più **39 paper riusati dallo sviluppo**
+(`papers_reused_from_development` in `golden_stats.json`), 725 domande. I 39
+hanno guidato le scelte della fase componenti e del 2×2, quindi la metà QASA va
+dichiarata in tesi come set di conferma parzialmente visto, non come held-out
+indipendente. Poi gli stessi passi del held-out:
+`extract_chunks`, `align_evidence` (con validazione a mano del campione),
+`index_pdfs` con suffissi `_final_qasper` / `_final_qasa`, e una sola run della
+configurazione consegnata.
+
 ## Indicizzazione (`index_pdfs.py`)
 
 Le metriche di retrieval richiedono che i PDF del golden set siano dentro Qdrant.

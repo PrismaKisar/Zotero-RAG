@@ -56,7 +56,7 @@ def extractive_annotations(question: dict) -> list:
             if annotation_type(a["answer"]) == "extractive"]
 
 
-def build(qasper: dict, papers: int | None, seed: int):
+def build(qasper: dict, papers: int | None, seed: int, exclude=frozenset()):
     """Apply the criteria and return (records, stats)."""
     stats = Counter()
     by_paper: dict[str, list] = {}
@@ -95,6 +95,11 @@ def build(qasper: dict, papers: int | None, seed: int):
             })
 
     stats["papers_with_included_questions"] = len(by_paper)
+    # Papers another golden set already used are dropped before sampling, so a
+    # set built after the work is disjoint from everything the work looked at.
+    stats["papers_excluded_as_used"] = len(by_paper.keys() & set(exclude))
+    for paper_id in exclude:
+        by_paper.pop(paper_id, None)
 
     selected = sorted(by_paper)
     if papers is not None and papers < len(selected):
@@ -149,11 +154,15 @@ def main():
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--exclude-papers", nargs="*", default=[],
+                        help="golden_set.jsonl files whose papers must not be sampled")
     parser.add_argument("--pdf-dir", default=None, help="also download the arXiv PDFs here")
     args = parser.parse_args()
 
     qasper = json.loads(Path(args.qasper).read_text())
-    records, stats = build(qasper, args.papers, args.seed)
+    exclude = {json.loads(line)["paper_id"] for path in args.exclude_papers
+               for line in Path(path).read_text().splitlines() if line.strip()}
+    records, stats = build(qasper, args.papers, args.seed, exclude)
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

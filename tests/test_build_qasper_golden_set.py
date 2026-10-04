@@ -74,3 +74,9 @@ def test_paper_sampling_is_seeded_and_limits_the_set():
     assert stats["papers_sampled"] == 1
     assert len({r["paper_id"] for r in records}) == 1
     assert records == again
+
+
+def test_papers_already_used_are_never_sampled():
+    records, stats = build(QASPER, papers=None, seed=0, exclude={"1111.1111"})
+    assert {r["paper_id"] for r in records} == {"2222.2222"}
+    assert stats["papers_excluded_as_used"] == 1
