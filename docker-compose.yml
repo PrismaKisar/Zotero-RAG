@@ -8,10 +8,11 @@ services:
       QDRANT_URL: http://qdrant:6333
       OLLAMA_URL: http://ollama:11434
       OUTPUT_DIR: /app/output
+      # ZOTERO_DATA_DIR: /zotero  # with the Zotero volume below
     volumes:
       - ./output:/app/output
       # Zotero (optional): uncomment and set your host Zotero path to index your library.
-      # Otherwise use the "Upload PDFs" workflow. Set ZOTERO_DATA_DIR to /zotero in the UI/env.
+      # Otherwise upload PDFs from the page.
       # - ${HOME}/Zotero:/zotero:ro
     depends_on:
       - grobid

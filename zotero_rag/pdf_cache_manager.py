@@ -2,10 +2,10 @@
 
 import logging
 import os
+from typing import BinaryIO
 
 from models import CachedPDF, PDFIngestItem, UploadSource
 from pdf_utils import is_pdf_hash
-from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,11 @@ class PDFCacheManager:
         logger.info(f"Initialized PDFCacheManager with folder: {self.folder_path}")
 
     @staticmethod
-    def get_items_from_upload(uploaded_files: list[UploadedFile]) -> list[PDFIngestItem]:
-        """Convert list of UploadedFile to list of PDFIngestItem for ingestion.
+    def get_items_from_upload(uploaded_files: list[BinaryIO]) -> list[PDFIngestItem]:
+        """Convert uploaded files to PDFIngestItem for ingestion.
         
         Args:
-            uploaded_files: List of UploadedFile objects from Streamlit file uploader.
+            uploaded_files: Binary streams carrying the upload's file name in ``name``.
             
         Returns:
             List of PDFIngestItem objects ready for ingestion.
@@ -51,10 +51,10 @@ class PDFCacheManager:
         return items
 
     def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> CachedPDF:
-        """Ingest a PDF from an UploadedFile, saving it to the cache folder with a unique hash-based filename.
+        """Ingest a PDF from an upload, saving it to the cache folder with a unique hash-based filename.
 
         Args:
-            uploaded_pdf: PDFIngestItem containing the UploadedFile to ingest.
+            uploaded_pdf: PDFIngestItem containing the upload to ingest.
 
         Returns:
             CachedPDF object with details of the ingested PDF.

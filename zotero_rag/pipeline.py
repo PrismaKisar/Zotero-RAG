@@ -2,7 +2,7 @@
 
 import os
 
-# Suppress noisy progress bars that can trigger BrokenPipe in Streamlit
+# Suppress noisy progress bars that can trigger BrokenPipe in the web server
 os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -10,6 +10,7 @@ os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import logging
 import time
 import warnings
+from typing import BinaryIO
 
 from contextualizer import ChunkContextualizer
 from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
@@ -32,7 +33,6 @@ from qa_engine import QAEngine
 from qdrant_manager import QdrantManager
 from reranker import DEFAULT_RERANKER_MODEL, Reranker
 from settings import resolve
-from streamlit.runtime.uploaded_file_manager import UploadedFile
 from zotero_db import ZoteroDatabase
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
@@ -234,11 +234,11 @@ class ZoteroRAG:
         result.ingested_pdfs = list(by_hash.values())
         return result
 
-    def ingest_pdfs_from_upload(self, uploaded_pdfs: list[UploadedFile]) -> IngestResult:
+    def ingest_pdfs_from_upload(self, uploaded_pdfs: list[BinaryIO]) -> IngestResult:
         """Ingest PDFs from user uploads.
 
         Args:
-            uploaded_pdfs: List of UploadedFile objects from Streamlit file uploader.
+            uploaded_pdfs: Binary streams carrying the upload's file name in ``name``.
         
         Returns:
             IngestResult with summary and error details.

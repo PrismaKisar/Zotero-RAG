@@ -18,6 +18,5 @@ COPY example_configs/ ./example_configs/
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "zotero_rag/app.py", \
-     "--server.address=0.0.0.0", "--server.port=8501", \
-     "--server.headless=true"]
+CMD ["uvicorn", "server:app", "--app-dir", "zotero_rag", \
+     "--host", "0.0.0.0", "--port", "8501"]

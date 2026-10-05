@@ -13,7 +13,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 - Fixed pipeline settings, measured on benchmarks rather than tuned per question
 - Sliding window QA for answers spanning chunk boundaries
 - Multi-color highlighting for multiple queries
-- Streamlit web interface with real-time progress tracking
+- Web interface (FastAPI + a single HTML page) with real-time progress tracking
 
 ## Requirements
 
@@ -29,7 +29,6 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 ```
 .
 ├── zotero_rag/                 # Main package
-│   ├── app.py                  # Streamlit web interface
 │   ├── contextualizer.py       # Ollama context line per chunk, before embedding
 │   ├── embedding_manager.py    # Dense and sparse embeddings
 │   ├── generative_reader.py    # Benchmark reader: answer + cited passages (Ollama)
@@ -44,9 +43,11 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 │   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
 │   ├── reranker.py             # CrossEncoder reranking
 │   ├── run_from_config.py      # Programmatic YAML config runner
+│   ├── server.py               # Web API, serves web/index.html
 │   ├── selection.py            # Rerank gate and margin, shared with the benchmarks
 │   ├── settings.py             # Fixed, measured pipeline settings
-│   └── zotero_db.py            # Zotero SQLite database interface
+│   ├── zotero_db.py            # Zotero SQLite database interface
+│   └── web/                    # Chat-style page (HTML, CSS, JS; no build step), favicon, brand/ logos
 │
 ├── example_configs/         # Example YAML configurations
 │   ├── basic.yaml           # Zotero source, every option documented
@@ -119,71 +120,38 @@ docker exec -it ollama ollama list
 ### 5. Run the App
 
 ```bash
-uv run streamlit run zotero_rag/app.py
+uv run uvicorn server:app --app-dir zotero_rag --port 8501
 ```
 
 Then navigate to `http://localhost:8501`
 
 ## Usage
 
-### Initial Setup
+### Settings
 
-1. **Output Directory** (first page)
-   - Specify where to store PDF cache, TEI cache, and highlighted PDFs
-   - Default: `./literature_output`
+Settings, at the bottom of the sidebar, opens the services: GROBID, Qdrant and Ollama URLs, the output
+directory (PDF cache, TEI cache, highlighted PDFs), the device (auto picks CUDA,
+then MPS, then CPU) and the optional chunk contextualization (off by default:
+unmeasured, and indexing fails if Ollama does not answer). The models are fixed
+(`google/embeddinggemma-300m` for embeddings): the settings are calibrated on them.
+The defaults come from `GROBID_URL`, `QDRANT_URL`, `OLLAMA_URL` and `OUTPUT_DIR`.
 
-2. **GROBID Configuration**
-   - Service URL (default: `http://localhost:8070`)
-   - Leave default if running locally
-   - Required for new PDFs; cached TEI files are reused
+### Library
 
-3. **Qdrant Configuration**
-    - Service URL (default: `http://localhost:6333`)
-    - Leave default if running locally
-    - Used for hybrid indexing and retrieval
+- **Upload**: drop PDFs anywhere on the page, or use the clip next to the question box
+- **Zotero**: open Library in the sidebar, pick a collection (or the whole library) and index it
+- Library also filters the indexed PDFs, removes the selected ones, or clears the index
 
-4. **Ollama Configuration (Optional)**
-    - Service URL (default: `http://localhost:11434`)
-    - Leave default if running locally
-    - Used for chunk contextualization before embedding, off by default (unmeasured; indexing fails if Ollama does not answer)
+### Ask
 
-5. **Load Models**
-   - The models are fixed (`google/embeddinggemma-300m` for embeddings): the settings are calibrated on them
-   - Device: auto/cpu/mps/cuda
-   - Batch sizes: encoding and reranking (default 32)
-   - Click "Load Model"
-
-6. **Add PDFs to Index**
-
-    Choose between two ways of selecting PDFs to index:
-
-    - **Upload PDFs**: Add one or more PDF files directly from your device
-
-    - **Zotero Collection**: Choose a collection or "All Library", all PDFs in the selected Zotero scope will be indexed
-
-### Question Answering
-
-1. **Enter a Question**
-   - Natural language queries supported
-   - Example: "What methods are used for circuit interpretability?"
-
-2. **Search & Navigate**
-   - View answers with context and scores
-   - Navigate results with Previous/Next buttons
-   - See PDF source, page number, and section
-   - Click "Open PDF" to view in default viewer
-
-3. **Highlight Color**
-   - Pick any color with the color picker (default yellow)
-
-4. **Highlight PDF**
-   - Select only the answers you like to highlight
-   - Click "Highlight PDF" to add colored annotations
-
-5. **Multi-Query Highlighting**
-   - Run multiple queries with different colors
-   - All highlights accumulate in the same PDF
-   - Perfect for exploring different aspects of a paper
+1. Type a question, e.g. "What methods are used for circuit interpretability?"
+2. Every answer cites its paper, page and section, and the link opens the PDF at
+   that page; "Passage" shows the chunk with the answer marked and the retrieval,
+   rerank and QA scores
+3. Select answers, pick a colour and click "Highlight in PDF": the annotated PDFs
+   appear in the chat for download. Highlights accumulate in the same file across
+   questions, so different colours can mark different aspects of a paper
+4. Chats are kept in the browser and listed in the sidebar
 
 ## Architecture
 
