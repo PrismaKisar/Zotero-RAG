@@ -4,8 +4,8 @@ Per the advisor's methodology (see thesis, chapter on ablation): lock every
 parameter except one at the baseline (zotero_rag/settings.py), sweep that one
 parameter, repeat per parameter.
 
-Runs on either golden set. QASPER (output_qasper/) is the one the frozen
-alignment protocol designates for the ablation proper; QASA (output_qasa/)
+Runs on either golden set. QASPER (data/dev/qasper/) is the one the frozen
+alignment protocol designates for the ablation proper; QASA (data/dev/qasa/)
 carries evidence annotations but no short answers, so it scores retrieval and
 attribution only and the answer columns are dropped rather than zeroed - the
 switch is whether golden_gold.json is present. The two are never pooled: see
@@ -94,12 +94,12 @@ benchmark/index_pdfs.py (same output_base_dir passed here). The ``reader``
 axis additionally requires Ollama.
 
 Usage:
-  python -m benchmark.ablation --work-dir output_qasper/grobid \
-      --hash-map output_qasper/pdf_hash_map.json --out-file output_qasper/ablation_results.csv
+  python -m benchmark.ablation --work-dir data/dev/grobid \
+      --hash-map data/dev/qasper/pdf_hash_map.json --out-file runs/dev/ablation/qasper/ablation_results.csv
 
-  python -m benchmark.ablation --golden-dir output_qasa --work-dir output_qasa/grobid \
-      --hash-map output_qasa/pdf_hash_map.json --out-file output_qasa/ablation_results.csv \
-      --strata-file output_qasa/ablation_by_stratum.md --collection-suffix _qasa
+  python -m benchmark.ablation --golden-dir data/dev/qasa --work-dir data/dev/grobid \
+      --hash-map data/dev/qasa/pdf_hash_map.json --out-file runs/dev/ablation/qasa/ablation_results.csv \
+      --strata-file runs/dev/ablation/qasa/ablation_by_stratum.md --collection-suffix _dev
 """
 
 import argparse
@@ -150,7 +150,7 @@ GRID = {
     "retrieval_mode": ["dense", "sparse"],
     "rerank_enabled": [False],
     "result_limit": [10, 60],
-    "rerank_gate": [0.85, 0.91],
+    "rerank_gate": [0.88, 0.91],
     "rerank_margin": [0.005, 0.05],
     "qa_score_threshold": [0.01, 0.05],
     # Phase-two intervention, not a preset field: keep the cross-encoder's
@@ -730,7 +730,7 @@ def dataset_name(golden_dir: Path) -> str:
     to say which one it is; deriving it beats a flag nobody would remember to
     pass, which is how a QASA run would end up labelled QASPER.
     """
-    return golden_dir.name.removeprefix("output_").upper() or golden_dir.name
+    return golden_dir.name.upper()
 
 
 def config_label(param: str, value) -> str:
@@ -770,18 +770,18 @@ def check_corpus_indexed(rag) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasper")
-    parser.add_argument("--hash-map", default="output_qasper/pdf_hash_map.json")
-    parser.add_argument("--work-dir", default="output_qasper/grobid",
+    parser.add_argument("--golden-dir", default="data/dev/qasper")
+    parser.add_argument("--hash-map", default="data/dev/qasper/pdf_hash_map.json")
+    parser.add_argument("--work-dir", default="data/dev/grobid",
                         help="output_base_dir ZoteroRAG was indexed with")
-    parser.add_argument("--out-file", default="output_qasper/ablation_results.csv")
-    parser.add_argument("--strata-file", default="output_qasper/ablation_by_stratum.md",
+    parser.add_argument("--out-file", default="runs/dev/ablation/qasper/ablation_results.csv")
+    parser.add_argument("--strata-file", default="runs/dev/ablation/qasper/ablation_by_stratum.md",
                         help="stratified breakdown of the baseline run")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
     parser.add_argument("--ollama-url", default="http://localhost:11434",
                         help="only used by the generative reader axis")
-    parser.add_argument("--collection-suffix", default="_qasper",
+    parser.add_argument("--collection-suffix", default="_dev",
                         help="the Qdrant collection this corpus was indexed into")
     parser.add_argument("--only", default=None,
                         help="comma-separated param names to run (default: the whole grid). "

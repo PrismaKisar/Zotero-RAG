@@ -4,7 +4,7 @@ from zotero_rag.settings import SETTINGS, resolve
 
 
 def test_settings_carry_the_measured_values():
-    assert SETTINGS["rerank_gate"] == 0.88
+    assert SETTINGS["rerank_gate"] == 0.85
     assert SETTINGS["rerank_margin"] == 0.02
     assert SETTINGS["qa_score_threshold"] == 0.0
     assert SETTINGS["retrieval_mode"] == "hybrid"

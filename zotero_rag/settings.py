@@ -21,9 +21,13 @@ datasets.
 
 Stages 2 and 3 decide what gets highlighted, and they decide two different
 things. ``rerank_gate`` is read off the *best* candidate alone: no candidate
-reaching 0.88 means the library does not answer this question and nothing is
+reaching 0.85 means the library does not answer this question and nothing is
 highlighted, however many middling candidates it has. A question that clears the
-gate then keeps every candidate within ``rerank_margin`` of that best one.
+gate then keeps every candidate within ``rerank_margin`` of that best one. The
+gate was 0.88 until the development sweep (runs/dev/ablation), where 0.85 was
+the one change that helped on both sets, in paired tests: +0.011 [+0.001,
++0.025] evidence F1 on QASA, +0.006 [+0.000, +0.014] on QASPER, with 0.91
+worse on both.
 
 The cut is relative because an absolute one does not transfer between questions:
 gte's probabilities crowd into 0.80-0.93, and the crowd sits at a different
@@ -43,7 +47,7 @@ held-out QASPER questions, tuned on nothing, it is +0.017 [+0.000, +0.034]: the
 direction holds where the gain is small.
 
 The reader is the extractive one, chosen over the generative reader with the
-one-sentence rule by crossing the two with the cut (output_*/crossed). Under the
+one-sentence rule by crossing the two with the cut (runs/archive/output_*/crossed). Under the
 relative cut the extractive reader attributes better on QASA, +0.030 [+0.010,
 +0.049] evidence F1 and +0.113 recall, marking half the text at a third of the
 latency; on QASPER the generative reader's answer-F1 edge, +0.027 [-0.001,
@@ -73,7 +77,7 @@ SETTINGS = {
     "retrieval_mode": "hybrid",
     "result_limit": 30,
     "rerank_enabled": True,
-    "rerank_gate": 0.88,
+    "rerank_gate": 0.85,
     "rerank_margin": 0.02,
     "qa_score_threshold": 0.0,
 }

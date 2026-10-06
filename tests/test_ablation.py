@@ -747,8 +747,8 @@ def test_csv_row_written_without_answers_matches_its_own_header():
 
 def test_dataset_name_comes_from_the_golden_directory():
     """The two sets are never pooled, so a mislabelled strata table is a real error."""
-    assert dataset_name(Path("output_qasa")) == "QASA"
-    assert dataset_name(Path("output_qasper")) == "QASPER"
+    assert dataset_name(Path("data/dev/qasa")) == "QASA"
+    assert dataset_name(Path("data/heldout/qasper")) == "QASPER"
 
 
 # One place each for the pieces every per-question row shares, so a field added
