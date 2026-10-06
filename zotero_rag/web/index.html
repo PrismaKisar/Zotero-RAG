@@ -91,7 +91,7 @@ button { cursor: pointer; }
 .topbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; height: 52px; flex: none; }
 .topbar .title { flex: 1; font-weight: 550; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
 .app:not(.collapsed) .topbar .when-collapsed { display: none; }
-.scroller { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+.scroller { flex: 1; overflow-y: auto; scroll-behavior: smooth; position: relative; }
 .thread { max-width: 768px; margin: 0 auto; padding: 8px 24px 40px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
 .banner {
   display: flex; gap: 12px; align-items: center; padding: 10px 10px 10px 16px; border-radius: 14px; font-size: 14px;
@@ -100,10 +100,19 @@ button { cursor: pointer; }
 .banner span { flex: 1; overflow-wrap: anywhere; }
 
 /* Welcome */
-.welcome { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 16vh 0 24px; animation: rise .3s ease both; }
-.welcome h1 { margin: 0; font: 500 28px/1.25 var(--serif); letter-spacing: -.01em; }
-.welcome p { margin: 0; color: var(--muted); }
-.welcome button.link { border: 0; background: none; padding: 0; text-decoration: underline; text-underline-offset: 3px; color: var(--text); }
+/* Empty chat: heading and composer centred together, as in the usual chat apps. */
+.chat.empty { justify-content: center; padding-bottom: 10vh; }
+.chat.empty .topbar { position: absolute; inset: 0 0 auto; }
+.chat.empty .scroller { flex: none; overflow: visible; }
+.chat.empty .thread { padding-bottom: 28px; }
+.chat.empty .fine { font-size: 13px; color: var(--muted); margin-top: 12px; }
+.chat.empty::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: min(900px, 100%); height: 420px; transform: translate(-50%, -55%);
+  background: radial-gradient(closest-side, var(--accent-soft), transparent); pointer-events: none;
+}
+.welcome { text-align: center; animation: rise .3s ease both; position: relative; }
+.welcome h1 { margin: 0; font: 500 32px/1.25 var(--serif); letter-spacing: -.01em; }
+.fine button.link { border: 0; background: none; padding: 0; font: inherit; text-decoration: underline; text-underline-offset: 3px; color: var(--text); }
 
 /* Messages */
 .msg { display: flex; gap: 14px; animation: rise .25s ease both; }
@@ -172,7 +181,7 @@ a.chip small { display: block; color: var(--muted); font-size: 12px; }
 a.chip div { min-width: 0; display: grid; }
 
 /* Composer */
-.composer-wrap { flex: none; padding: 0 24px 14px; }
+.composer-wrap { flex: none; padding: 0 24px 14px; position: relative; }
 .composer {
   max-width: 768px; margin: 0 auto; display: flex; align-items: flex-end; gap: 6px; padding: 8px; border-radius: 26px;
   background: var(--raised); border: 1px solid var(--line); box-shadow: var(--shadow); transition: border-color .15s;
@@ -246,8 +255,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   .app .topbar .when-collapsed { display: inline-flex !important; }
   .thread { padding: 8px 16px 32px; }
   .composer-wrap { padding: 0 12px 10px; }
-  .welcome { padding-top: 10vh; }
-  .welcome h1 { font-size: 24px; }
+  .welcome h1 { font-size: 26px; }
   .bubble, .chips { max-width: 90%; }
   .msg { gap: 10px; }
   .msg.bot > .logo { display: none; }
@@ -305,7 +313,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
         <textarea id="question" rows="1" placeholder="Ask your papers anything" aria-label="Question"></textarea>
         <button class="btn primary icon send" id="send" aria-label="Ask" title="Ask" disabled><svg><use href="#i-up"/></svg></button>
       </form>
-      <p class="fine">Answers are passages quoted from your PDFs: check them in context.</p>
+      <p class="fine" id="fine"></p>
     </div>
   </main>
 </div>
@@ -459,21 +467,18 @@ function confirmAction(title, text, action) {
 const thread = $("#thread");
 const scrollDown = () => requestAnimationFrame(() => ($("#scroller").scrollTop = $("#scroller").scrollHeight));
 
+/** The empty chat: a heading over the composer, and the library's state in the line under it. */
 function welcome() {
-  const box = el("div", { className: "welcome" });
-  if (titles === null) {
-    box.append(el("h1", { textContent: "Getting ready" }), el("p", { textContent: "Loading the models…" }));
-  } else if (titles.length) {
-    box.append(el("h1", { textContent: "What are you looking for in your papers?" }),
-      el("p", {}, `${plural(titles.length, "PDF")} in your library · `,
-        el("button", { className: "link", textContent: "manage", onclick: openLibrary })));
-  } else {
-    box.append(el("h1", { textContent: "Start with a few papers" }),
-      el("p", {}, "Drop PDFs anywhere, use the clip below, or ",
-        el("button", { className: "link", textContent: "index a Zotero collection", onclick: openLibrary }), "."));
-  }
-  return box;
+  const [heading, ...line] = titles === null ? ["Getting ready", "Loading the models…"]
+    : titles.length ? ["What are you looking for in your papers?", `${plural(titles.length, "PDF")} in your library · `,
+                       el("button", { className: "link", textContent: "manage", onclick: openLibrary })]
+    : ["Start with a few papers", "Drop PDFs anywhere, use the clip, or ",
+       el("button", { className: "link", textContent: "index a Zotero collection", onclick: openLibrary })];
+  $("#fine").replaceChildren(...line);
+  return el("div", { className: "welcome" }, el("h1", { textContent: heading }));
 }
+
+const DISCLAIMER = "Answers are passages quoted from your PDFs: check them in context.";
 
 function userMessage(content) {
   return el("div", { className: "msg user" }, content);
@@ -594,9 +599,11 @@ function renderItem(item) {
 }
 
 function renderThread() {
+  const empty = !current?.items.length;
+  $(".chat").classList.toggle("empty", empty);
   thread.replaceChildren();
-  if (!current?.items.length) thread.append(welcome());
-  else current.items.forEach(renderItem);
+  if (empty) thread.append(welcome());
+  else { $("#fine").textContent = DISCLAIMER; current.items.forEach(renderItem); }
   $("#chat-title").textContent = current?.title || "";
   renderHistory();
   scrollDown();
@@ -644,7 +651,11 @@ function newChat() {
 async function exchange(userContent, label, run) {
   busy = true;
   updateSend();
-  if (!current) thread.replaceChildren();
+  if (!current) {
+    thread.replaceChildren();
+    $(".chat").classList.remove("empty");
+    $("#fine").textContent = DISCLAIMER;
+  }
   thread.append(userMessage(userContent));
   const { node, body } = botMessage();
   thread.append(node);
