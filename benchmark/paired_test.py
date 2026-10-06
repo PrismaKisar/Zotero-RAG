@@ -11,7 +11,7 @@ Reads the per-question JSONL that ablation.py already writes, so it never
 re-runs the pipeline and can be applied to any finished sweep.
 
 Usage:
-  python -m benchmark.paired_test --per-question output_qasper/per_question
+  python -m benchmark.paired_test --per-question runs/dev/ablation/qasper/per_question
 """
 
 import argparse
@@ -108,9 +108,9 @@ def to_markdown(rows: list[dict]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--per-question", default="output_qasper/per_question",
+    parser.add_argument("--per-question", default="runs/dev/ablation/qasper/per_question",
                         help="directory of per-question JSONL written by ablation.py")
-    parser.add_argument("--out-file", default="output_qasper/paired_test.md")
+    parser.add_argument("--out-file", default="runs/dev/ablation/qasper/paired_test.md")
     parser.add_argument("--reference", default="baseline.jsonl",
                         help="file in --per-question every config is compared against")
     args = parser.parse_args()

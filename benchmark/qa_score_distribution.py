@@ -24,7 +24,7 @@ single global threshold relies on), and a sweep of thresholds. Every score is
 also written per chunk, so another cut can be studied without re-running.
 
 Usage:
-  python -m benchmark.qa_score_distribution --golden-dir output_qasa
+  python -m benchmark.qa_score_distribution --golden-dir data/dev/qasa
 """
 
 import argparse
@@ -174,7 +174,7 @@ def report(name: str, rows: list[dict], n_questions: int) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasa",
+    parser.add_argument("--golden-dir", default="data/dev/qasa",
                         help="holds golden_set_aligned.jsonl and chunks/")
     args = parser.parse_args()
 

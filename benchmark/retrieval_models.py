@@ -19,7 +19,7 @@ recorded per chunk and per query: it is what a user pays to index a library and
 to ask a question.
 
 Usage:
-  python -m benchmark.retrieval_models --golden-dir output_qasa
+  python -m benchmark.retrieval_models --golden-dir data/dev/qasa
 """
 
 import argparse
@@ -194,7 +194,7 @@ def encode(kind: str, name: str, texts: list[str], queries: list[str], device: s
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasa",
+    parser.add_argument("--golden-dir", default="data/dev/qasa",
                         help="holds golden_set_aligned.jsonl and chunks/")
     parser.add_argument("--dense", nargs="+", default=list(DENSE))
     parser.add_argument("--sparse", nargs="+", default=list(SPARSE))

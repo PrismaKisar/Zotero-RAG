@@ -14,8 +14,8 @@ benchmark/qa_score_distribution.py has scored the same candidates
 the pipeline would highlight per question.
 
 Usage:
-  python -m benchmark.rerank_score_distribution --golden-dir output_qasa
-  python -m benchmark.rerank_score_distribution --golden-dir output_qasa --from-scores
+  python -m benchmark.rerank_score_distribution --golden-dir data/dev/qasa
+  python -m benchmark.rerank_score_distribution --golden-dir data/dev/qasa --from-scores
 """
 
 import argparse
@@ -135,7 +135,7 @@ def score_candidates(golden_dir: Path) -> tuple[str, list[dict]]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasa",
+    parser.add_argument("--golden-dir", default="data/dev/qasa",
                         help="holds golden_set_aligned.jsonl and chunks/")
     parser.add_argument("--from-scores", action="store_true",
                         help="rebuild the report from rerank_scores.jsonl without re-scoring")

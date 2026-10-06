@@ -21,7 +21,7 @@ Each set's own optimum is also scored on the other set: a pair tuned and read on
 the same questions overstates what it does on a library nobody tuned it for.
 
 Usage:
-  python -m benchmark.threshold_search --golden-dirs output_qasper output_qasa
+  python -m benchmark.threshold_search --golden-dirs data/dev/qasper data/dev/qasa
 """
 
 import argparse
@@ -201,7 +201,7 @@ def load_questions(golden_dir: Path) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dirs", nargs="+", default=["output_qasper", "output_qasa"],
+    parser.add_argument("--golden-dirs", nargs="+", default=["data/dev/qasper", "data/dev/qasa"],
                         help="each holds golden_set_aligned.jsonl, chunks/ and the score files")
     args = parser.parse_args()
     dirs = [Path(d) for d in args.golden_dirs]

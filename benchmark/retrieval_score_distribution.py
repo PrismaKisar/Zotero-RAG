@@ -26,8 +26,8 @@ In hybrid mode such a cut acted on the dense prefetch only and BM25 still filled
 its own ``limit``, so the sweep describes the dense branch, not the fused list.
 
 Usage:
-  python -m benchmark.retrieval_score_distribution --golden-dir output_qasper \
-      --out-file output_qasper/retrieval_score_distribution.md
+  python -m benchmark.retrieval_score_distribution --golden-dir data/dev/qasper \
+      --out-file runs/dev/retrieval_score_distribution.md
 """
 
 import argparse
@@ -163,7 +163,7 @@ def report(questions: list[dict], limit: int) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasper",
+    parser.add_argument("--golden-dir", default="data/dev/qasper",
                         help="holds golden_set_aligned.jsonl and chunks/")
     parser.add_argument("--limit", type=int, default=30,
                         help="result_limit: how deep the dense branch retrieves")

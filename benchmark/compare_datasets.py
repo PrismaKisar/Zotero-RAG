@@ -8,8 +8,8 @@ Everything is computed from artifacts already produced by the pipeline:
 
 Usage:
   python -m benchmark.compare_datasets \
-      --dataset QASPER=output_qasper --dataset QASA=output_qasa \
-      --out-file output_qasper/dataset_comparison.md
+      --dataset QASPER=data/dev/qasper --dataset QASA=data/dev/qasa \
+      --out-file runs/dev/dataset_comparison.md
 """
 
 import argparse
@@ -243,7 +243,7 @@ def to_markdown(datasets):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", action="append", required=True,
-                        metavar="NAME=DIR", help="repeatable, e.g. QASPER=output_qasper")
+                        metavar="NAME=DIR", help="repeatable, e.g. QASPER=data/dev/qasper")
     parser.add_argument("--out-file", type=Path, help="write the markdown report here")
     parser.add_argument("--metrics-file", type=Path, help="also dump raw metric values as JSON")
     args = parser.parse_args()

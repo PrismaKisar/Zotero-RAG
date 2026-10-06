@@ -27,7 +27,7 @@ a reranker preferring a non-gold chunk that does answer the question is a gap
 in the labels, not a ranking error.
 
 Usage:
-  python -m benchmark.reranker_diagnosis --golden-dir output_qasa
+  python -m benchmark.reranker_diagnosis --golden-dir data/dev/qasa
 """
 
 import argparse
@@ -149,7 +149,7 @@ def render_disagreements(name: str, cases: list[dict], models: list[str]) -> str
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasa",
+    parser.add_argument("--golden-dir", default="data/dev/qasa",
                         help="holds golden_set_aligned.jsonl and chunks/")
     parser.add_argument("--models", nargs="+", default=list(DEFAULT_MODELS))
     parser.add_argument("--tag", default="",

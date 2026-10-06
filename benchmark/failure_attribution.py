@@ -27,7 +27,7 @@ questions that came back empty, which is the share the campaign reports: a
 question can be counted as cut while still highlighting a non-gold chunk.
 
 Usage:
-  python -m benchmark.failure_attribution --golden-dirs output_qasper output_qasa
+  python -m benchmark.failure_attribution --golden-dirs data/dev/qasper data/dev/qasa
 """
 
 import argparse
@@ -97,7 +97,7 @@ def report(sets: dict[str, list[dict]], gate: float = GATE, margin: float = MARG
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dirs", nargs="+", default=["output_qasper", "output_qasa"],
+    parser.add_argument("--golden-dirs", nargs="+", default=["data/dev/qasper", "data/dev/qasa"],
                         help="each holds golden_set_aligned.jsonl, chunks/ and the score files")
     parser.add_argument("--rerank-gate", type=float, default=GATE)
     parser.add_argument("--rerank-margin", type=float, default=MARGIN)

@@ -7,8 +7,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
-# Runtime / output: output/ is the app, output_<corpus>/ each benchmark run
-output*/
+# Runtime: output/ is the app, data/ the benchmark sets, runs/ the campaigns
+output/
+data/
+runs/
 *.log
 .app.pid
 

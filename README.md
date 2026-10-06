@@ -59,7 +59,7 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 ├── README.md                # This file
 └── LICENSE                  # GPL v3.0 license
 
-output/                     # App run artefacts; each benchmark run gets output_<corpus>/
+output/                     # App run artefacts (benchmarks: data/ and runs/, see benchmark/README.md)
 ├── highlighted_results
 │   └──{title}.pdf          #Highlighted PDFs
 |

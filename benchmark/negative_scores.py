@@ -18,9 +18,9 @@ Two sources, kept apart in the output:
   paper in the library might, so silence on them is a lower bound of what is right.
 
 Usage:
-  python -m benchmark.negative_scores --golden-dir output_qasper \
+  python -m benchmark.negative_scores --golden-dir data/dev/qasper \
       --qasper-release qasper-dev-v0.3.json
-  python -m benchmark.negative_scores --golden-dir output_qasa
+  python -m benchmark.negative_scores --golden-dir data/dev/qasa
 """
 
 import argparse
@@ -56,7 +56,7 @@ def unanswerable_questions(qasper: dict, papers: set[str]) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasper", help="holds chunks/")
+    parser.add_argument("--golden-dir", default="data/dev/qasper", help="holds chunks/")
     parser.add_argument("--qasper-release", default=None,
                         help="QASPER JSON release, for its unanswerable questions")
     parser.add_argument("--offtopic", type=Path, default=OFFTOPIC)

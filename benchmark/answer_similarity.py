@@ -17,8 +17,8 @@ answer, so no campaign is re-run. Only sets with reference answers apply: QASA
 has none.
 
 Usage:
-  python -m benchmark.answer_similarity --per-question output_qasper/crossed/per_question \\
-      --gold output_qasper/golden_gold.json --out-file output_qasper/crossed/answer_similarity.md
+  python -m benchmark.answer_similarity --per-question runs/dev/ablation/qasper/per_question \\
+      --gold data/dev/qasper/golden_gold.json --out-file runs/dev/ablation/qasper/answer_similarity.md
 """
 
 import argparse

@@ -30,7 +30,7 @@ reader are out of scope on purpose: recall the variants do not add here cannot
 be recovered downstream, and the harm they do there is already measured.
 
 Usage:
-  python -m benchmark.paraphrase_retrieval --golden-dir output_qasper
+  python -m benchmark.paraphrase_retrieval --golden-dir data/dev/qasper
 """
 
 import argparse
@@ -260,7 +260,7 @@ def report(rows: dict, produced: dict) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasper",
+    parser.add_argument("--golden-dir", default="data/dev/qasper",
                         help="holds golden_set_aligned.jsonl and chunks/")
     parser.add_argument("--seed", type=int, default=42,
                         help="sampling seed for the shipped generator, which is not deterministic")

@@ -31,7 +31,7 @@ the absolute rule with ``gate == keep``, and gives the paired difference per
 question.
 
 Usage:
-  python -m benchmark.answer_gate --golden-dirs output_qasper output_qasa
+  python -m benchmark.answer_gate --golden-dirs data/dev/qasper data/dev/qasa
 """
 
 import argparse
@@ -177,7 +177,7 @@ def report(sets: dict[str, list[dict]], negatives: dict[str, list[dict]]) -> str
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dirs", nargs="+", default=["output_qasper", "output_qasa"],
+    parser.add_argument("--golden-dirs", nargs="+", default=["data/dev/qasper", "data/dev/qasa"],
                         help="each holds golden_set_aligned.jsonl, chunks/ and the score files")
     args = parser.parse_args()
     dirs = [Path(d) for d in args.golden_dirs]

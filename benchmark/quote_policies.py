@@ -16,7 +16,7 @@ Writes the same per-question JSONL layout benchmark/ablation.py does, with
 lenient as ``baseline.jsonl``, so benchmark/paired_test.py consumes it unchanged.
 
 Usage:
-  python -m benchmark.quote_policies --out-dir output_qasper/quote_exact
+  python -m benchmark.quote_policies --out-dir runs/dev/quote_exact/qasper
 """
 
 import argparse
@@ -52,14 +52,14 @@ def split_policies(answers, verified_contexts: set) -> tuple[list, list]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--golden-dir", default="output_qasper")
-    parser.add_argument("--hash-map", default="output_qasper/pdf_hash_map.json")
-    parser.add_argument("--work-dir", default="output_qasper/grobid")
-    parser.add_argument("--out-dir", default="output_qasper/quote_exact")
+    parser.add_argument("--golden-dir", default="data/dev/qasper")
+    parser.add_argument("--hash-map", default="data/dev/qasper/pdf_hash_map.json")
+    parser.add_argument("--work-dir", default="data/dev/grobid")
+    parser.add_argument("--out-dir", default="runs/dev/quote_exact/qasper")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
     parser.add_argument("--ollama-url", default="http://localhost:11434")
-    parser.add_argument("--collection-suffix", default="_qasper")
+    parser.add_argument("--collection-suffix", default="_dev")
     parser.add_argument("--sample", type=int, default=None)
     args = parser.parse_args()
 

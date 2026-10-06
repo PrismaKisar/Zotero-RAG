@@ -1,25 +1,27 @@
 """Index the benchmark PDFs into Qdrant, bypassing Zotero.
 
 ZoteroRAG.upsert_pdfs() takes a generic List[CachedPDF]; it does not require a
-Zotero library. This ingests the PDFs already downloaded for the golden set
-(output_qasper/pdfs/) as a folder source instead, and records which pdf_hash
-Qdrant ended up assigning to each paper_id, needed to score retrieval rankings
-against output_qasper/golden_set_aligned.jsonl (see benchmark/README.md).
+Zotero library. This ingests the PDFs already downloaded for a golden set
+(data/<split>/<corpus>/pdfs/) as a folder source instead, and records which
+pdf_hash Qdrant ended up assigning to each paper_id, needed to score retrieval
+rankings against that set's golden_set_aligned.jsonl (see benchmark/README.md).
 
 Requires GROBID and Qdrant running (docker-compose up).
 
-Each corpus gets its own Qdrant collection via --qdrant-collection-suffix: retrieval is
-corpus-wide (the system searches a whole library, not one paper), so two datasets
-sharing a collection would contaminate each other's ranking.
+Each split gets its own Qdrant collection via --qdrant-collection-suffix, and the
+two corpora of a split share it: retrieval is library-wide, and a library holds
+papers from both, so dev and held-out are searched the same way. A split must
+never share a collection with another, or held-out papers would sit among the
+distractors of the development questions.
 
 Chunk contextualization is off unless --contextualize is passed. It is an
 unmeasured Phase 2 intervention, and its failure path is a silent fallback to raw
 chunks, so leaving it on by default would make the baseline index unreproducible.
 
 Usage:
-  python -m benchmark.index_pdfs --pdf-dir output_qasper/pdfs \
-      --out-file output_qasper/pdf_hash_map.json --work-dir output_qasper/grobid \
-      --qdrant-collection-suffix _qasper
+  python -m benchmark.index_pdfs --pdf-dir data/dev/qasper/pdfs \
+      --out-file data/dev/qasper/pdf_hash_map.json --work-dir data/dev/grobid \
+      --qdrant-collection-suffix _dev
 """
 
 import argparse
@@ -60,13 +62,13 @@ def index_pdfs(pdf_dir: Path, work_dir: Path, grobid_url: str, qdrant_url: str,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pdf-dir", required=True)
-    parser.add_argument("--out-file", default="output_qasper/pdf_hash_map.json")
-    parser.add_argument("--work-dir", default="output_qasper/grobid",
+    parser.add_argument("--out-file", default="data/dev/qasper/pdf_hash_map.json")
+    parser.add_argument("--work-dir", default="data/dev/grobid",
                         help="output_base_dir for ZoteroRAG (pdf cache, index)")
     parser.add_argument("--grobid-url", default="http://localhost:8070")
     parser.add_argument("--qdrant-url", default="http://localhost:6333")
     parser.add_argument("--qdrant-collection-suffix", default="",
-                        help="isolate this corpus in its own Qdrant collection, e.g. _qasper")
+                        help="isolate this corpus in its own Qdrant collection, e.g. _dev")
     parser.add_argument("--contextualize", action="store_true",
                         help="prefix each chunk with an LLM-generated context before embedding "
                              "(needs Ollama); off by default so the baseline index is reproducible")
