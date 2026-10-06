@@ -39,7 +39,7 @@ def normalize_title(title: str) -> str:
     return " ".join(TITLE_RE.findall(title.lower()))
 
 
-def build(qasa: dict, papers: int | None, seed: int, exclude=frozenset(), top_up=()):
+def build(qasa: dict, papers: int | None, seed: int, exclude=frozenset(), available=None):
     """Group QASA records by paper, dedup evidence, return (records, stats)."""
     stats = Counter()
     by_paper: dict[str, list] = {}
@@ -72,21 +72,17 @@ def build(qasa: dict, papers: int | None, seed: int, exclude=frozenset(), top_up
     # Papers another golden set already used are dropped before sampling, so a
     # set built after the work is disjoint from everything the work looked at.
     stats["papers_excluded_as_used"] = len(by_paper.keys() & set(exclude))
-    used = {pid: by_paper.pop(pid) for pid in exclude if pid in by_paper}
+    for paper_id in exclude:
+        by_paper.pop(paper_id, None)
+    # A paper with no PDF cannot be indexed, so sampling it would shrink the set
+    # below the size fixed before the campaign.
+    if available is not None:
+        stats["papers_without_pdf"] = len(by_paper.keys() - set(available))
+        by_paper = {pid: rs for pid, rs in by_paper.items() if pid in available}
 
     selected = sorted(by_paper)
     if papers is not None and papers < len(selected):
         selected = sorted(random.Random(seed).sample(selected, papers))
-    # QASA has too few unused papers for a held-out half of useful size, so
-    # ``top_up`` lets a set be completed from already-used papers. Those papers
-    # informed development decisions, so the stat records how many came back.
-    missing = (papers or 0) - len(selected)
-    reusable = sorted(set(top_up) & used.keys())
-    reused = sorted(random.Random(seed).sample(reusable, min(missing, len(reusable)))) \
-        if missing > 0 else []
-    by_paper.update({pid: used[pid] for pid in reused})
-    selected = sorted(selected + reused)
-    stats["papers_reused_from_development"] = len(reused)
     stats["papers_sampled"] = len(selected)
     stats["seed"] = seed
 
@@ -94,6 +90,11 @@ def build(qasa: dict, papers: int | None, seed: int, exclude=frozenset(), top_up
     stats["questions_in_golden_set"] = len(records)
     stats["golden_multi_evidence"] = sum(r["multi_evidence"] for r in records)
     return records, dict(stats)
+
+
+def pdf_pool(dirs) -> set[str] | None:
+    """Paper ids with a PDF in any of ``dirs``, or None when no pool is given."""
+    return None if dirs is None else {p.stem for d in dirs for p in Path(d).glob("*.pdf")}
 
 
 def resolve_arxiv_id(title: str, fetch=None) -> str | None:
@@ -158,23 +159,21 @@ def download_pdfs(records: list, pdf_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qasa", help="path to a QASA JSON release")
-    parser.add_argument("--out-dir", default="output_qasa", help="output directory")
+    parser.add_argument("--out-dir", default="data/dev/qasa", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--exclude-papers", nargs="*", default=[],
                         help="golden_set.jsonl files whose papers must not be sampled")
-    parser.add_argument("--top-up-from", default=None,
-                        help="pdf_hash_map.json of an excluded set: when unused papers are "
-                             "fewer than --papers, complete the sample from its papers")
+    parser.add_argument("--pdf-pool", nargs="*", default=None,
+                        help="directories of already downloaded PDFs: sample only papers found there")
     parser.add_argument("--pdf-dir", default=None, help="also resolve and download the arXiv PDFs here")
     args = parser.parse_args()
 
     qasa = json.loads(Path(args.qasa).read_text())
     exclude = {json.loads(line)["paper_id"] for path in args.exclude_papers
                for line in Path(path).read_text().splitlines() if line.strip()}
-    top_up = json.loads(Path(args.top_up_from).read_text()) if args.top_up_from else {}
-    records, stats = build(qasa, args.papers, args.seed, exclude, top_up)
+    records, stats = build(qasa, args.papers, args.seed, exclude, pdf_pool(args.pdf_pool))
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

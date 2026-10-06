@@ -21,6 +21,8 @@ import random
 from collections import Counter
 from pathlib import Path
 
+from benchmark.build_qasa_golden_set import pdf_pool
+
 # QASPER marks evidence coming from a table or a figure with this prefix.
 FLOAT_PREFIX = "FLOAT SELECTED"
 
@@ -56,7 +58,7 @@ def extractive_annotations(question: dict) -> list:
             if annotation_type(a["answer"]) == "extractive"]
 
 
-def build(qasper: dict, papers: int | None, seed: int, exclude=frozenset()):
+def build(qasper: dict, papers: int | None, seed: int, exclude=frozenset(), available=None):
     """Apply the criteria and return (records, stats)."""
     stats = Counter()
     by_paper: dict[str, list] = {}
@@ -100,6 +102,11 @@ def build(qasper: dict, papers: int | None, seed: int, exclude=frozenset()):
     stats["papers_excluded_as_used"] = len(by_paper.keys() & set(exclude))
     for paper_id in exclude:
         by_paper.pop(paper_id, None)
+    # A paper with no PDF cannot be indexed, so sampling it would shrink the set
+    # below the size fixed before the campaign.
+    if available is not None:
+        stats["papers_without_pdf"] = len(by_paper.keys() - set(available))
+        by_paper = {pid: rs for pid, rs in by_paper.items() if pid in available}
 
     selected = sorted(by_paper)
     if papers is not None and papers < len(selected):
@@ -149,20 +156,25 @@ def download_pdfs(paper_ids, pdf_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("qasper", help="path to the QASPER JSON release")
-    parser.add_argument("--out-dir", default="output_qasper", help="output directory")
+    parser.add_argument("qasper", nargs="+",
+                        help="QASPER JSON files (a release, or another set's golden_gold.json), "
+                             "merged into one pool")
+    parser.add_argument("--out-dir", default="data/dev/qasper", help="output directory")
     parser.add_argument("--papers", type=int, default=None,
                         help="sample size in papers, fixed before the campaign")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--exclude-papers", nargs="*", default=[],
                         help="golden_set.jsonl files whose papers must not be sampled")
+    parser.add_argument("--pdf-pool", nargs="*", default=None,
+                        help="directories of already downloaded PDFs: sample only papers found there")
     parser.add_argument("--pdf-dir", default=None, help="also download the arXiv PDFs here")
     args = parser.parse_args()
 
-    qasper = json.loads(Path(args.qasper).read_text())
+    qasper = {pid: paper for path in args.qasper
+              for pid, paper in json.loads(Path(path).read_text()).items()}
     exclude = {json.loads(line)["paper_id"] for path in args.exclude_papers
                for line in Path(path).read_text().splitlines() if line.strip()}
-    records, stats = build(qasper, args.papers, args.seed, exclude)
+    records, stats = build(qasper, args.papers, args.seed, exclude, pdf_pool(args.pdf_pool))
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

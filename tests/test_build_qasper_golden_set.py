@@ -80,3 +80,9 @@ def test_papers_already_used_are_never_sampled():
     records, stats = build(QASPER, papers=None, seed=0, exclude={"1111.1111"})
     assert {r["paper_id"] for r in records} == {"2222.2222"}
     assert stats["papers_excluded_as_used"] == 1
+
+
+def test_only_papers_with_a_pdf_are_sampled():
+    records, stats = build(QASPER, papers=None, seed=0, available={"2222.2222"})
+    assert {r["paper_id"] for r in records} == {"2222.2222"}
+    assert stats["papers_without_pdf"] == 1

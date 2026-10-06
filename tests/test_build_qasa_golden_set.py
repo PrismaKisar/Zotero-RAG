@@ -1,4 +1,4 @@
-from benchmark.build_qasa_golden_set import build, resolve_arxiv_id
+from benchmark.build_qasa_golden_set import build, pdf_pool, resolve_arxiv_id
 
 
 def _entry(paper_id, title, question_id, question, contexts):
@@ -83,12 +83,14 @@ def test_papers_already_used_are_never_sampled():
     assert stats["papers_excluded_as_used"] == 1
 
 
-def test_a_short_unused_pool_is_topped_up_from_used_papers_and_counted():
-    records, stats = build(QASA, papers=2, seed=0, exclude={"paper_1"}, top_up={"paper_1": "h"})
-    assert {r["paper_id"] for r in records} == {"paper_1", "paper_2"}
-    assert stats["papers_reused_from_development"] == 1
+def test_only_papers_with_a_pdf_are_sampled():
+    records, stats = build(QASA, papers=2, seed=0, available={"paper_2"})
+    assert {r["paper_id"] for r in records} == {"paper_2"}
+    assert stats["papers_without_pdf"] == 1
 
 
-def test_no_top_up_when_the_unused_pool_is_enough():
-    _, stats = build(QASA, papers=1, seed=0, exclude={"paper_1"}, top_up={"paper_1": "h"})
-    assert stats["papers_reused_from_development"] == 0
+def test_pdf_pool_reads_paper_ids_from_pdf_names(tmp_path):
+    (tmp_path / "paper_1.pdf").write_bytes(b"%PDF")
+    (tmp_path / "notes.txt").write_text("")
+    assert pdf_pool([tmp_path]) == {"paper_1"}
+    assert pdf_pool(None) is None
