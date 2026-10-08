@@ -35,7 +35,7 @@ case "$cmd" in
 
     mkdir -p "$LOG_DIR"
     echo "▶ Launching app (native, MPS) detached…"
-    nohup uv run uvicorn server:app --app-dir zotero_rag --port 8501 \
+    nohup uv run uvicorn zotero_rag.app.server:app --port 8501 \
       >"$APP_LOG" 2>&1 &
     echo $! > "$APP_PID_FILE"
 

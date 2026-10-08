@@ -27,25 +27,39 @@ A question-answering system for your uploaded PDFs or Zotero library featuring a
 
 ```
 .
-├── zotero_rag/                 # Main package
-│   ├── embedding_manager.py    # Dense and sparse embeddings
-│   ├── generative_reader.py    # Benchmark reader: answer + cited passages (Ollama)
-│   ├── highlighter.py          # PDF annotation using coordinates
-│   ├── models.py               # Data classes
-│   ├── pdf_cache_manager.py    # Local PDF cache management
-│   ├── pdf_processor.py        # GROBID client and TEI parsing
-│   ├── pdf_utils.py            # PDF utilities
-│   ├── hybrid_reader.py        # Benchmark reader: generative choice, extractive span
+├── zotero_rag/                 # Main package, one subpackage per pipeline stage
 │   ├── pipeline.py             # Main orchestration class
-│   ├── qa_engine.py            # Extractive QA, the delivered reader
-│   ├── qdrant_manager.py       # Qdrant hybrid indexing and search
-│   ├── reranker.py             # CrossEncoder reranking
-│   ├── run_from_config.py      # Programmatic YAML config runner
-│   ├── server.py               # Web API, serves web/index.html
-│   ├── selection.py            # Rerank gate and margin, shared with the benchmarks
 │   ├── settings.py             # Fixed, measured pipeline settings
-│   ├── zotero_db.py            # Zotero SQLite database interface
-│   └── web/                    # Chat-style page (HTML, CSS, JS; no build step), favicon, brand/ logos
+│   ├── models.py               # Data classes
+│   ├── device.py               # Compute-device selection
+│   ├── ingest/                 # From Zotero or a folder to parsed chunks
+│   │   ├── zotero_db.py        # Zotero SQLite database interface
+│   │   ├── pdf_cache_manager.py # Local PDF cache management
+│   │   ├── pdf_processor.py    # GROBID client and TEI parsing
+│   │   └── pdf_utils.py        # PDF utilities
+│   ├── retrieval/              # From a question to the chunks worth reading
+│   │   ├── embedding_manager.py # Dense and sparse embeddings
+│   │   ├── qdrant_manager.py   # Qdrant hybrid indexing and search
+│   │   ├── reranker.py         # CrossEncoder reranking
+│   │   └── selection.py        # Rerank gate and margin, shared with the benchmarks
+│   ├── answering/              # From chunks to an answer and its highlights
+│   │   ├── qa_engine.py        # Extractive QA, the delivered reader
+│   │   ├── generative_reader.py # Benchmark reader: answer + cited passages (Ollama)
+│   │   ├── hybrid_reader.py    # Benchmark reader: generative choice, extractive span
+│   │   └── highlighter.py      # PDF annotation using coordinates
+│   └── app/                    # The ways in
+│       ├── server.py           # Web API, serves web/index.html
+│       ├── chat_store.py       # Chats and answers in SQLite
+│       ├── run_from_config.py  # Programmatic YAML config runner
+│       └── web/                # Chat-style page (HTML, CSS, JS; no build step), favicon, brand/ logos
+│
+├── benchmark/               # The evaluation (see benchmark/README.md)
+│   ├── datasets/            # Golden sets, evidence alignment, chunk extraction, indexing
+│   ├── metrics/             # Metrics, paired bootstrap, strata, report formats
+│   ├── campaigns/           # The ablation and the citation-policy campaign
+│   └── studies/             # Offline studies from stored scores, one stage at a time
+│
+├── tests/                   # Mirrors zotero_rag/ and benchmark/; cross-module guards in guards/
 │
 ├── example_configs/         # Example YAML configurations
 │   ├── basic.yaml           # Zotero source, every option documented
@@ -90,7 +104,7 @@ curl http://localhost:8070/api/isalive
 ### 3. Run the App
 
 ```bash
-uv run uvicorn server:app --app-dir zotero_rag --port 8501
+uv run uvicorn zotero_rag.app.server:app --port 8501
 ```
 
 Then navigate to `http://localhost:8501`

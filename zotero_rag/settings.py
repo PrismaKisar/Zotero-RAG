@@ -4,16 +4,16 @@ There are no question types and nothing for the user to tune. Every value below
 was measured on the golden sets, or fixed because measuring showed that the
 alternative did not help; exposing them would let a user undo a calibration they
 cannot see. ``resolve`` exists for the benchmarks alone, which vary one value at
-a time around these (benchmark/ablation.py).
+a time around these (benchmark/campaigns/ablation.py).
 
 Stage 1, retrieval: ``retrieval_mode`` hybrid and ``result_limit`` 30, the
 reranker's budget. The dense side is EmbeddingGemma-300m, BM25 the sparse one:
 against the former bge-base + BM25 it adds 0.05 recall@10 over the QASA library
 (+0.049 [+0.029, +0.072], 604 questions) and 0.10 recall@30 over QASPER's, and
-every dense model alone lost to every hybrid (benchmark/retrieval_models.py).
+every dense model alone lost to every hybrid (benchmark/studies/retrieval_models.py).
 There is no score threshold. A ``retrieval_threshold`` on the
 dense cosine used to sit there and was removed rather than re-tuned: measured
-with exact search (benchmark/retrieval_score_distribution.py, on bge-base), the 30th
+with exact search (benchmark/studies/retrieval_score_distribution.py, on bge-base), the 30th
 candidate of every QASPER question scores 0.55 or more, so the shipped 0.35-0.45
 never cut a thing; inside the band where a cut does act, gold evidence scores
 *below* the non-gold candidates it competes with, and the scale shifts between
@@ -32,11 +32,11 @@ worse on both.
 The cut is relative because an absolute one does not transfer between questions:
 gte's probabilities crowd into 0.80-0.93, and the crowd sits at a different
 height per question, so a fixed cut lands mid-crowd on some and above it on
-others. Measured (benchmark/failure_attribution.py), the absolute 0.90 it
+others. Measured (benchmark/studies/failure_attribution.py), the absolute 0.90 it
 replaces threw away gold evidence the reranker had itself ranked first, on 23%
 of the answerable questions of both sets, and that was the single largest cause
 of empty answers. The pair was searched against both golden sets and against
-questions the library does not answer (benchmark/answer_gate.py); against the
+questions the library does not answer (benchmark/studies/answer_gate.py); against the
 absolute 0.90/0.05 it is worth +0.161 [+0.133, +0.189] evidence F1 on QASA and
 +0.019 [-0.016, +0.055] on QASPER, raising precision and recall together, and it
 leaves 7% rather than 30% of answerable QASA questions empty. The end-to-end

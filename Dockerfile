@@ -18,5 +18,5 @@ COPY example_configs/ ./example_configs/
 
 EXPOSE 8501
 
-CMD ["uvicorn", "server:app", "--app-dir", "zotero_rag", \
+CMD ["uvicorn", "zotero_rag.app.server:app", \
      "--host", "0.0.0.0", "--port", "8501"]

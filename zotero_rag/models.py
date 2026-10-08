@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Protocol
 
-from pdf_utils import compute_file_hash, compute_stream_hash
+from zotero_rag.ingest.pdf_utils import compute_file_hash, compute_stream_hash
 
 
 @dataclass
@@ -172,6 +172,19 @@ class Answer:
     rerank_score: float = 0.0  # CrossEncoder reranking score
     pdf_path: str | None = None
     pdf_hash: str | None = None
+
+    @classmethod
+    def from_candidate(cls, candidate: "RerankedChunk", *, text: str, start_char: int,
+                       end_char: int, score: float, query: str,
+                       color: tuple[float, float, float],
+                       sentence_coords: list[str]) -> "Answer":
+        """An answer drawn from ``candidate``: where its chunk sits, and how it scored."""
+        chunk = candidate.chunk
+        return cls(text=text, context=chunk.text, page_number=chunk.page_number,
+                   title=chunk.title, section=chunk.section, start_char=start_char,
+                   end_char=end_char, score=score, query=query, color=color,
+                   sentence_coords=sentence_coords, retrieval_score=candidate.retrieval_score,
+                   rerank_score=candidate.rerank_score, pdf_hash=chunk.pdf_hash)
 
 
 class Reader(Protocol):

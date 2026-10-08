@@ -12,8 +12,11 @@ import time
 import warnings
 from typing import BinaryIO
 
-from embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
-from models import (
+from zotero_rag.answering.qa_engine import QAEngine
+from zotero_rag.ingest.pdf_cache_manager import PDFCacheManager
+from zotero_rag.ingest.pdf_processor import PDFProcessor
+from zotero_rag.ingest.zotero_db import ZoteroDatabase
+from zotero_rag.models import (
     Answer,
     CachedPDF,
     Chunk,
@@ -27,13 +30,10 @@ from models import (
     UpsertResult,
     ingest_items_from_folder,
 )
-from pdf_cache_manager import PDFCacheManager
-from pdf_processor import PDFProcessor
-from qa_engine import QAEngine
-from qdrant_manager import QdrantManager
-from reranker import DEFAULT_RERANKER_MODEL, Reranker
-from settings import resolve
-from zotero_db import ZoteroDatabase
+from zotero_rag.retrieval.embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
+from zotero_rag.retrieval.qdrant_manager import QdrantManager
+from zotero_rag.retrieval.reranker import DEFAULT_RERANKER_MODEL, Reranker
+from zotero_rag.settings import resolve
 
 warnings.filterwarnings('ignore', message='.*position_ids.*')
 
@@ -550,6 +550,70 @@ class ZoteroRAG:
                      f"{len(found)} added to {len(retrieved)} retrieved")
         return found
 
+    def _retrieve(self, question: str, config: dict,
+                  pdf_hashes: list[str] | None) -> tuple[list, list[RetrievedChunk]]:
+        """Stage 1: the hybrid hits and their neighbours.
+
+        One query: expanding it with paraphrases was measured, never added
+        recall, and was removed.
+
+        Returns:
+            The (chunk, score) candidates in the order the reranker takes them,
+            and the same chunks in retrieval order for the trace.
+        """
+        hits = self.qdrant_manager.search(
+            self.embedding_manager.encode_query(question),
+            result_limit=config['result_limit'],
+            mode=config['retrieval_mode'],
+            pdf_hashes=pdf_hashes,
+        )
+        seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in hits}
+
+        # Best first, ties broken by chunk id. RRF gives equal scores to
+        # chunks at the same rank in different branches and Qdrant returns
+        # equals in no stable order: one config ranked 117 of 120 questions
+        # differently across campaigns, mostly by adjacent swaps. Every
+        # consumer re-sorts by its own score with a stable sort, so this is
+        # the tie order they all inherit.
+        hits.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
+        neighbours = self._neighbour_candidates(
+            hits, seen_chunks, config.get('retrieval_neighbours', 0))
+
+        logger.debug(f"Question: {question}")
+        logger.debug(f"Retrieved {len(hits) + len(neighbours)} chunks")
+
+        # The retrieval order: every neighbour after every hit, best first
+        # inside each group. A neighbour inherits its parent's score, so on
+        # the score alone a chunk nothing scored could outrank a hit that
+        # scored lower and take a position retrieval never assigned it.
+        retrieved = (
+            [RetrievedChunk(chunk, score) for chunk, score in hits]
+            + [RetrievedChunk(chunk, score, is_neighbour=True)
+               for chunk, score in sorted(neighbours, key=lambda c: -c[1])])
+        return hits + neighbours, retrieved
+
+    def _rerank(self, question: str, candidates: list, retrieved: list[RetrievedChunk],
+                config: dict, progress_callback) -> list[RerankedChunk]:
+        """Stage 2: the cross-encoder's gate and margin, or the retrieval order when it is off."""
+        if config['rerank_enabled']:
+            return self.reranker.rerank(
+                question,
+                candidates,
+                config['rerank_gate'],
+                config['rerank_margin'],
+                progress_callback=progress_callback,
+                # Read with defaults rather than added to settings: both exist for
+                # the benchmarks alone, and a setting would ship them as defaults.
+                order_by_retrieval=config.get('rerank_order_by_retrieval', False),
+                absolute_cut=config.get('rerank_absolute', False),
+            )
+        # ponytail: bypass keeps the retrieval order so the ablation can
+        # attribute the reranker's contribution; rerank_score mirrors
+        # retrieval_score because nothing rescored the candidates.
+        return [RerankedChunk(chunk=r.chunk, retrieval_score=r.retrieval_score,
+                              rerank_score=r.retrieval_score)
+                for r in retrieved]
+
     def answer_question(self,
                     question: str,
                     overrides: dict | None = None,
@@ -593,76 +657,23 @@ class ZoteroRAG:
             trace.stage_times[stage] = now - stage_started
             stage_started = now
 
-        # Stage 1: Retrieve candidate chunks (Qdrant). One query: expanding it
-        # with paraphrases was measured, never added recall, and was removed.
         try:
-            hits = self.qdrant_manager.search(
-                self.embedding_manager.encode_query(question),
-                result_limit=config['result_limit'],
-                mode=config['retrieval_mode'],
-                pdf_hashes=pdf_hashes,
-            )
-            seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in hits}
-
-            # Best first, ties broken by chunk id. RRF gives equal scores to
-            # chunks at the same rank in different branches and Qdrant returns
-            # equals in no stable order: one config ranked 117 of 120 questions
-            # differently across campaigns, mostly by adjacent swaps. Every
-            # consumer re-sorts by its own score with a stable sort, so this is
-            # the tie order they all inherit.
-            hits.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
-            neighbours = self._neighbour_candidates(
-                hits, seen_chunks, config.get('retrieval_neighbours', 0))
-            candidates = hits + neighbours
-
-            logger.debug(f"Question: {question}")
-            logger.debug(f"Retrieved {len(candidates)} chunks")
-
-            # The retrieval order: every neighbour after every hit, best first
-            # inside each group. A neighbour inherits its parent's score, so on
-            # the score alone a chunk nothing scored could outrank a hit that
-            # scored lower and take a position retrieval never assigned it.
-            trace.retrieved = (
-                [RetrievedChunk(chunk, score) for chunk, score in hits]
-                + [RetrievedChunk(chunk, score, is_neighbour=True)
-                   for chunk, score in sorted(neighbours, key=lambda c: -c[1])])
-
-            if not candidates:
-                return []
+            candidates, trace.retrieved = self._retrieve(question, config, pdf_hashes)
         finally:
             mark("retrieval")
-
-        # Stage 2: Rerank and Filter (CrossEncoder)
-        if config['rerank_enabled']:
-            reranked = self.reranker.rerank(
-                question,
-                candidates,
-                config['rerank_gate'],
-                config['rerank_margin'],
-                progress_callback=rerank_callback,
-                # Read with defaults rather than added to settings: both exist for
-                # the benchmarks alone, and a setting would ship them as defaults.
-                order_by_retrieval=config.get('rerank_order_by_retrieval', False),
-                absolute_cut=config.get('rerank_absolute', False),
-            )
-        else:
-            # ponytail: bypass keeps the retrieval order so the ablation can
-            # attribute the reranker's contribution; rerank_score mirrors
-            # retrieval_score because nothing rescored the candidates.
-            reranked = [RerankedChunk(chunk=r.chunk, retrieval_score=r.retrieval_score,
-                                      rerank_score=r.retrieval_score)
-                        for r in trace.retrieved]
-
-        trace.reranked = reranked  # already sorted by rerank_score desc
-        mark("rerank")
-
-        if not reranked:
+        if not candidates:
             return []
-        
+
+        trace.reranked = self._rerank(question, candidates, trace.retrieved, config,
+                                      rerank_callback)  # already sorted by rerank_score desc
+        mark("rerank")
+        if not trace.reranked:
+            return []
+
         # Stage 3: Extract answers (QA Model)
         answers = self.reader.extract_answers(
             question,
-            reranked,
+            trace.reranked,
             config,
             color=highlight_color or (1.0, 1.0, 0.0),
             progress_callback=progress_callback,
