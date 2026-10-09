@@ -2,18 +2,27 @@ import json
 import logging
 import os
 import sys
-from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from zotero_rag.answering.highlighter import highlight_pdf
-from zotero_rag.models import Answer
+from zotero_rag.answering.highlighter import answers_by_pdf, highlight_pdf
+from zotero_rag.models import YELLOW, Answer
 from zotero_rag.pipeline import ZoteroRAG
 
 logger = logging.getLogger(__name__)
+
+# No model here: the thresholds in settings.py are calibrated on the
+# pipeline's own models, and the dense one was chosen by the same campaign.
+DEFAULTS = {
+    'output_base_dir': './output',
+    'grobid_url': 'http://localhost:8070',
+    'grobid_timeout': 180,
+    'create_highlighted_pdfs': True,
+    'rebuild_index': False,
+}
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -26,20 +35,8 @@ def load_config(config_path: str) -> dict[str, Any]:
         Configuration dictionary.
     """
     with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # Set defaults
-    config.setdefault('defaults', {})
-    config['defaults'].setdefault('highlight_color', [1, 1, 0])
-    
-    config.setdefault('output_base_dir', './output')
-    # No model here: the thresholds in settings.py are calibrated on the
-    # pipeline's own models, and the dense one was chosen by the same campaign.
-    config.setdefault('grobid_url', 'http://localhost:8070')
-    config.setdefault('grobid_timeout', 180)
-    config.setdefault('create_highlighted_pdfs', True)
-    config.setdefault('rebuild_index', False)
-    
+        config = {**DEFAULTS, **yaml.safe_load(f)}
+    config['defaults'] = {'highlight_color': list(YELLOW), **config.get('defaults', {})}
     return config
 
 
@@ -146,12 +143,8 @@ def answer_questions(rag: ZoteroRAG, questions: list[dict],
 def write_highlighted_pdfs(all_results: dict[str, list[Answer]], output_dir: str) -> None:
     """One highlighted copy per source PDF, carrying every answer drawn from it."""
     logger.info("Creating highlighted PDFs")
-    answers_by_pdf = defaultdict(list)
-    for answers in all_results.values():
-        for answer in answers:
-            answers_by_pdf[answer.pdf_path].append(answer)
-
-    for pdf_path, pdf_answers in answers_by_pdf.items():
+    every_answer = (answer for answers in all_results.values() for answer in answers)
+    for pdf_path, pdf_answers in answers_by_pdf(every_answer).items():
         pdf_filename = Path(pdf_path).stem
         output_path = os.path.join(output_dir, f"{pdf_filename}_highlighted.pdf")
         logger.info(f"Highlighting {pdf_filename} with {len(pdf_answers)} answers")
