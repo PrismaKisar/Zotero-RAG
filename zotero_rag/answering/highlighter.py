@@ -3,6 +3,8 @@
 import logging
 import os
 import tempfile
+from collections import defaultdict
+from collections.abc import Iterable
 
 import fitz  # PyMuPDF
 
@@ -24,6 +26,23 @@ def _boxes(sentence_coords: list[str]) -> list[tuple[int, fitz.Rect]]:
             continue
         boxes.append((int(page) - 1, fitz.Rect(x, y, x + width, y + height)))
     return boxes
+
+
+def answers_by_pdf(answers: Iterable[Answer]) -> dict[str | None, list[Answer]]:
+    """The answers grouped by the PDF they came from, each group in arrival order."""
+    groups = defaultdict(list)
+    for answer in answers:
+        groups[answer.pdf_path].append(answer)
+    return dict(groups)
+
+
+def _note(answer: Answer) -> str:
+    """The note pinned beside an answer's highlight: its question and scores."""
+    return (f"Q: {answer.query}\n\n"
+            f"Scores:\n"
+            f"• Retrieval: {answer.retrieval_score:.4f}\n"
+            f"• Rerank: {answer.rerank_score:.4f}\n"
+            f"• QA Confidence: {answer.score:.4f}")
 
 
 def highlight_pdf(answers: list[Answer], output_path: str) -> str | None:
@@ -54,13 +73,7 @@ def highlight_pdf(answers: list[Answer], output_path: str) -> str | None:
                 highlight.update()
                 if page_number not in noted_pages:
                     noted_pages.add(page_number)
-                    page.add_text_annot(rect.tl, (
-                        f"Q: {answer.query}\n\n"
-                        f"Scores:\n"
-                        f"• Retrieval: {answer.retrieval_score:.4f}\n"
-                        f"• Rerank: {answer.rerank_score:.4f}\n"
-                        f"• QA Confidence: {answer.score:.4f}"
-                    )).update()
+                    page.add_text_annot(rect.tl, _note(answer)).update()
 
         # A full (non-incremental) save to a temporary file, then an atomic
         # replace: the source may be output_path itself.

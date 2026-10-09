@@ -16,7 +16,6 @@ import os
 import queue
 import threading
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from logging.handlers import RotatingFileHandler
@@ -28,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from zotero_rag.answering.highlighter import highlight_pdf
+from zotero_rag.answering.highlighter import answers_by_pdf, highlight_pdf
 from zotero_rag.app.chat_store import ChatStore
 from zotero_rag.ingest.pdf_utils import sanitize_filename
 from zotero_rag.ingest.zotero_db import ZoteroDatabase
@@ -139,10 +138,14 @@ def answer_json(index: int, answer, reference: Reference) -> dict:
     }
 
 
+def _failures(prefix: str, failed: list[dict]) -> list[dict]:
+    return [{"level": "warning", "text": f"{prefix}: {f.get('title', '?')}: {f.get('error', '?')}"}
+            for f in failed]
+
+
 def index_report(ingested, upserted) -> list[dict]:
     """What an ingest and its upsert did, as ``{level, text}`` notices."""
-    report = [{"level": "warning", "text": f"Not cached: {f.get('title', '?')}: {f.get('error', '?')}"}
-              for f in ingested.failed_pdfs]
+    report = _failures("Not cached", ingested.failed_pdfs)
     if upserted is None:
         return [*report, {"level": "info", "text": "No PDF to index."}]
     if upserted.processed_pdfs:
@@ -157,8 +160,7 @@ def index_report(ingested, upserted) -> list[dict]:
     if upserted.duplicate_titles:
         report.append({"level": "warning",
                        "text": "Title already in use: " + ", ".join(upserted.duplicate_titles)})
-    report += [{"level": "warning", "text": f"Failed: {f.get('title', '?')}: {f.get('error', '?')}"}
-               for f in upserted.failed_pdfs]
+    report += _failures("Failed", upserted.failed_pdfs)
     return report
 
 
@@ -325,9 +327,7 @@ def answer_pdf(run: str, index: int):
 def highlight(body: Highlight):
     """Highlight the chosen answers, one PDF per paper."""
     rgb = tuple(int(body.color[i:i + 2], 16) / 255 for i in (1, 3, 5))
-    by_pdf = defaultdict(list)
-    for answer in run_answers(body.run, body.answers):
-        by_pdf[answer.pdf_path].append(replace(answer, color=rgb))
+    by_pdf = answers_by_pdf(replace(a, color=rgb) for a in run_answers(body.run, body.answers))
 
     highlighted_dir().mkdir(parents=True, exist_ok=True)
     files, failed = [], []

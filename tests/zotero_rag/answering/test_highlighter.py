@@ -3,8 +3,13 @@
 
 import fitz
 
-from zotero_rag.answering.highlighter import highlight_pdf
+from zotero_rag.answering.highlighter import answers_by_pdf, highlight_pdf
 from zotero_rag.models import Answer
+
+
+def test_answers_are_grouped_by_their_pdf_in_arrival_order():
+    first, second, other = _answer("a.pdf", []), _answer("a.pdf", ["x"]), _answer("b.pdf", [])
+    assert answers_by_pdf([first, other, second]) == {"a.pdf": [first, second], "b.pdf": [other]}
 
 
 def _pdf(tmp_path, pages=2):

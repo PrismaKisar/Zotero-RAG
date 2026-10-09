@@ -47,7 +47,7 @@ class FakeRAG:
                                      title_overrides=[], duplicate_titles=["Twin"], failed_pdfs=[])
 
 
-import zotero_rag.app.server as server
+from zotero_rag.app import server
 from zotero_rag.models import Answer, Reference
 
 
