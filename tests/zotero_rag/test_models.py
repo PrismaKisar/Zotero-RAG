@@ -14,7 +14,20 @@ from zotero_rag.models import (
     RerankedChunk,
     UploadSource,
     ingest_items_from_folder,
+    ingest_items_from_upload,
 )
+
+
+def test_ingest_items_from_upload_titles_by_file_name_and_skips_none():
+    upload = io.BytesIO(b"%PDF")
+    upload.name = "Attention Is All You Need.pdf"
+    [item] = ingest_items_from_upload([upload, None])
+    assert item.title == "Attention Is All You Need"
+    assert item.source == UploadSource(upload)
+
+
+def test_a_chunk_is_keyed_by_its_paper_and_position():
+    assert Chunk("t", 0, 7, "title", "h").key == ("h", 7)
 
 
 def test_upload_source_compute_hash_matches_stream_hash():
@@ -83,6 +96,14 @@ def test_a_span_across_a_boundary_takes_both_sentences():
     expanded = chunk.expand_to_sentences(4, 12)
     assert expanded.text == "One two. Three four."
     assert expanded.sentence_coords == ["cA", "cB"]
+
+
+def test_a_span_running_past_the_last_sentence_ends_with_it():
+    chunk = _sentenced("One two. Three four. Five.",
+                       [("One two.", "cA"), ("Three four.", "cB"), ("Five.", "cC")])
+    expanded = chunk.expand_to_sentences(22, 99)
+    assert (expanded.text, expanded.start_char, expanded.end_char) == ("Five.", 21, 26)
+    assert expanded.sentence_coords == ["cC"]
 
 
 def test_without_sentences_the_span_is_kept_as_is():

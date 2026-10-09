@@ -2,10 +2,9 @@
 
 import logging
 import os
-from typing import BinaryIO
 
 from zotero_rag.ingest.pdf_utils import is_pdf_hash
-from zotero_rag.models import CachedPDF, PDFIngestItem, UploadSource
+from zotero_rag.models import CachedPDF, PDFIngestItem
 
 logger = logging.getLogger(__name__)
 
@@ -24,31 +23,11 @@ class PDFCacheManager:
         self.folder_path = os.path.abspath(folder_path)
         os.makedirs(self.folder_path, exist_ok=True)
 
-        if not os.path.isdir(self.folder_path):
-            raise ValueError(f"Path is not a directory: {self.folder_path}")
-
         logger.info(f"Initialized PDFCacheManager with folder: {self.folder_path}")
 
-    @staticmethod
-    def get_items_from_upload(uploaded_files: list[BinaryIO]) -> list[PDFIngestItem]:
-        """Convert uploaded files to PDFIngestItem for ingestion.
-        
-        Args:
-            uploaded_files: Binary streams carrying the upload's file name in ``name``.
-            
-        Returns:
-            List of PDFIngestItem objects ready for ingestion.
-        """
-        items: list[PDFIngestItem] = []
-        for uploaded_file in uploaded_files:
-            if uploaded_file is None:
-                logger.warning("Skipping None uploaded file")
-                continue
-
-            title = os.path.splitext(uploaded_file.name)[0]
-            items.append(PDFIngestItem(title=title, source=UploadSource(uploaded_file)))
-
-        return items
+    def _path(self, pdf_hash: str) -> str:
+        """Where the PDF with this hash is cached, whether or not it is."""
+        return os.path.join(self.folder_path, f"{pdf_hash}.pdf")
 
     def ingest_pdf(self, uploaded_pdf: PDFIngestItem) -> CachedPDF:
         """Ingest a PDF from an upload, saving it to the cache folder with a unique hash-based filename.
@@ -63,8 +42,7 @@ class PDFCacheManager:
             raise ValueError("uploaded_pdf cannot be None")
 
         pdf_hash = uploaded_pdf.source.compute_hash()
-        candidate_filename = f"{pdf_hash}.pdf"
-        candidate_path = os.path.join(self.folder_path, candidate_filename)
+        candidate_path = self._path(pdf_hash)
 
         newly_cached = False
         if not os.path.exists(candidate_path):
@@ -97,20 +75,18 @@ class PDFCacheManager:
             logger.warning("PDF hash cannot be empty for PDF removal")
             return False
 
-        candidate_filename = f"{pdf_hash}.pdf"
-        candidate_path = os.path.join(self.folder_path, candidate_filename)
+        candidate_path = self._path(pdf_hash)
 
-        if os.path.exists(candidate_path):
-            try:
-                os.remove(candidate_path)
-                logger.info(f"Removed PDF file: {candidate_path}")
-                return True
-            except OSError as e:
-                logger.error(f"Error removing PDF file '{candidate_path}': {e}")
-                return False
-        else:
+        if not os.path.exists(candidate_path):
             logger.warning(f"PDF file not found for removal: {candidate_path}")
             return False
+        try:
+            os.remove(candidate_path)
+        except OSError as e:
+            logger.error(f"Error removing PDF file '{candidate_path}': {e}")
+            return False
+        logger.info(f"Removed PDF file: {candidate_path}")
+        return True
         
     def clear_pdf_cache(self, deleted_pdfs: dict[str, str]):
         """Clear cached PDF files for deleted entries.
@@ -144,7 +120,7 @@ class PDFCacheManager:
             logger.warning("PDF hash cannot be empty for getting PDF path")
             return None
 
-        candidate_path = os.path.join(self.folder_path, f"{pdf_hash}.pdf")
+        candidate_path = self._path(pdf_hash)
         if os.path.isfile(candidate_path):
             return candidate_path
 

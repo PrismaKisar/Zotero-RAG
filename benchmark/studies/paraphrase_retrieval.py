@@ -202,7 +202,7 @@ def main():
     ids, texts = load_corpus(golden_dir / "chunks")
     position = {chunk_id: i for i, chunk_id in enumerate(ids)}
     embedder = EmbeddingManager()
-    encoded = embedder.encode_chunks(None, texts)
+    encoded = embedder.encode_chunks(texts)
     chunk_vectors = unit_vectors(encoded["dense"])
     index, idf = inverted_index(encoded["sparse"]), idf_table(encoded["sparse"])
 

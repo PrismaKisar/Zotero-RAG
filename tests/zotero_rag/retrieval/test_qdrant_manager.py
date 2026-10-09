@@ -293,6 +293,15 @@ def test_a_papers_reference_is_kept_in_the_registry(open_manager):
     assert manager.reference("unknown") is None
 
 
+def test_a_registered_title_wins_and_a_taken_one_is_refused(open_manager):
+    manager = open_manager()
+    assert manager.register_pdf_title("p1", "Paper one") == "Paper one"
+    assert manager.register_pdf_title("p1", "Renamed") == "Paper one"
+    assert manager.register_pdf_title("p2", "Paper one") is None
+    assert manager.is_pdf_indexed("p1") and not manager.is_pdf_indexed("p2")
+    assert manager.find_pdf_hash_by_title("Paper one") == "p1"
+
+
 def test_a_reference_for_a_paper_with_no_registry_entry_is_skipped(open_manager):
     manager = open_manager()
     manager.set_reference("never-registered", Reference(["X"], "2020"))

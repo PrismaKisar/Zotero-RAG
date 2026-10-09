@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 # Qdrant's own RRF constant, kept so client-side fusion ranks exactly as it did.
 RRF_K = 2
+# Point ids are derived from it: changing it orphans every point already indexed.
+POINT_ID_NAMESPACE = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+
+def best_first(hit: tuple[Chunk, float]) -> tuple:
+    """Sort key for (chunk, score) hits: best score first, ties broken by chunk id."""
+    chunk, score = hit
+    return -score, *chunk.key
 
 
 def _reports_unreachable(method):
@@ -86,7 +94,7 @@ class QdrantManager:
         return re.sub(r'[^a-zA-Z0-9_-]', '_', model_short)
     
     @staticmethod
-    def _generate_point_id(pdf_hash: str, chunk_index: int) -> str:
+    def _generate_point_id(pdf_hash: str, chunk_index: int | None) -> str:
         """Generate a unique point ID for Qdrant.
         
         Args:
@@ -96,12 +104,8 @@ class QdrantManager:
         Returns:
             A deterministic UUID string based on the PDF hash and chunk index.
         """
-        if chunk_index is None:
-            input_str = f"{pdf_hash}"
-        else:
-            input_str = f"{pdf_hash}_{chunk_index}"
-        NAMESPACE_RAG = uuid.UUID("12345678-1234-5678-1234-567812345678")
-        return str(uuid.uuid5(NAMESPACE_RAG, input_str))
+        name = pdf_hash if chunk_index is None else f"{pdf_hash}_{chunk_index}"
+        return str(uuid.uuid5(POINT_ID_NAMESPACE, name))
 
     def _unreachable(self) -> ConnectionError:
         if self.qdrant_url is None:
@@ -215,24 +219,13 @@ class QdrantManager:
                 vectors_config=None,
             )
 
-            # Create an index on 'models' payload field for efficient lookups
-            client.create_payload_index(
-                collection_name=self.registry_collection,
-                field_name="models",
-                field_schema=qmodels.KeywordIndexParams(
-                    type="keyword",
-                    enable_hnsw=False,
-                ),
-            )
-            # Create an index on title to allow lookups by name
-            client.create_payload_index(
-                collection_name=self.registry_collection,
-                field_name="title",
-                field_schema=qmodels.KeywordIndexParams(
-                    type="keyword",
-                    enable_hnsw=False,
-                ),
-            )
+            # The registry is looked up by model and by title.
+            for field_name in ("models", "title"):
+                client.create_payload_index(
+                    collection_name=self.registry_collection,
+                    field_name=field_name,
+                    field_schema=qmodels.KeywordIndexParams(type="keyword", enable_hnsw=False),
+                )
             logger.info(f"Created Qdrant registry collection: {self.registry_collection}")
         else:
             logger.info(f"Qdrant registry collection already exists: {self.registry_collection}")
@@ -243,9 +236,24 @@ class QdrantManager:
         """The registry entries this manager's dense model has indexed."""
         return _match("models", self.dense_model_name)
 
+    @staticmethod
+    def _registry_id(pdf_hash: str) -> str:
+        return QdrantManager._generate_point_id(pdf_hash, None)
+
+    def _first_registry_point(self, *conditions, with_payload=False):
+        """The first registry point matching every condition, or None."""
+        points, _ = self.client.scroll(
+            collection_name=self.registry_collection,
+            scroll_filter=qmodels.Filter(must=list(conditions)),
+            limit=1,
+            with_payload=with_payload,
+            with_vectors=False,
+        )
+        return points[0] if points else None
+
     def _registry_entry(self, pdf_hash: str) -> tuple[str, dict | None]:
         """The PDF's registry point id, and its payload, None when it has no entry."""
-        registry_id = QdrantManager._generate_point_id(pdf_hash, None)
+        registry_id = QdrantManager._registry_id(pdf_hash)
         points = self.client.retrieve(collection_name=self.registry_collection, ids=[registry_id],
                                       with_payload=True, with_vectors=False)
         return registry_id, (points[0].payload or {}) if points else None
@@ -260,18 +268,10 @@ class QdrantManager:
         Returns:
             True if the pdf is already indexed, False otherwise.
         """
-        registry_id = QdrantManager._generate_point_id(pdf_hash, None)
-        flt = qmodels.Filter(must=[qmodels.HasIdCondition(has_id=[registry_id]),
-                                   self._indexed_by_this_model()])
-
-        points, _ = self.client.scroll(
-            collection_name=self.registry_collection,
-            scroll_filter=flt,
-            limit=1,
-            with_payload=False,
-            with_vectors=False,
-        )
-        return bool(points)
+        return self._first_registry_point(
+            qmodels.HasIdCondition(has_id=[QdrantManager._registry_id(pdf_hash)]),
+            self._indexed_by_this_model(),
+        ) is not None
     
     @_reports_unreachable
     def list_indexed_pdfs(self) -> list[dict[str, str]]:
@@ -331,43 +331,27 @@ class QdrantManager:
         if len(sparse_embeddings) != len(chunks):
             raise ValueError("Sparse embeddings count does not match chunks count.")
 
-        points = []
-        pdf_indexed_titles: dict[str, str] = {}
-        for i, chunk in enumerate(chunks):
-            point_id = QdrantManager._generate_point_id(chunk.pdf_hash, chunk.chunk_index)
-            pdf_indexed_titles.setdefault(chunk.pdf_hash, chunk.title)
-
-            vector_config = {
-                "": dense_embeddings[i],
-                "text-sparse": sparse_embeddings[i]
-            }
-
-            point = qmodels.PointStruct(
-                id=point_id,
-                vector=vector_config,
-                payload={
-                    'text': chunk.text,
-                    'page_number': chunk.page_number,
-                    'chunk_index': chunk.chunk_index,
-                    'title': chunk.title,
-                    'pdf_hash': chunk.pdf_hash,
-                    'section': chunk.section,
-                    'sentences': chunk.sentences
-                }
+        points = [
+            qmodels.PointStruct(
+                id=QdrantManager._generate_point_id(*chunk.key),
+                vector={"": dense, "text-sparse": sparse},
+                payload=asdict(chunk),
             )
-            points.append(point)
+            for chunk, dense, sparse in zip(chunks, dense_embeddings, sparse_embeddings, strict=True)
+        ]
+        pdf_indexed_titles: dict[str, str] = {}
+        for chunk in chunks:
+            pdf_indexed_titles.setdefault(chunk.pdf_hash, chunk.title)
 
         # Upsert points in batches to avoid memory issues
         batch_size = 100
         for i in range(0, len(points), batch_size):
-            batch_points = points[i:i + batch_size]
-            self.client.upsert(
-                collection_name=self.chunk_collection,
-                points=batch_points
-            )
+            self.client.upsert(collection_name=self.chunk_collection,
+                               points=points[i:i + batch_size])
             if progress_callback:
-                progress_callback('upserting', min(i + batch_size, len(points)), len(points), 
-                                f"Upserted {min(i + batch_size, len(points))}/{len(points)} chunks...")
+                done = min(i + batch_size, len(points))
+                progress_callback('upserting', done, len(points),
+                                  f"Upserted {done}/{len(points)} chunks...")
         logger.info(f"Upserted {len(points)} chunks into Qdrant chunk collection: {self.chunk_collection}")
 
         # Update the registry collection with indexed PDFs
@@ -400,8 +384,7 @@ class QdrantManager:
         registry_id, existing = self._registry_entry(pdf_hash)
 
         normalized_title = (title or "").strip()
-        payload = existing or {}
-        current_title = (payload.get("title") or "").strip() or None
+        current_title = ((existing or {}).get("title") or "").strip() or None
 
         owner = self.find_pdf_hash_by_title(normalized_title, filter_by_model=False)
         if owner and owner != pdf_hash:
@@ -413,19 +396,14 @@ class QdrantManager:
             return current_title
 
         if existing is not None:
-            models = payload.get("models") or []
+            models = existing.get("models") or []
             if self.dense_model_name not in models:
                 models.append(self.dense_model_name)
-
+            # The title it was first registered under wins over a new one.
             primary_title = current_title or normalized_title
-            update_payload = {
-                "pdf_hash": pdf_hash,
-                "models": models,
-                "title": primary_title or "",
-            }
             self.client.set_payload(
                 collection_name=self.registry_collection,
-                payload=update_payload,
+                payload={"pdf_hash": pdf_hash, "models": models, "title": primary_title},
                 points=[registry_id],
             )
             return primary_title or None
@@ -484,24 +462,11 @@ class QdrantManager:
         if not title:
             return None
 
-        must_conditions = [_match("title", title)]
+        conditions = [_match("title", title)]
         if filter_by_model:
-            must_conditions.append(self._indexed_by_this_model())
-        flt = qmodels.Filter(must=must_conditions)
-
-        points, _ = self.client.scroll(
-            collection_name=self.registry_collection,
-            scroll_filter=flt,
-            limit=1,
-            with_payload=["pdf_hash"],
-            with_vectors=False,
-        )
-
-        if not points:
-            return None
-
-        payload = points[0].payload or {}
-        return payload.get("pdf_hash")
+            conditions.append(self._indexed_by_this_model())
+        point = self._first_registry_point(*conditions, with_payload=["pdf_hash"])
+        return (point.payload or {}).get("pdf_hash") if point else None
 
     @_reports_unreachable
     def delete_pdf_from_index(self, pdf_hash: str) -> bool:
@@ -614,7 +579,7 @@ class QdrantManager:
     @staticmethod
     def rank_branch(hits: list[tuple[Chunk, float]], limit: int) -> list[tuple[Chunk, float]]:
         """The top ``limit`` of one branch, best first, ties broken by chunk id."""
-        return sorted(hits, key=lambda h: (-h[1], h[0].pdf_hash, h[0].chunk_index))[:limit]
+        return sorted(hits, key=best_first)[:limit]
 
     @staticmethod
     def rrf_fuse(branches: list[list[tuple[Chunk, float]]], limit: int,
@@ -631,9 +596,9 @@ class QdrantManager:
         fused: dict[tuple[str, int], list] = {}
         for branch in branches:
             for rank, (chunk, _) in enumerate(branch):
-                entry = fused.setdefault((chunk.pdf_hash, chunk.chunk_index), [chunk, 0.0])
+                entry = fused.setdefault(chunk.key, [chunk, 0.0])
                 entry[1] += 1.0 / (k + rank)
-        return QdrantManager.rank_branch([(c, s) for c, s in fused.values()], limit)
+        return QdrantManager.rank_branch([tuple(entry) for entry in fused.values()], limit)
 
     @staticmethod
     def _chunk_from_payload(payload: dict) -> Chunk:

@@ -56,12 +56,13 @@ class EmbeddingManager:
         """Return the dense embedding dimensionality."""
         return self.dense_model.get_embedding_dimension()
 
-    def encode_chunks(self, progress_callback, all_texts: list[str]) -> dict[str, list[float]]:
+    def encode_chunks(self, all_texts: list[str],
+                      progress_callback=None) -> dict[str, list[float]]:
         """Encode chunks into dense+sparse vectors with progress updates.
         
         Args:
-            progress_callback: Function to call with progress updates (stage, current, total, message).
             all_texts: List of chunk texts to encode.
+            progress_callback: Function to call with progress updates (stage, current, total, message).
         
         Returns:
             Dictionary with 'dense' and 'sparse' keys containing the respective embeddings.
@@ -69,13 +70,9 @@ class EmbeddingManager:
         if not all_texts:
             return {"dense": [], "sparse": []}
 
-        if progress_callback:
-            progress_callback(
-                "encoding",
-                0,
-                len(all_texts),
-                f"Encoding with batch size {self.encode_batch_size}...",
-            )
+        progress = progress_callback or (lambda *_: None)
+        progress("encoding", 0, len(all_texts),
+                 f"Encoding with batch size {self.encode_batch_size}...")
 
         dense_embeddings_list = []
         sparse_embeddings_list = []
@@ -86,14 +83,9 @@ class EmbeddingManager:
                 self.dense_model.encode_document(batch, batch_size=len(batch)))
             sparse_embeddings_list.extend(_sparse(res) for res in self.sparse_model.embed(batch))
 
-            processed = min(i + len(batch), len(all_texts))
-            if progress_callback:
-                progress_callback(
-                    "encoding",
-                    processed,
-                    len(all_texts),
-                    f"Encoded {processed}/{len(all_texts)} chunks...",
-                )
+            processed = i + len(batch)
+            progress("encoding", processed, len(all_texts),
+                     f"Encoded {processed}/{len(all_texts)} chunks...")
 
         return {
             "dense": np.vstack(dense_embeddings_list).tolist(),

@@ -155,7 +155,7 @@ def main():
     position = {chunk_id: i for i, chunk_id in enumerate(ids)}
     embedder = EmbeddingManager()
 
-    chunk_vectors = unit_vectors(embedder.encode_chunks(None, texts)["dense"])
+    chunk_vectors = unit_vectors(embedder.encode_chunks(texts)["dense"])
     questions = []
     for record in load_jsonl(golden_dir / "golden_set_aligned.jsonl"):
         gold = [position[g] for g in gold_ids(record) if g in position]

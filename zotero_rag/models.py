@@ -1,11 +1,16 @@
 """Data models for the Zotero RAG system."""
 
+import os
 import shutil
 from dataclasses import dataclass, field, fields
+from itertools import accumulate
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from zotero_rag.ingest.pdf_utils import compute_file_hash, compute_stream_hash
+
+# The highlight colour when none is chosen, as RGB in 0-1.
+YELLOW = (1.0, 1.0, 0.0)
 
 
 @dataclass
@@ -29,6 +34,11 @@ class Chunk:
     section: str = "body"  # section type: body, abstract, intro, etc.
     sentences: list[tuple[str, str]] = field(default_factory=list)  # List of (sentence_text, coords)
 
+    @property
+    def key(self) -> tuple[str, int]:
+        """The chunk's identity: its paper and its position in it."""
+        return self.pdf_hash, self.chunk_index
+
     def expand_to_sentences(self, start_char: int, end_char: int) -> "ExpandedAnswerSpan":
         """Widen a character span to the complete sentences it touches.
 
@@ -50,42 +60,15 @@ class Chunk:
                 sentence_coords=[],
             )
 
-        # Map character positions to sentences
-        start_sentence_idx = -1
-        end_sentence_idx = -1
+        # Where each sentence ends, counting the one space after it.
+        bounds = list(accumulate(len(text) + 1 for text, _ in self.sentences))
+        last = next((i for i, bound in enumerate(bounds) if end_char <= bound), len(bounds) - 1)
+        first = next((i for i, bound in enumerate(bounds[:last + 1]) if start_char < bound), 0)
 
-        current_pos = 0
-        for i, (sent_text, _) in enumerate(self.sentences):
-            sent_len = len(sent_text)
-            sent_end = current_pos + sent_len
-
-            # Check if answer start falls in this sentence
-            if start_sentence_idx == -1 and start_char < sent_end + 1:
-                start_sentence_idx = i
-
-            # Check if answer end falls in this sentence
-            if end_char <= sent_end + 1:
-                end_sentence_idx = i
-                break
-
-            current_pos += sent_len + 1  # +1 for space between sentences
-
-        if start_sentence_idx == -1:
-            start_sentence_idx = 0
-        if end_sentence_idx == -1:
-            end_sentence_idx = len(self.sentences) - 1
-
-        # Extract full text of all involved sentences
-        involved_sentences = self.sentences[start_sentence_idx : end_sentence_idx + 1]
-
-        expanded_text = " ".join(s[0] for s in involved_sentences)
-        sentence_coords = [s[1] for s in involved_sentences if s[1]]
-
-        # Calculate new start/end relative to the whole chunk text
-        new_start = 0
-        for i in range(start_sentence_idx):
-            new_start += len(self.sentences[i][0]) + 1
-
+        involved_sentences = self.sentences[first:last + 1]
+        expanded_text = " ".join(text for text, _ in involved_sentences)
+        sentence_coords = [coords for _, coords in involved_sentences if coords]
+        new_start = bounds[first - 1] if first else 0
         new_end = new_start + len(expanded_text)
 
         return ExpandedAnswerSpan(
@@ -166,7 +149,7 @@ class Answer:
     end_char: int = 0  # Character position in context where answer ends
     score: float = 0.0  # QA model confidence score
     query: str = ""
-    color: tuple[float, float, float] = field(default_factory=lambda: (1, 1, 0))
+    color: tuple[float, float, float] = YELLOW
     sentence_coords: list[str] = field(default_factory=list)  # TEI coordinates for highlighting
     retrieval_score: float = 0.0  # Semantic search distance/score
     rerank_score: float = 0.0  # CrossEncoder reranking score
@@ -203,7 +186,7 @@ class Reader(Protocol):
     generation_failures: int
 
     def extract_answers(self, question: str, candidates: list[RerankedChunk],
-                        config: dict, color: tuple[float, float, float] = (1, 1, 0),
+                        config: dict, color: tuple[float, float, float] = YELLOW,
                         progress_callback=None) -> list[Answer]:
         ...
 
@@ -336,3 +319,13 @@ def ingest_items_from_folder(folder_path: str) -> list[PDFIngestItem]:
 
     return [PDFIngestItem(title=pdf.stem, source=PathSource(str(pdf)))
             for pdf in sorted(folder.glob("*.pdf"))]
+
+
+def ingest_items_from_upload(uploaded_files: list[BinaryIO]) -> list[PDFIngestItem]:
+    """One PDFIngestItem per upload, titled by its file name's stem; None entries are skipped.
+
+    Args:
+        uploaded_files: Binary streams carrying the upload's file name in ``name``.
+    """
+    return [PDFIngestItem(title=os.path.splitext(upload.name)[0], source=UploadSource(upload))
+            for upload in uploaded_files if upload is not None]

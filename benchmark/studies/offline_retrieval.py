@@ -114,7 +114,7 @@ class HybridSearch:
         self.text_of = dict(zip(self.ids, texts, strict=True))
         self.paper_of = np.array([paper for paper, _ in self.ids])
         self.embedder = EmbeddingManager()
-        encoded = self.embedder.encode_chunks(None, texts)
+        encoded = self.embedder.encode_chunks(texts)
         self.vectors = unit_vectors(encoded["dense"])
         self.index, self.idf = inverted_index(encoded["sparse"]), idf_table(encoded["sparse"])
 

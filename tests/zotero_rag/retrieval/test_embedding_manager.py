@@ -87,7 +87,7 @@ def test_missing_batch_size_falls_back_to_the_default(requested):
 def test_encode_chunks_uses_the_document_prompt_in_configured_batches():
     manager = em.EmbeddingManager(device="cpu", encode_batch_size=3)
 
-    encoded = manager.encode_chunks(None, [f"chunk {i}" for i in range(7)])
+    encoded = manager.encode_chunks([f"chunk {i}" for i in range(7)])
 
     assert manager.dense_model.calls == [("document", 3), ("document", 3), ("document", 1)]
     assert len(encoded["dense"]) == len(encoded["sparse"]) == 7

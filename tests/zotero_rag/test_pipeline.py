@@ -277,7 +277,7 @@ class _Embedder:
     def __init__(self):
         self.encoded = None
 
-    def encode_chunks(self, progress_callback, all_texts):
+    def encode_chunks(self, all_texts, progress_callback=None):
         self.encoded = list(all_texts)
         return {"dense": [[0.0]] * len(all_texts), "sparse": [{}] * len(all_texts)}
 

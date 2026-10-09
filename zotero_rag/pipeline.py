@@ -17,6 +17,7 @@ from zotero_rag.ingest.pdf_cache_manager import PDFCacheManager
 from zotero_rag.ingest.pdf_processor import PDFProcessor
 from zotero_rag.ingest.zotero_db import ZoteroDatabase
 from zotero_rag.models import (
+    YELLOW,
     Answer,
     CachedPDF,
     Chunk,
@@ -29,9 +30,10 @@ from zotero_rag.models import (
     RetrievedChunk,
     UpsertResult,
     ingest_items_from_folder,
+    ingest_items_from_upload,
 )
 from zotero_rag.retrieval.embedding_manager import DEFAULT_DENSE_MODEL, EmbeddingManager
-from zotero_rag.retrieval.qdrant_manager import QdrantManager
+from zotero_rag.retrieval.qdrant_manager import QdrantManager, best_first
 from zotero_rag.retrieval.reranker import DEFAULT_RERANKER_MODEL, Reranker
 from zotero_rag.settings import resolve
 
@@ -77,13 +79,12 @@ class ZoteroRAG:
             reader: The reader to answer with. None builds the delivered one,
                 the extractive reader; a benchmark passes the reader it measures.
         """
-        self.output_base_dir = output_base_dir
         pdf_cache = PDFCacheManager(folder_path=os.path.join(output_base_dir, "pdf_cache"))
 
         pdf_processor = PDFProcessor(
             grobid_url=grobid_url,
             grobid_timeout=grobid_timeout,
-            output_base_dir=self.output_base_dir
+            output_base_dir=output_base_dir
         )
 
         embedding_manager = EmbeddingManager(
@@ -208,9 +209,7 @@ class ZoteroRAG:
         for uploaded_pdf in uploaded_pdfs:
             try:
                 cached_pdf = self.pdf_cache.ingest_pdf(uploaded_pdf)
-                if cached_pdf.pdf_hash in by_hash:
-                    continue
-                by_hash[cached_pdf.pdf_hash] = cached_pdf
+                by_hash.setdefault(cached_pdf.pdf_hash, cached_pdf)
             except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
                 logger.error(f"Error ingesting PDF '{uploaded_pdf.title}': {e!s}")
                 result.failed_pdfs.append(
@@ -229,10 +228,7 @@ class ZoteroRAG:
         Returns:
             IngestResult with summary and error details.
         """
-        if not uploaded_pdfs:
-            raise ValueError("uploaded_pdfs cannot be empty")
-        
-        return self._ingest_pdfs(PDFCacheManager.get_items_from_upload(uploaded_pdfs))
+        return self._ingest_pdfs(ingest_items_from_upload(uploaded_pdfs))
         
     def ingest_pdfs_from_zotero(self, zotero_collection: str | None = None,
                                 zotero_data_dir: str | None = None) -> IngestResult:
@@ -266,6 +262,11 @@ class ZoteroRAG:
 
         return self._ingest_pdfs(items)
 
+    def _remove_cached_files(self, pdf_hash: str) -> None:
+        """Drop the paper's cached PDF and TEI."""
+        self.pdf_cache.remove_pdf(pdf_hash)
+        self.pdf_processor.remove_tei_cache(pdf_hash)
+
     def _rollback_pdfs(self, newly_cached_hashes: set[str], failed_hashes: set[str]) -> None:
         """Rollback cached PDFs that were newly cached during the current upsert if they failed to index.
 
@@ -275,8 +276,7 @@ class ZoteroRAG:
         """
         for pdf_hash in newly_cached_hashes & failed_hashes:
             try:
-                self.pdf_cache.remove_pdf(pdf_hash)
-                self.pdf_processor.remove_tei_cache(pdf_hash)
+                self._remove_cached_files(pdf_hash)
                 logger.debug("Rolled back PDF from cache: %s", pdf_hash)
             except Exception as e:  # noqa: BLE001 - rollback is best-effort
                 logger.error("Error rolling back PDF '%s': %s", pdf_hash, str(e))
@@ -339,22 +339,17 @@ class ZoteroRAG:
         """
         all_chunks = []
         processed = set()
+        total = len(target_pdfs)
+        progress = progress_callback or (lambda *_: None)
         for idx, item in enumerate(target_pdfs):
             title = item.title
             pdf_hash = item.pdf_hash
-            if progress_callback:
-                progress_callback(
-                    'pdf',
-                    idx,
-                    len(target_pdfs),
-                    f"Analysing PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
-                )
+            progress('pdf', idx, total, f"Analysing PDF {idx + 1}/{total}: {title[:80]}")
 
             try:
                 skip = self._skip_message(item, result, newly_cached_hashes)
                 if skip:
-                    if progress_callback:
-                        progress_callback('pdf', idx + 1, len(target_pdfs), skip)
+                    progress('pdf', idx + 1, total, skip)
                     continue
 
                 canonical_title = self.qdrant_manager.register_pdf_title(pdf_hash, title)
@@ -371,28 +366,13 @@ class ZoteroRAG:
                     pdf_hash, item.reference or self.pdf_processor.extract_reference(pdf_hash))
 
                 processed.add(pdf_hash)
-                for extracted in extracted_chunks:
-                    chunk = Chunk(
-                        text=extracted.text,
-                        page_number=extracted.page_number,
-                        chunk_index=extracted.chunk_index,
-                        title=title,
-                        pdf_hash=pdf_hash,
-                        section=extracted.section,
-                        sentences=extracted.sentences
-                    )
-                    all_chunks.append(chunk)
+                all_chunks.extend(Chunk(**vars(extracted), title=title, pdf_hash=pdf_hash)
+                                  for extracted in extracted_chunks)
             except Exception as e:  # noqa: BLE001 - per-PDF: record the failure and continue
                 logger.error("Failed to process PDF '%s': %s", title, str(e))
                 result.failed_pdfs.append({"title": title, "error": str(e), "pdf_hash": pdf_hash})
 
-            if progress_callback:
-                progress_callback(
-                    'pdf',
-                    idx + 1,
-                    len(target_pdfs),
-                    f"Analysed PDF {idx + 1}/{len(target_pdfs)}: {title[:80]}",
-                )
+            progress('pdf', idx + 1, total, f"Analysed PDF {idx + 1}/{total}: {title[:80]}")
         return all_chunks, processed
 
     def upsert_pdfs(self, target_pdfs: list[CachedPDF], progress_callback=None) -> UpsertResult:
@@ -404,7 +384,7 @@ class ZoteroRAG:
         Returns:
             UpsertResult with indexing summary and warning/error details.
         """
-        if target_pdfs is None or target_pdfs == []:
+        if not target_pdfs:
             raise ValueError("No new PDFs provided for upsert. Skipping indexing stage.")
 
         result = UpsertResult()
@@ -430,7 +410,7 @@ class ZoteroRAG:
 
             # Stage 2: embed and index
             hybrid_embeddings = self.embedding_manager.encode_chunks(
-                progress_callback, [c.text for c in all_chunks])
+                [c.text for c in all_chunks], progress_callback)
 
             indexed_chunks, title_overrides = self.qdrant_manager.upsert_chunks(
                 all_chunks,
@@ -469,8 +449,7 @@ class ZoteroRAG:
                 return False
 
             if not self.qdrant_manager.delete_pdf_from_index(pdf_hash):
-                self.pdf_processor.remove_tei_cache(pdf_hash)
-                self.pdf_cache.remove_pdf(pdf_hash)
+                self._remove_cached_files(pdf_hash)
             logger.info("Successfully deleted chunks for PDF: %s", pdf_title)
             return True
         except Exception as e:  # noqa: BLE001 - failure reported to the caller as False
@@ -538,13 +517,10 @@ class ZoteroRAG:
         if not wanted:
             return []
 
-        ids = list(wanted)
-        chunks = self.qdrant_manager.fetch_chunks(ids)
         found = []
-        for chunk in chunks:
-            chunk_id = (chunk.pdf_hash, chunk.chunk_index)
-            seen.add(chunk_id)
-            found.append((chunk, wanted[chunk_id]))
+        for chunk in self.qdrant_manager.fetch_chunks(list(wanted)):
+            seen.add(chunk.key)
+            found.append((chunk, wanted[chunk.key]))
 
         logger.debug(f"Neighbour expansion (span {span}): "
                      f"{len(found)} added to {len(retrieved)} retrieved")
@@ -567,7 +543,7 @@ class ZoteroRAG:
             mode=config['retrieval_mode'],
             pdf_hashes=pdf_hashes,
         )
-        seen_chunks = {(chunk.pdf_hash, chunk.chunk_index) for chunk, _ in hits}
+        seen_chunks = {chunk.key for chunk, _ in hits}
 
         # Best first, ties broken by chunk id. RRF gives equal scores to
         # chunks at the same rank in different branches and Qdrant returns
@@ -575,7 +551,7 @@ class ZoteroRAG:
         # differently across campaigns, mostly by adjacent swaps. Every
         # consumer re-sorts by its own score with a stable sort, so this is
         # the tie order they all inherit.
-        hits.sort(key=lambda c: (-c[1], c[0].pdf_hash, c[0].chunk_index))
+        hits.sort(key=best_first)
         neighbours = self._neighbour_candidates(
             hits, seen_chunks, config.get('retrieval_neighbours', 0))
 
@@ -675,7 +651,7 @@ class ZoteroRAG:
             question,
             trace.reranked,
             config,
-            color=highlight_color or (1.0, 1.0, 0.0),
+            color=highlight_color or YELLOW,
             progress_callback=progress_callback,
         )
         mark("read")
