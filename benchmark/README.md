@@ -41,15 +41,15 @@ dimensioni fissate sono quelle indicizzate.
 
 ```
 A=runs/archive
-python -m benchmark.build_qasper_golden_set $A/output_qasper/golden_gold.json \
+python -m benchmark.datasets.build_qasper_golden_set $A/output_qasper/golden_gold.json \
     $A/output_qasper_test/golden_gold.json --pdf-pool $A/output_qasper/pdfs \
     $A/output_qasper_test/pdfs --papers 240 --out-dir data/dev/qasper
-python -m benchmark.build_qasper_golden_set data/raw/qasper-dev-v0.3.json \
+python -m benchmark.datasets.build_qasper_golden_set data/raw/qasper-dev-v0.3.json \
     --exclude-papers $A/output_qasper/golden_set.jsonl \
     --pdf-pool $A/output_final_qasper/pdfs --papers 60 --out-dir data/heldout/qasper
-python -m benchmark.build_qasa_golden_set data/raw/testset_answerable_1554_v1.1.json \
+python -m benchmark.datasets.build_qasa_golden_set data/raw/testset_answerable_1554_v1.1.json \
     --pdf-pool $A/output_qasa/pdfs --papers 40 --out-dir data/dev/qasa
-python -m benchmark.build_qasa_golden_set data/raw/testset_answerable_1554_v1.1.json \
+python -m benchmark.datasets.build_qasa_golden_set data/raw/testset_answerable_1554_v1.1.json \
     --exclude-papers $A/output_qasa/golden_set.jsonl \
     --pdf-pool $A/output_final_qasa/pdfs --papers 10 --out-dir data/heldout/qasa
 ```
@@ -77,9 +77,9 @@ dopo aver guardato i risultati lo trasforma in un secondo set di sviluppo.
 Richiede GROBID attivo (`docker compose up -d grobid`). Per ogni set:
 
 ```
-python -m benchmark.extract_chunks --pdf-dir data/dev/qasper/pdfs \
+python -m benchmark.datasets.extract_chunks --pdf-dir data/dev/qasper/pdfs \
     --out-dir data/dev/qasper/chunks --work-dir data/dev/grobid
-python -m benchmark.align_evidence data/dev/qasper/golden_set.jsonl \
+python -m benchmark.datasets.align_evidence data/dev/qasper/golden_set.jsonl \
     --chunks-dir data/dev/qasper/chunks --out-dir data/dev/qasper --sample 30 --seed 42
 ```
 
@@ -126,7 +126,7 @@ mappa `{paper_id: pdf_hash}` che lo scoring usa per legare le domande ai chunk
 indicizzati. Richiede GROBID e Qdrant attivi.
 
 ```
-python -m benchmark.index_pdfs --pdf-dir data/dev/qasper/pdfs \
+python -m benchmark.datasets.index_pdfs --pdf-dir data/dev/qasper/pdfs \
     --out-file data/dev/qasper/pdf_hash_map.json --work-dir data/dev/grobid \
     --qdrant-collection-suffix _dev
 ```
@@ -143,7 +143,7 @@ non c'è più: il codice che l'ha prodotta sta nella history.
 ## Campagne
 
 ```
-python -m benchmark.ablation --golden-dir data/dev/qasper \
+python -m benchmark.campaigns.ablation --golden-dir data/dev/qasper \
     --hash-map data/dev/qasper/pdf_hash_map.json --work-dir data/dev/grobid \
     --out-file runs/dev/ablation/qasper/ablation_results.csv \
     --strata-file runs/dev/ablation/qasper/ablation_by_stratum.md --collection-suffix _dev
@@ -173,7 +173,7 @@ sul `golden_gold.json` prodotto dal builder, non sul rilascio completo, altrimen
 conta come predizioni mancanti tutte le domande escluse dal golden set.
 
 ```
-python benchmark/qasper_evaluator.py \
+python benchmark/metrics/qasper_evaluator.py \
     --predictions predictions.jsonl \
     --gold data/dev/qasper/golden_gold.json \
     --text_evidence_only
@@ -219,7 +219,7 @@ marcati come non interpretabili anziché essere taciuti.
 ### Confronto tra i due dataset (`compare_datasets.py`)
 
 ```
-python -m benchmark.compare_datasets \
+python -m benchmark.datasets.compare_datasets \
     --dataset QASPER=data/dev/qasper --dataset QASA=data/dev/qasa \
     --out-file runs/dev/dataset_comparison.md
 ```

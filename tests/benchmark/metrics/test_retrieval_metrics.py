@@ -1,0 +1,153 @@
+import pytest
+
+from benchmark.metrics.retrieval_metrics import (
+    aggregate,
+    bootstrap_ci,
+    evidence_prf,
+    format_delta,
+    per_question_scores,
+    recall_at_k,
+    reciprocal_rank,
+    summarize,
+)
+
+
+def test_format_delta_is_the_signed_mean_and_its_bootstrap_ci():
+    deltas = [0.1, -0.05, 0.2, 0.0]
+    low, high = bootstrap_ci(deltas)
+    assert format_delta(deltas) == f"+0.062 [{low:+.3f}, {high:+.3f}]"
+    assert format_delta([-0.5]) == "-0.500 [-0.500, -0.500]"
+
+
+def test_recall_at_k_counts_fraction_of_gold_found():
+    assert recall_at_k(["a", "b", "c"], {"a", "c"}, k=2) == 0.5
+    assert recall_at_k(["a", "b", "c"], {"a", "c"}, k=3) == 1.0
+
+
+def test_recall_at_k_truncates_to_k():
+    assert recall_at_k(["a", "b", "c"], {"c"}, k=1) == 0.0
+
+
+def test_recall_at_k_rejects_empty_gold():
+    with pytest.raises(ValueError):
+        recall_at_k(["a"], set(), k=1)
+
+
+def test_attribution_not_recall_is_what_sees_over_returning():
+    """Pins which metric carries the job precision@k was removed from.
+
+    Recall@k cannot fall when extra non-gold chunks are returned; the
+    attribution metrics can, because they score what the system committed to.
+    """
+    ranked, gold = ["a", "x", "y", "z"], {"a"}
+    assert recall_at_k(ranked, gold, k=4) == 1.0
+    assert evidence_prf(ranked, gold)["evidence_precision"] == 0.25
+
+
+def test_reciprocal_rank_of_first_hit():
+    assert reciprocal_rank(["x", "a", "b"], {"a"}) == 0.5
+    assert reciprocal_rank(["a", "x", "b"], {"a"}) == 1.0
+
+
+def test_reciprocal_rank_zero_when_gold_absent():
+    assert reciprocal_rank(["x", "y"], {"a"}) == 0.0
+
+
+def test_evidence_prf_on_ids():
+    perfect = evidence_prf({"a", "b"}, {"a", "b"})
+    assert perfect == {"evidence_precision": 1.0, "evidence_recall": 1.0, "evidence_f1": 1.0}
+
+    partial = evidence_prf({"a", "x"}, {"a", "b"})
+    assert partial["evidence_precision"] == 0.5
+    assert partial["evidence_recall"] == 0.5
+    assert partial["evidence_f1"] == 0.5
+
+    assert evidence_prf({"x"}, {"a"})["evidence_f1"] == 0.0
+    assert evidence_prf(set(), {"a"})["evidence_f1"] == 0.0
+
+
+def test_evidence_prf_rewards_precision_unlike_recall_at_k():
+    """A run that highlights the whole paper has perfect recall but poor F1."""
+    everything = evidence_prf(set("abcdefghij"), {"a"})
+    assert everything["evidence_recall"] == 1.0
+    assert everything["evidence_precision"] == 0.1
+    assert everything["evidence_f1"] < 0.2
+
+
+def test_evidence_prf_rejects_empty_gold():
+    with pytest.raises(ValueError):
+        evidence_prf({"a"}, set())
+
+
+def test_bootstrap_ci_brackets_the_mean_and_is_deterministic():
+    values = [0.0, 0.5, 1.0] * 40
+    lo, hi = bootstrap_ci(values)
+    mean = sum(values) / len(values)
+    assert lo < mean < hi
+    assert bootstrap_ci(values) == (lo, hi)  # same seed, same interval
+
+
+def test_bootstrap_ci_narrows_with_more_data():
+    small = bootstrap_ci([0.0, 1.0] * 10)
+    large = bootstrap_ci([0.0, 1.0] * 500)
+    assert (large[1] - large[0]) < (small[1] - small[0])
+
+
+def test_bootstrap_ci_degenerate_cases():
+    assert bootstrap_ci([0.7]) == (0.7, 0.7)
+    with pytest.raises(ValueError):
+        bootstrap_ci([])
+
+
+def test_per_question_scores_defaults_predicted_to_top_k():
+    scores = per_question_scores(["a", "x"], {"a"}, k=2)
+    assert scores["recall@2"] == 1.0
+    assert scores["mrr"] == 1.0
+    assert scores["evidence_precision"] == 0.5
+
+    # an explicit prediction set decouples attribution from the ranked list
+    filtered = per_question_scores(["a", "x"], {"a"}, k=2, predicted_ids={"a"})
+    assert filtered["evidence_precision"] == 1.0
+
+
+def test_aggregate_averages_over_questions():
+    per_question = [
+        (["a", "b"], {"a"}),   # recall@1 = 1.0, rr = 1.0
+        (["b", "a"], {"a"}),   # recall@1 = 0.0, rr = 0.5
+    ]
+    result = aggregate(per_question, k=1)
+    assert result["recall@1"] == 0.5
+    assert result["mrr"] == 0.75
+    assert result["n_questions"] == 2
+
+
+def test_aggregate_with_ci_adds_bounds():
+    result = aggregate([(["a", "b"], {"a"})] * 20, k=1, with_ci=True)
+    assert result["recall@1_ci_low"] <= result["recall@1"] <= result["recall@1_ci_high"]
+
+
+def test_aggregate_rejects_empty_batch():
+    with pytest.raises(ValueError):
+        aggregate([], k=1)
+
+
+def test_summarize_rejects_empty_rows():
+    with pytest.raises(ValueError):
+        summarize([])
+
+
+def test_summarize_averages_a_partial_metric_over_the_rows_that_have_it():
+    """quote_match_rate is undefined for a question that claimed no citation."""
+    summary = summarize([{"f1": 1.0, "quote_match_rate": 0.5},
+                         {"f1": 0.0},
+                         {"f1": 0.5, "quote_match_rate": 1.0}])
+
+    assert summary["f1"] == 0.5
+    assert summary["quote_match_rate"] == 0.75  # not 0.5, which counts the gap as a zero
+    assert summary["n_questions"] == 3
+
+
+def test_summarize_reports_a_metric_the_first_row_happens_to_lack():
+    """Keying off row zero would drop it entirely, and silently."""
+    summary = summarize([{"f1": 1.0}, {"f1": 0.0, "quote_match_rate": 0.25}])
+    assert summary["quote_match_rate"] == 0.25
