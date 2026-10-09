@@ -33,6 +33,54 @@ def reference_from_tei(tei_root: ET.Element) -> Reference:
     return Reference(surnames, year)
 
 
+# Heading keyword -> section type; the first keyword the heading contains wins.
+SECTION_KEYWORDS = {
+    'abstract': 'abstract', 'introduction': 'introduction',
+    'method': 'methods', 'procedure': 'methods',
+    'result': 'results', 'discussion': 'discussion',
+    'conclusion': 'conclusion',
+}
+
+
+def section_type(head_text: str) -> str:
+    """The section a lowercased heading names, 'body' when no keyword matches."""
+    return next((value for key, value in SECTION_KEYWORDS.items() if key in head_text), 'body')
+
+
+def _paragraphs(tei_root: ET.Element):
+    """(section type, <p> element) in reading order: the abstract, then each body division."""
+    abstract = tei_root.find('.//tei:abstract', TEI_NS)
+    if abstract is not None:
+        for p_elem in abstract.findall('.//tei:p', TEI_NS):
+            yield "abstract", p_elem
+
+    body = tei_root.find('.//tei:body', TEI_NS)
+    if body is None:
+        return
+    for division in body.findall('tei:div', TEI_NS):
+        head = division.find('tei:head', TEI_NS)
+        section = section_type("".join(head.itertext()).strip().lower() if head is not None else "")
+        for p_elem in division.findall('.//tei:p', TEI_NS):
+            yield section, p_elem
+
+
+def _paragraph_content(p_elem: ET.Element) -> tuple[str, list[tuple[str, str]], int]:
+    """A <p>'s text, its (sentence, coords) pairs, and the 0-based page of its first box."""
+    sentences = []
+    page_number = 0
+    for s in p_elem.findall('.//tei:s', TEI_NS):
+        sentence_text = " ".join("".join(s.itertext()).split())
+        coords = s.get('coords', '')
+        if sentence_text:
+            sentences.append((sentence_text, coords))
+            if page_number == 0 and coords:
+                try:
+                    page_number = int(coords.split(',')[0]) - 1
+                except ValueError:
+                    pass
+    return ' '.join(text for text, _ in sentences), sentences, page_number
+
+
 class PDFProcessor:
     """Handles PDF parsing and text extraction using GROBID."""
 
@@ -57,7 +105,6 @@ class PDFProcessor:
         self.grobid_timeout = grobid_timeout
         self.grobid_client = None  # Lazy initialization only when needed
 
-        self.output_base_dir = output_base_dir
         self.pdf_cache_dir = os.path.join(output_base_dir, "pdf_cache")
         self.tei_cache_dir = os.path.join(output_base_dir, "tei_cache")
         os.makedirs(self.tei_cache_dir, exist_ok=True)
@@ -86,7 +133,7 @@ class PDFProcessor:
             return False
 
         cache_paths = [
-            os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml"),
+            self._tei_cache_path(pdf_hash),
             os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei"),
         ]
 
@@ -126,6 +173,9 @@ class PDFProcessor:
                 continue
             self.remove_tei_cache(pdf_hash)
 
+    def _tei_cache_path(self, pdf_hash: str) -> str:
+        return os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml")
+
     def _parse_pdf(self, pdf_path: str, pdf_hash: str) -> ET.Element | None:
         """Parse a single PDF using GROBID and return TEI XML root.
 
@@ -137,232 +187,108 @@ class PDFProcessor:
             XML Element root of the TEI document, or None if parsing failed.
         """
         try:
-            cache_path = os.path.join(self.tei_cache_dir, f"{pdf_hash}.tei.xml")
-            
+            cache_path = self._tei_cache_path(pdf_hash)
+
             if os.path.exists(cache_path):
                 try:
                     with open(cache_path, "rb") as f:
                         return ET.fromstring(f.read())
                 except Exception:
                     logger.debug("Cached TEI for %s unreadable, reprocessing", pdf_hash, exc_info=True)
-            
-            # Only check GROBID availability if we need to parse (cache miss)
-            if not self.is_alive():
-                message = (
-                    f"GROBID service not reachable at {self.grobid_url}. "
-                    "Start GROBID and retry."
-                )
-                logger.error(message)
-                raise ConnectionError(message)
-            
-            # Lazy initialization of GROBID client only when needed
-            if self.grobid_client is None:
-                self.grobid_client = GrobidClient(grobid_server=self.grobid_url)
 
-            with self.GROBID_LOCK:
-                in_dir = tempfile.mkdtemp(prefix="grobid_in_")
-                out_dir = tempfile.mkdtemp(prefix="grobid_out_")
-                try:
-                    base = os.path.basename(pdf_path)
-                    temp_pdf = os.path.join(in_dir, base)
-                    shutil.copy2(pdf_path, temp_pdf)
-
-                    # Process with sentence segmentation and coordinates
-                    self.grobid_client.process(
-                        service="processFulltextDocument",
-                        input_path=in_dir,
-                        output=out_dir,
-                        n=1,
-                        tei_coordinates=True,
-                        segment_sentences=True
-                    )
-
-                    expected = os.path.splitext(base)[0] + ".tei.xml"
-                    tei_path = os.path.join(out_dir, expected)
-                    if not os.path.exists(tei_path):
-                        candidates = [
-                            os.path.join(out_dir, f) 
-                            for f in os.listdir(out_dir) 
-                            if f.endswith(".tei.xml")
-                        ]
-                        tei_path = candidates[0] if candidates else None
-
-                    if tei_path and os.path.exists(tei_path):
-                        with open(tei_path, "rb") as f:
-                            content = f.read()
-                        # Persist to cache for reuse
-                        try:
-                            with open(cache_path, "wb") as out_f:
-                                out_f.write(content)
-                        except Exception:
-                            logger.debug("Unable to write TEI cache %s", cache_path, exc_info=True)
-                        return ET.fromstring(content)
-                    else:
-                        logger.warning(f"GROBID client did not produce TEI for {pdf_path}")
-                        return None
-                finally:
-                    shutil.rmtree(in_dir, ignore_errors=True)
-                    shutil.rmtree(out_dir, ignore_errors=True)
+            content = self._run_grobid(pdf_path)
+            if content is None:
+                logger.warning(f"GROBID client did not produce TEI for {pdf_path}")
+                return None
+            # Persist to cache for reuse
+            try:
+                with open(cache_path, "wb") as out_f:
+                    out_f.write(content)
+            except Exception:
+                logger.debug("Unable to write TEI cache %s", cache_path, exc_info=True)
+            return ET.fromstring(content)
         except ConnectionError:
             raise
         except Exception as e:  # noqa: BLE001 - GROBID failure: skip this PDF
             logger.error(f"Error parsing PDF with GROBID: {e}")
             return None
 
-    def _collect_chunks_from_elements(self,
-                                    p_elements: list[ET.Element],
-                                    section_type: str,
-                                    chunks: list[ExtractedChunk],
-                                    chunk_index: int,
-                                    pending_short_para: str,
-                                    pending_coords: list[tuple[str, str]],
-                                    ns: dict[str, str]) -> tuple[int, str, list[tuple[str, str]]]:
-        """Turn a list of <p> elements into chunks, merging paragraphs too short to stand alone.
-        
-        Args:
-            p_elements: List of <p> elements to process.
-            section_type: Section type for categorization.
-            chunks: List to append ExtractedChunk objects to.
-            chunk_index: Current chunk index for ordering.
-            pending_short_para: Buffer for short paragraph text that may need to be merged.
-            pending_coords: Buffer for coordinates of sentences in the pending short paragraph.
-            ns: Namespace dictionary for XML parsing.
-                
-        Returns:
-            Updated chunk index, pending short paragraph text, and pending coordinates.
-        """
-        for p_elem in p_elements:
-            p_text, sentences_coords, page_number = self._process_paragraph_element(p_elem, ns)
-
-            if not p_text:
-                continue
-
-            if pending_short_para:
-                p_text = f"{pending_short_para} {p_text}"
-                sentences_coords = pending_coords + sentences_coords
-                pending_short_para = ""
-                pending_coords = []
-
-            if len(p_text.split()) < self.MIN_PARAGRAPH_WORDS:
-                pending_short_para = p_text
-                pending_coords = sentences_coords
-                continue
-
-            chunks.append(
-                ExtractedChunk(
-                    text=p_text,
-                    page_number=page_number,
-                    chunk_index=chunk_index,
-                    section=section_type,
-                    sentences=sentences_coords,
-                )
+    def _run_grobid(self, pdf_path: str) -> bytes | None:
+        """GROBID's TEI for the PDF, or None if it produced none; ConnectionError if it is down."""
+        # Only check GROBID availability if we need to parse (cache miss)
+        if not self.is_alive():
+            message = (
+                f"GROBID service not reachable at {self.grobid_url}. "
+                "Start GROBID and retry."
             )
-            chunk_index += 1
+            logger.error(message)
+            raise ConnectionError(message)
 
-        return chunk_index, pending_short_para, pending_coords
-    
+        # Lazy initialization of GROBID client only when needed
+        if self.grobid_client is None:
+            self.grobid_client = GrobidClient(grobid_server=self.grobid_url)
+
+        with self.GROBID_LOCK:
+            in_dir = tempfile.mkdtemp(prefix="grobid_in_")
+            out_dir = tempfile.mkdtemp(prefix="grobid_out_")
+            try:
+                base = os.path.basename(pdf_path)
+                shutil.copy2(pdf_path, os.path.join(in_dir, base))
+
+                # Process with sentence segmentation and coordinates
+                self.grobid_client.process(
+                    service="processFulltextDocument",
+                    input_path=in_dir,
+                    output=out_dir,
+                    n=1,
+                    tei_coordinates=True,
+                    segment_sentences=True
+                )
+
+                tei_path = os.path.join(out_dir, os.path.splitext(base)[0] + ".tei.xml")
+                if not os.path.exists(tei_path):
+                    candidates = [f for f in os.listdir(out_dir) if f.endswith(".tei.xml")]
+                    if not candidates:
+                        return None
+                    tei_path = os.path.join(out_dir, candidates[0])
+                with open(tei_path, "rb") as f:
+                    return f.read()
+            finally:
+                shutil.rmtree(in_dir, ignore_errors=True)
+                shutil.rmtree(out_dir, ignore_errors=True)
+
     def _extract_chunks_from_tei(self, tei_root: ET.Element) -> list[ExtractedChunk]:
-        """Extract chunks from TEI XML structure.
-        
-        Args:
-            tei_root: Root element of TEI XML.
-            
-        Returns:
-            List of ExtractedChunk objects
+        """One chunk per paragraph, in reading order.
+
+        A paragraph too short to stand alone is merged into the next one, and a
+        short one left at the end into the last chunk.
         """
         chunks: list[ExtractedChunk] = []
-        chunk_index = 0
-        
-        ns = TEI_NS
+        pending_text, pending_sentences = "", []
+        for section, p_elem in _paragraphs(tei_root):
+            text, sentences, page_number = _paragraph_content(p_elem)
+            if not text:
+                continue
 
-        # Buffer to merge paragraphs too short to stand alone as a chunk
-        pending_short_para = ""
-        pending_coords = []
-        
-        # Extract from abstract (each <p> is a paragraph)
-        abstract = tei_root.find('.//tei:abstract', ns)
-        if abstract is not None:
-            chunk_index, pending_short_para, pending_coords = self._collect_chunks_from_elements(
-                abstract.findall('.//tei:p', ns),
-                "abstract",
-                chunks,
-                chunk_index,
-                pending_short_para,
-                pending_coords,
-                ns,
-            )
-        
-        # Extract from body (main content)
-        body = tei_root.find('.//tei:body', ns)
-        if body is not None:
-            for section_div in body.findall('tei:div', ns):
-                # Determine section type from head element
-                head = section_div.find('tei:head', ns)
-                head_text_raw = "".join(head.itertext()).strip() if head is not None else ""
-                head_text_lower = head_text_raw.lower()
-                section_type = self._determine_section_type(head_text_lower)
-                
-                chunk_index, pending_short_para, pending_coords = self._collect_chunks_from_elements(
-                    section_div.findall('.//tei:p', ns),
-                    section_type,
-                    chunks,
-                    chunk_index,
-                    pending_short_para,
-                    pending_coords,
-                    ns,
-                )
-        
-        if pending_short_para and chunks:
-            last_chunk = chunks[-1]
-            last_chunk.text = f"{last_chunk.text} {pending_short_para}"
-            last_chunk.sentences.extend(pending_coords)
+            if pending_text:
+                text = f"{pending_text} {text}"
+                sentences = pending_sentences + sentences
+                pending_text, pending_sentences = "", []
+
+            if len(text.split()) < self.MIN_PARAGRAPH_WORDS:
+                pending_text, pending_sentences = text, sentences
+                continue
+
+            chunks.append(ExtractedChunk(text=text, page_number=page_number,
+                                         chunk_index=len(chunks), section=section,
+                                         sentences=sentences))
+
+        if pending_text and chunks:
+            chunks[-1].text = f"{chunks[-1].text} {pending_text}"
+            chunks[-1].sentences.extend(pending_sentences)
 
         return chunks
 
-    def _process_paragraph_element(self, p_elem, ns):
-        """Extract text and sentence coordinates from a <p> element, handling nested sentences.
-        
-        Args:
-            p_elem: XML element representing a paragraph.
-            ns: Namespace dictionary for XML parsing.
-        """
-        sentences_with_coords = []
-        page_number = 0
-        
-        for s in p_elem.findall('.//tei:s', ns):
-            sentence_text = " ".join("".join(s.itertext()).split())
-            coords = s.get('coords', '')
-            
-            if sentence_text:
-                sentences_with_coords.append((sentence_text, coords))
-                if page_number == 0 and coords:
-                    try:
-                        page_number = int(coords.split(',')[0]) - 1
-                    except ValueError: 
-                        pass
-                    
-        paragraph_text = ' '.join([sent for sent, _ in sentences_with_coords])
-        return paragraph_text, sentences_with_coords, page_number
-
-    def _determine_section_type(self, head_text):
-        """Determine section type based on head text, using simple keyword mapping.
-        
-        Args:
-            head_text: Text content of the section head, normalized to lowercase.
-        """
-        if not head_text:
-            return 'body'
-
-        mapping = {
-            'abstract': 'abstract', 'introduction': 'introduction',
-            'method': 'methods', 'procedure': 'methods',
-            'result': 'results', 'discussion': 'discussion',
-            'conclusion': 'conclusion'
-        }
-        for key, value in mapping.items():
-            if key in head_text: return value
-        return 'body'
-    
     def extract_text_chunks(self, pdf_hash: str, pdf_title: str | None = None) -> list[ExtractedChunk]:
         """Extract chunks from PDF using GROBID.
         
