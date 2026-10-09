@@ -9,7 +9,7 @@ goes. The answer text stays the generated one.
 
 from dataclasses import replace
 
-from zotero_rag.models import Answer, RerankedChunk
+from zotero_rag.models import YELLOW, Answer, RerankedChunk
 
 
 class HybridReader:
@@ -33,7 +33,7 @@ class HybridReader:
         self.generative.generation_failures = value
 
     def extract_answers(self, question: str, candidates: list[RerankedChunk],
-                        config: dict, color: tuple[float, float, float] = (1, 1, 0),
+                        config: dict, color: tuple[float, float, float] = YELLOW,
                         progress_callback=None) -> list[Answer]:
         """One answer per chunk the generated answer cites, marked at the
         extractive span inside it, or over the whole chunk where the extractive

@@ -257,7 +257,7 @@ def test_extract_answers_keeps_one_of_two_identical_spans_from_one_paper():
 
 def test_the_extractive_reader_is_its_model_and_never_quotes_or_fails(monkeypatch):
     """The Reader seam's shared fields: the ablation reads them on every reader."""
-    monkeypatch.setattr(QAEngine, "_load_model_direct", lambda self: None)
+    monkeypatch.setattr(QAEngine, "_load_model", lambda self: None)
     engine = QAEngine(model_name="deepset/roberta-base-squad2", device="cpu")
     assert engine.reader_kind == "deepset/roberta-base-squad2"
     assert engine.last_quote_stats == {"cited": 0, "matched": 0}

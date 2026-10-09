@@ -9,6 +9,7 @@ bge-reranker-v2-m3 and jina-reranker-v3.5 at under half their latency on MPS.
 """
 
 import logging
+import math
 
 import torch
 from sentence_transformers import CrossEncoder
@@ -123,7 +124,7 @@ class Reranker:
     def _probabilities(self, query: str, texts: list[str], progress_callback=None) -> list[float]:
         """The cross-encoder's probability that each text answers ``query``, batch by batch."""
         probs = []
-        num_batches = (len(texts) + self.batch_size - 1) // self.batch_size
+        num_batches = math.ceil(len(texts) / self.batch_size)
         for batch_idx, start in enumerate(range(0, len(texts), self.batch_size)):
             batch = [[query, text] for text in texts[start:start + self.batch_size]]
             # ``activation_fn`` turns the logits into probabilities; a second

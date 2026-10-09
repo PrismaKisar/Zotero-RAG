@@ -15,7 +15,7 @@ import re
 
 import ollama
 
-from zotero_rag.models import Answer, RerankedChunk
+from zotero_rag.models import YELLOW, Answer, RerankedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,37 @@ class GenerativeReader:
                                       answer_rule=ANSWER_STYLES[self.answer_style],
                                       quote_rule=quote_rule)
 
+    def _generate(self, prompt: str, question: str) -> str | None:
+        """The model's raw reply to ``prompt``, or None when generation failed twice.
+
+        ponytail: one retry, no backoff. The failure this exists for is the
+        Ollama runner dying and being restarted by the server, which the next
+        call finds already back up. It matters because a benchmark scores a
+        failed generation as an unanswered question - an infrastructure blip
+        would otherwise enter the results as a property of the configuration
+        being measured. A second failure is left to stand: at that point the
+        service is down rather than blipping, and retrying harder would hide
+        it for longer.
+        """
+        for attempt in (1, 2):
+            try:
+                response = self.client.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    think=THINKING,
+                    options={
+                        "temperature": 0.1,
+                        "num_predict": 256,
+                        "num_ctx": max(2048, min(len(prompt) // 4 + 512, 16384)),
+                    },
+                    keep_alive=-1,
+                )
+                return response["response"]
+            except Exception as exc:  # noqa: BLE001 - a failed generation is no answer
+                logger.error(f"Generation failed (attempt {attempt}) for question "
+                             f"{question!r}: {exc}")
+        return None
+
     def _to_answer(self, text: str, candidate: RerankedChunk,
                 question: str, color: tuple[float, float, float],
                 span: tuple[int, int] | None = None) -> Answer:
@@ -264,7 +295,7 @@ class GenerativeReader:
                     question: str,
                     candidates: list[RerankedChunk],
                     config: dict,
-                    color: tuple[float, float, float] = (1, 1, 0),
+                    color: tuple[float, float, float] = YELLOW,
                     progress_callback=None) -> list[Answer]:
         """Generate one answer over the top candidates, attributed to its citations.
 
@@ -289,33 +320,7 @@ class GenerativeReader:
         if progress_callback:
             progress_callback(0, 1, f"Generating an answer over {len(used)} chunks")
 
-        # ponytail: one retry, no backoff. The failure this exists for is the
-        # Ollama runner dying and being restarted by the server, which the next
-        # call finds already back up. It matters because a benchmark scores a
-        # failed generation as an unanswered question - an infrastructure blip
-        # would otherwise enter the results as a property of the configuration
-        # being measured. A second failure is left to stand: at that point the
-        # service is down rather than blipping, and retrying harder would hide
-        # it for longer.
-        raw = None
-        for attempt in (1, 2):
-            try:
-                response = self.client.generate(
-                    model=self.model_name,
-                    prompt=prompt,
-                    think=THINKING,
-                    options={
-                        "temperature": 0.1,
-                        "num_predict": 256,
-                        "num_ctx": max(2048, min(len(prompt) // 4 + 512, 16384)),
-                    },
-                    keep_alive=-1,
-                )
-                raw = response["response"]
-                break
-            except Exception as exc:  # noqa: BLE001 - a failed generation is no answer
-                logger.error(f"Generation failed (attempt {attempt}) for question "
-                             f"{question!r}: {exc}")
+        raw = self._generate(prompt, question)
         if raw is None:
             self.generation_failures += 1
             return []

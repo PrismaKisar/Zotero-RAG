@@ -1,6 +1,8 @@
 """Question answering engine using extractive QA models."""
 
 import logging
+import math
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -8,7 +10,7 @@ import torch
 from transformers import AutoModelForQuestionAnswering, AutoTokenizer
 
 from zotero_rag.device import resolve_device
-from zotero_rag.models import Answer, RerankedChunk
+from zotero_rag.models import YELLOW, Answer, RerankedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +129,9 @@ class QAEngine:
         # MPS shares its memory with the OS, and CPU OOMs outright (exit 137).
         self.batch_size = batch_size or DEFAULT_QA_BATCH_SIZE[self.device]
         
-        self._load_model_direct()
+        self._load_model()
 
-    def _load_model_direct(self):
+    def _load_model(self):
         """Load model and tokenizer directly for manual batching."""
         try:
             logger.info(f"Loading QA Model: {self.model_name}...")
@@ -144,8 +146,7 @@ class QAEngine:
                 self.model_name,
                 dtype=dtype
             ).to(self.device)
-            
-            import sys
+
             # ponytail: only compile on CUDA. inductor needs a C++ compiler (g++) and
             # gives marginal gains on CPU QA — skipping avoids a hard toolchain dependency
             # and the lazy compile failure that surfaced as "0 spans" in slim containers.
@@ -203,7 +204,7 @@ class QAEngine:
                     question: str,
                     candidates: list[RerankedChunk],
                     config: dict,
-                    color: tuple[float, float, float] = (1, 1, 0),
+                    color: tuple[float, float, float] = YELLOW,
                     progress_callback=None) -> list[Answer]:
         """Extract answers for a given question from candidate chunks.
 
@@ -219,32 +220,9 @@ class QAEngine:
             One answer per candidate that yields a span, best first, above the
             threshold and without repeating a (title, text) pair.
         """
-        # candidate index -> (score, start_char, end_char) of its best window
-        best: dict[int, tuple[float, int, int]] = {}
-        num_batches = (len(candidates) + self.batch_size - 1) // self.batch_size
-        for b, first in enumerate(range(0, len(candidates), self.batch_size)):
-            if progress_callback:
-                progress_callback(b, num_batches, f"Running Inference Batch {b+1}/{num_batches}")
-            contexts = [c.chunk.text for c in candidates[first:first + self.batch_size]]
-            try:
-                windows = self.score_windows(question, contexts)
-            except Exception as e:  # noqa: BLE001 - per-batch: skip it and keep the others
-                logger.error(f"Batch {b} failed: {e}")
-                continue
-
-            for k, offsets in enumerate(windows.offsets):
-                span = best_span(windows.start_logits[k], windows.end_logits[k],
-                                 windows.sequence_ids[k])
-                if span is None:
-                    continue
-                start_token, end_token, score = span
-                start_char, end_char = int(offsets[start_token][0]), int(offsets[end_token][1])
-                idx = first + windows.sample_mapping[k]
-                if start_char < end_char and score > best.get(idx, (-1.0,))[0]:
-                    best[idx] = (score, start_char, end_char)
-
         answers = []
-        for idx, (score, start_char, end_char) in best.items():
+        for idx, (score, start_char, end_char) in self._best_spans(
+                question, candidates, progress_callback).items():
             candidate = candidates[idx]
             expanded = candidate.chunk.expand_to_sentences(start_char, end_char)
             answers.append(Answer.from_candidate(
@@ -269,3 +247,33 @@ class QAEngine:
         logger.info(f"QA: {len(candidates)} candidates -> {len(answers)} spans -> "
                     f"{len(unique_answers)} answers (threshold {config['qa_score_threshold']:.2f})")
         return unique_answers
+
+    def _best_spans(self, question: str, candidates: list[RerankedChunk],
+                    progress_callback=None) -> dict[int, tuple[float, int, int]]:
+        """Candidate index -> (score, start_char, end_char) of its best window's span.
+
+        A candidate with no span, or in a batch that failed, is absent.
+        """
+        best: dict[int, tuple[float, int, int]] = {}
+        num_batches = math.ceil(len(candidates) / self.batch_size)
+        for b, first in enumerate(range(0, len(candidates), self.batch_size)):
+            if progress_callback:
+                progress_callback(b, num_batches, f"Running Inference Batch {b+1}/{num_batches}")
+            contexts = [c.chunk.text for c in candidates[first:first + self.batch_size]]
+            try:
+                windows = self.score_windows(question, contexts)
+            except Exception as e:  # noqa: BLE001 - per-batch: skip it and keep the others
+                logger.error(f"Batch {b} failed: {e}")
+                continue
+
+            for k, offsets in enumerate(windows.offsets):
+                span = best_span(windows.start_logits[k], windows.end_logits[k],
+                                 windows.sequence_ids[k])
+                if span is None:
+                    continue
+                start_token, end_token, score = span
+                start_char, end_char = int(offsets[start_token][0]), int(offsets[end_token][1])
+                idx = first + windows.sample_mapping[k]
+                if start_char < end_char and score > best.get(idx, (-1.0,))[0]:
+                    best[idx] = (score, start_char, end_char)
+        return best
