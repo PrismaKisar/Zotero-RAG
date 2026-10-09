@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+from contextlib import closing
 
 from zotero_rag.models import PathSource, PDFIngestItem, Reference
 
@@ -72,92 +73,75 @@ class ZoteroDatabase:
         
         if not os.path.exists(self.db_path):
             raise FileNotFoundError(f"Zotero database not found at {self.db_path}")
-        
+
+    def _connect(self) -> closing[sqlite3.Connection]:
+        """A read-only connection, closed when the ``with`` block exits."""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA query_only = ON")
+        return closing(conn)
+
+    def _attachment_path(self, key: str, path: str | None) -> str | None:
+        """An attachment's file: ``storage:name`` lives in the attachment's storage folder."""
+        if path and path.startswith('storage:'):
+            return os.path.join(self.storage_dir, key, path.replace('storage:', ''))
+        return path
+
     def list_collections(self) -> list[dict]:
         """Load collections from the Zotero database.
-        
+
         Returns:
             List of dictionaries with 'id', 'name', and 'parent_id' keys.
         """
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.execute("PRAGMA query_only = ON")
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT collectionID, collectionName, parentCollectionID "
-            "FROM collections ORDER BY collectionName"
-        )
-        collections = [
-            {'id': r[0], 'name': r[1], 'parent_id': r[2]} 
-            for r in cursor.fetchall()
-        ]
-        conn.close()
-        return collections
-    
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT collectionID, collectionName, parentCollectionID "
+                "FROM collections ORDER BY collectionName"
+            ).fetchall()
+        return [{'id': r[0], 'name': r[1], 'parent_id': r[2]} for r in rows]
+
     def get_items(self, collection_name: str | None = None) -> list[PDFIngestItem]:
         """Get PDF items from Zotero library or a specific collection.
-        
+
         Args:
             collection_name: Name of the collection to filter by. If None, get all items.
-            
+
         Returns:
             List of PDFIngestItem objects with title and source.
         """
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.execute("PRAGMA query_only = ON")
-        cursor = conn.cursor()
-        items: list[PDFIngestItem] = []
-        
-        if collection_name:
-            # Get items from specific collection
-            cursor.execute(
-                "SELECT collectionID FROM collections WHERE collectionName = ?", 
-                (collection_name,)
-            )
-            result = cursor.fetchone()
-            if not result:
-                conn.close()
-                raise ValueError(f"Collection '{collection_name}' not found.")
-            collection_id = result[0]
-            
-            query = """
-            SELECT a_items.key, ia.path, ia.parentItemID as sourceItemID, a_items.libraryID 
-            FROM collectionItems ci
-            JOIN itemAttachments ia ON ci.itemID = ia.parentItemID 
-            JOIN items a_items ON ia.itemID = a_items.itemID
-            WHERE ci.collectionID = ? 
-            AND ia.contentType = 'application/pdf' 
-            AND ia.path IS NOT NULL
-            """
-            cursor.execute(query, (collection_id,))
-        else:
-            # Get all PDF items from library
-            query = """
-            SELECT i.key, ia.path, COALESCE(ia.parentItemID, i.itemID) as sourceItemID, i.libraryID
-            FROM items i 
-            JOIN itemAttachments ia ON i.itemID = ia.itemID
-            WHERE ia.contentType = 'application/pdf' 
-            AND ia.path IS NOT NULL
-            """
-            cursor.execute(query)
-        
-        rows = cursor.fetchall()
-        for key, path, src_id, library_id in rows:
-            title = _field(cursor, src_id, "title") or "Unknown"
-            
-            # Resolve storage path
-            if path and path.startswith('storage:'):
-                pdf_path = os.path.join(
-                    self.storage_dir, 
-                    key, 
-                    path.replace('storage:', '')
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if collection_name:
+                cursor.execute(
+                    "SELECT collectionID FROM collections WHERE collectionName = ?",
+                    (collection_name,)
                 )
+                result = cursor.fetchone()
+                if not result:
+                    raise ValueError(f"Collection '{collection_name}' not found.")
+                cursor.execute("""
+                SELECT a_items.key, ia.path, ia.parentItemID as sourceItemID, a_items.libraryID
+                FROM collectionItems ci
+                JOIN itemAttachments ia ON ci.itemID = ia.parentItemID
+                JOIN items a_items ON ia.itemID = a_items.itemID
+                WHERE ci.collectionID = ?
+                AND ia.contentType = 'application/pdf'
+                AND ia.path IS NOT NULL
+                """, (result[0],))
             else:
-                pdf_path = path
-            
-            # Only include if file exists
-            if pdf_path and os.path.exists(pdf_path):
-                items.append(PDFIngestItem(title=title, source=PathSource(pdf_path),
-                                           reference=_reference(cursor, src_id, key, library_id)))
-        
-        conn.close()
-        return items
+                cursor.execute("""
+                SELECT i.key, ia.path, COALESCE(ia.parentItemID, i.itemID) as sourceItemID, i.libraryID
+                FROM items i
+                JOIN itemAttachments ia ON i.itemID = ia.itemID
+                WHERE ia.contentType = 'application/pdf'
+                AND ia.path IS NOT NULL
+                """)
+
+            items: list[PDFIngestItem] = []
+            for key, path, src_id, library_id in cursor.fetchall():
+                pdf_path = self._attachment_path(key, path)
+                if pdf_path and os.path.exists(pdf_path):
+                    items.append(PDFIngestItem(
+                        title=_field(cursor, src_id, "title") or "Unknown",
+                        source=PathSource(pdf_path),
+                        reference=_reference(cursor, src_id, key, library_id)))
+            return items
