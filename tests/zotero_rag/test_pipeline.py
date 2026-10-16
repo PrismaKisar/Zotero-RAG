@@ -21,8 +21,10 @@ class _Qdrant:
         # (pdf_hash, chunk_index) -> Chunk, standing in for the whole collection
         self._indexed = indexed or {}
         self.fetched = None
+        self.exact = None
 
-    def search(self, embedding, result_limit, mode, pdf_hashes=None):
+    def search(self, embedding, result_limit, mode, pdf_hashes=None, exact=True):
+        self.exact = exact
         return list(self._results)
 
     def fetch_chunks(self, ids):
@@ -53,6 +55,14 @@ def _neighbour_rag(span, indexed):
     rag.qdrant_manager = _Qdrant([(_chunk(5), 0.9)], indexed=indexed)
     rag.answer_question("q", overrides={"retrieval_neighbours": span})
     return rag
+
+
+def test_retrieval_is_exact_unless_the_scalability_study_asks_for_hnsw():
+    rag = _rag([(_chunk(5), 0.9)])
+    rag.answer_question("q")
+    assert rag.qdrant_manager.exact is True
+    rag.answer_question("q", overrides={"retrieval_exact": False})
+    assert rag.qdrant_manager.exact is False
 
 
 def test_neighbour_expansion_is_off_unless_asked_for():

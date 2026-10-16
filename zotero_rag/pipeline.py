@@ -542,6 +542,9 @@ class ZoteroRAG:
             result_limit=config['result_limit'],
             mode=config['retrieval_mode'],
             pdf_hashes=pdf_hashes,
+            # Read with a default, like the rerank switches below: it exists for
+            # the scalability study alone, and the product always searches exactly.
+            exact=config.get('retrieval_exact', True),
         )
         seen_chunks = {chunk.key for chunk, _ in hits}
 

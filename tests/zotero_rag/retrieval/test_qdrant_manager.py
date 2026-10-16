@@ -64,6 +64,12 @@ def test_dense_search_is_exact_not_approximate():
     assert build("hybrid")[0].params.exact is True
 
 
+def test_the_scalability_study_can_ask_hnsw_instead():
+    requests = QdrantManager._build_query_requests(
+        DENSE, SPARSE, result_limit=30, mode="hybrid", exact=False)
+    assert requests[0].params.exact is False
+
+
 def test_unknown_mode_is_rejected():
     with pytest.raises(ValueError, match="unknown retrieval_mode"):
         build("bm25")

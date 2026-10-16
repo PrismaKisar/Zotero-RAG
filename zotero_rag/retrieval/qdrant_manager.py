@@ -535,7 +535,8 @@ class QdrantManager:
 
     @staticmethod
     def _build_query_requests(dense_query, sparse_query, result_limit: int, mode: str,
-                              pdf_hashes: list[str] | None = None) -> list[qmodels.QueryRequest]:
+                              pdf_hashes: list[str] | None = None,
+                              exact: bool = True) -> list[qmodels.QueryRequest]:
         """The Qdrant requests for ``mode``: one branch, or two to fuse for 'hybrid'.
 
         Hybrid is fused here rather than by Qdrant (see ``rrf_fuse``), so it is
@@ -558,6 +559,8 @@ class QdrantManager:
         threshold the retrieval stage is its ordering and nothing else. The
         cost is linear in the chunk count: milliseconds up to ~1e5 chunks. The
         sparse side needs no flag, its inverted index is exact already.
+        ``exact=False`` lets HNSW answer instead, for the scalability study
+        (benchmark/studies/scalability.py) that measures where linear stops paying.
         """
         if mode not in ("dense", "sparse", "hybrid"):
             raise ValueError(f"unknown retrieval_mode: {mode!r}")
@@ -569,7 +572,7 @@ class QdrantManager:
         if mode in ("dense", "hybrid"):
             requests.append(qmodels.QueryRequest(
                 query=dense_query, using="", limit=depth,
-                params=qmodels.SearchParams(exact=True), with_payload=True, filter=flt))
+                params=qmodels.SearchParams(exact=exact), with_payload=True, filter=flt))
         if mode in ("sparse", "hybrid"):
             requests.append(qmodels.QueryRequest(
                 query=sparse_query, using="text-sparse", limit=depth,
@@ -631,7 +634,8 @@ class QdrantManager:
                query_embedding: dict[str, list[float]],
                result_limit: int = 30,
                mode: str = "hybrid",
-               pdf_hashes: list[str] | None = None) -> list[tuple[Chunk, float]]:
+               pdf_hashes: list[str] | None = None,
+               exact: bool = True) -> list[tuple[Chunk, float]]:
         """Search for relevant chunks using Hybrid Search (Dense + Sparse BM25).
 
         Args:
@@ -639,12 +643,14 @@ class QdrantManager:
             result_limit: Max results (the ``result_limit`` preset field).
             mode: 'hybrid', 'dense' or 'sparse' (the ``retrieval_mode`` preset field).
             pdf_hashes: Restrict the search to these documents (None = whole corpus).
+            exact: Scan every dense vector (the product) or ask HNSW (the scalability study).
 
         Returns:
             (Chunk, score) pairs, best first.
         """
         requests = QdrantManager._build_query_requests(
-            query_embedding["dense"], query_embedding["sparse"], result_limit, mode, pdf_hashes)
+            query_embedding["dense"], query_embedding["sparse"], result_limit, mode, pdf_hashes,
+            exact)
         responses = self.client.query_batch_points(
             collection_name=self.chunk_collection, requests=requests)
         branches = [QdrantManager.rank_branch(
