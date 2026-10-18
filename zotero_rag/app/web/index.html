@@ -183,6 +183,11 @@ a.chip div { min-width: 0; display: grid; }
 
 /* Composer */
 .composer-wrap { flex: none; padding: 0 24px 14px; position: relative; }
+.scope { max-width: 768px; margin: 0 auto 8px; display: flex; }
+.scope .chip button { border: 0; background: none; padding: 0; display: grid; cursor: pointer; }
+.scope .chip button svg { width: 14px; height: 14px; color: var(--muted); }
+.asked { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 80%; }
+.asked > .bubble, .asked > .chips { max-width: 100%; }
 .composer {
   max-width: 768px; margin: 0 auto; display: flex; align-items: flex-end; gap: 6px; padding: 8px; border-radius: 26px;
   background: var(--raised); border: 1px solid var(--line); box-shadow: var(--shadow); transition: border-color .15s;
@@ -232,6 +237,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
 .pdfs .none { padding: 40px 10px; text-align: center; color: var(--muted); font-size: 14px; }
 .warn { font-size: 13px; color: var(--warning); margin: 0 0 8px; }
 .sheet footer { display: flex; justify-content: space-between; gap: 8px; padding: 12px 22px 18px; border-top: 1px solid var(--line); }
+.sheet footer #clear { margin-right: auto; }
 .drop-overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; pointer-events: none;
   background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(4px);
@@ -299,6 +305,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
       <div class="thread" id="thread"></div>
     </div>
     <div class="composer-wrap">
+      <div class="scope" id="scope" hidden></div>
       <form class="composer" id="composer">
         <label class="btn plain icon" title="Add PDFs to the library" aria-label="Add PDFs to the library">
           <svg><use href="#i-clip"/></svg>
@@ -331,6 +338,7 @@ footer.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px
   <footer>
     <button class="btn plain danger" id="clear">Clear library</button>
     <button class="btn" id="remove" disabled>Remove selected</button>
+    <button class="btn primary" id="ask-selected" disabled>Ask selected</button>
   </footer>
 </dialog>
 
@@ -570,7 +578,7 @@ function answersView(item, body) {
 function renderItem(item) {
   const { node, body } = botMessage();
   if (item.kind === "ask") {
-    thread.append(userMessage(el("div", { className: "bubble", textContent: item.question })), node);
+    thread.append(userMessage(asked(item.question, item.scope)), node);
     answersView(item, body);
   } else {
     thread.append(userMessage(fileChips(item.sources)), node);
@@ -672,15 +680,35 @@ question.onkeydown = (event) => {
   }
 };
 
+// The PDFs to search, chosen in the library; empty: the whole library.
+let scope = [];
+
+/** The question as the user sees it sent, with the PDFs it was limited to. */
+function asked(text, titles = []) {
+  const bubble = el("div", { className: "bubble", textContent: text });
+  return titles.length ? el("div", { className: "asked" }, bubble, fileChips(titles)) : bubble;
+}
+
+function renderScope() {
+  const bar = $("#scope");
+  bar.hidden = !scope.length;
+  if (!scope.length) return bar.replaceChildren();
+  const clear = el("button", { type: "button", ariaLabel: "Search the whole library", title: "Search the whole library",
+    onclick: () => { scope = []; renderScope(); question.focus(); } }, icon("x"));
+  bar.replaceChildren(el("div", { className: "chip", title: scope.join("\n") }, icon("pdf"),
+    el("span", { textContent: `Only in ${scope.length === 1 ? scope[0] : plural(scope.length, "PDF")}` }), clear));
+}
+
 $("#composer").onsubmit = (event) => {
   event.preventDefault();
   const text = question.value.trim();
   if (!text || busy) return;
   question.value = "";
   question.oninput();
-  exchange(el("div", { className: "bubble", textContent: text }), "Searching your library", async (body, update) => {
-    const { run, answers } = await stream("/api/ask", { question: text }, update);
-    const item = { kind: "ask", question: text, run, answers };
+  const titles = [...scope];
+  exchange(asked(text, titles), titles.length ? "Searching the chosen PDFs" : "Searching your library", async (body, update) => {
+    const { run, answers } = await stream("/api/ask", { question: text, titles }, update);
+    const item = { kind: "ask", question: text, run, answers, ...(titles.length && { scope: titles }) };
     record(item, text);
     answersView(item, body);
   });
@@ -740,6 +768,8 @@ async function loadLibrary() {
     showBanner(error);
   }
   for (const title of [...chosen]) if (!titles.includes(title)) chosen.delete(title);
+  scope = scope.filter((title) => titles.includes(title));
+  renderScope();
   $("#count").textContent = titles.length || "";
   $("#library-count").textContent = plural(titles.length, "PDF");
   renderLibrary();
@@ -771,7 +801,16 @@ function renderLibrary() {
 function renderChosen() {
   $("#remove").disabled = !chosen.size;
   $("#remove").textContent = chosen.size ? `Remove ${chosen.size}` : "Remove selected";
+  $("#ask-selected").disabled = !chosen.size;
+  $("#ask-selected").textContent = chosen.size ? `Ask ${plural(chosen.size, "PDF")}` : "Ask selected";
 }
+
+$("#ask-selected").onclick = () => {
+  scope = [...chosen];
+  renderScope();
+  $("#library").close();
+  question.focus();
+};
 
 let collections = null;
 async function loadCollections() {

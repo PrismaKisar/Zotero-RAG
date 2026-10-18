@@ -33,8 +33,10 @@ class FakeRAG:
         self.titles.remove(title)
         return True
 
-    def answer_question(self, question, progress_callback=None, rerank_callback=None):
+    def answer_question(self, question, progress_callback=None, rerank_callback=None,
+                        pdf_hashes=None):
         rerank_callback(1, 2, "half")
+        self.pdf_hashes = pdf_hashes
         return FakeRAG.answers
 
     def ingest_pdfs_from_upload(self, uploads):
@@ -106,6 +108,24 @@ def test_ask_streams_progress_then_the_answers(client, tmp_path):
     assert client.get(f"/api/answers/{run}/0/pdf").headers["content-type"] == "application/pdf"
     assert client.get(f"/api/answers/{run}/1/pdf").status_code == 404
     assert "no longer available" in client.get("/api/answers/gone/0/pdf").json()["detail"]
+
+
+def test_ask_searches_the_whole_library_unless_titles_are_named(client):
+    events(client.post("/api/ask", json={"question": "what?"}))
+    assert server.state["rag"].pdf_hashes is None
+    events(client.post("/api/ask", json={"question": "what?", "titles": ["Paper"]}))
+    assert server.state["rag"].pdf_hashes == ["Paper"]
+
+
+def test_asking_a_paper_no_longer_indexed_is_an_error_not_the_whole_library(client):
+    stream = events(client.post("/api/ask", json={"question": "what?", "titles": ["Gone"]}))
+    assert stream[-1] == {"type": "error", "message": "No longer in the library: Gone"}
+
+
+def test_scope_hashes_maps_titles_in_the_order_named():
+    indexed = [{"title": "A", "pdf_hash": "a"}, {"title": "B", "pdf_hash": "b"}]
+    assert server.scope_hashes([], indexed) is None
+    assert server.scope_hashes(["B", "A"], indexed) == ["b", "a"]
 
 
 def test_a_failing_pipeline_streams_an_error(client, monkeypatch):

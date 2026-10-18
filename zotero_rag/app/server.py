@@ -62,6 +62,7 @@ class Chat(BaseModel):
 
 class Question(BaseModel):
     question: str = Field(min_length=1)
+    titles: list[str] = []  # the PDFs to search; empty: the whole library
 
 
 class Titles(BaseModel):
@@ -136,6 +137,22 @@ def answer_json(index: int, answer, reference: Reference) -> dict:
         "scores": {"retrieval": answer.retrieval_score,
                    "rerank": answer.rerank_score, "qa": answer.score},
     }
+
+
+def scope_hashes(titles: list[str], indexed: list[dict]) -> list[str] | None:
+    """The pdf_hash of each title to search, None for the whole library.
+
+    Searching the question's own paper is where retrieval stops losing the
+    answer (benchmark/studies/hierarchical_retrieval.py), so the page lets the
+    user name it. A title no longer indexed is an error, not a silent widening.
+    """
+    if not titles:
+        return None
+    by_title = {item["title"]: item["pdf_hash"] for item in indexed}
+    missing = [t for t in titles if t not in by_title]
+    if missing:
+        raise ValueError("No longer in the library: " + ", ".join(missing))
+    return [by_title[t] for t in titles]
 
 
 def _failures(prefix: str, failed: list[dict]) -> list[dict]:
@@ -298,7 +315,8 @@ def ask(body: Question):
         answers = rag().answer_question(
             question=body.question.strip(),
             rerank_callback=lambda *a: progress("rerank", *a),
-            progress_callback=lambda *a: progress("read", *a))
+            progress_callback=lambda *a: progress("read", *a),
+            pdf_hashes=scope_hashes(body.titles, rag().get_indexed_pdfs()))
         run = uuid.uuid4().hex
         save_run(run, answers)
         references = {h: rag().reference(h) for h in {a.pdf_hash for a in answers}}

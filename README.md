@@ -132,6 +132,9 @@ moves it elsewhere (the Docker image sets it to a mounted volume).
 - **Upload**: drop PDFs anywhere on the page, or use the clip next to the question box
 - **Zotero**: open Library in the sidebar, pick a collection (or the whole library) and index it
 - Library also filters the indexed PDFs, removes the selected ones, or clears the index
+- **Ask selected** limits the next questions to the PDFs ticked in Library, which is
+  where retrieval stops losing answers to similar papers; the chip above the question
+  box shows the limit, and its × goes back to the whole library
 
 ### Ask
 
